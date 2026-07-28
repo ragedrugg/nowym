@@ -8,7 +8,7 @@
   <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.12-2ea44f"></a>
   <img alt="stable" src="https://img.shields.io/badge/status-stable-2ea44f">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="public" src="https://img.shields.io/badge/repo-private-lightgrey">
+  <img alt="public" src="https://img.shields.io/badge/repo-public-lightgrey">
 </p>
 
 Бот для Яндекс Музыки в Telegram. Инлайн-поиск, карточка «сейчас играет»,
