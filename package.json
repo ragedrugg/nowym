@@ -1,0 +1,39 @@
+{
+  "name": "nowym-ts",
+  "version": "1.7.3",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Yandex Music Telegram bot — TypeScript port of nowym",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@dvxch/yandex-music": "^0.2.6",
+    "@gramio/dialogs": "^0.2.0",
+    "@gramio/storage-redis": "^1.0.5",
+    "@napi-rs/canvas": "^0.1.65",
+    "dotenv": "^16.4.7",
+    "gramio": "^0.12.0",
+    "ioredis": "^5.11.1",
+    "node-html-parser": "^7.1.0",
+    "node-wreq": "^2.4.1",
+    "pg": "^8.13.1",
+    "taglib-wasm": "^1.4.3",
+    "undici": "^7.2.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
