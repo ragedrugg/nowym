@@ -1,0 +1,334 @@
+/** GramIO webhook через node:http(s) + кастомный роут /now-playing. Фоновые
+ * задачи: stale-refresher, чистка пустышек, дочитывание упавших альбомов,
+ * ws-наблюдатель Ynison владельца. */
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
+import { Bot, webhookHandler, AllowedUpdatesFilter } from "gramio";
+import { createDialogs } from "@gramio/dialogs";
+import { redisStorage } from "@gramio/storage-redis";
+import { registerCommands } from "./bot/commandsMenu.ts";
+import { Container } from "./bot/container.ts";
+import { buildMenuDialog } from "./bot/dialogs.ts";
+import { safeAnswerCb } from "./bot/safeApi.ts";
+import { resolveIconSet } from "./bot/iconSet.ts";
+import { registerHandlers } from "./bot/handlers/index.ts";
+import { getLogger } from "./infra/logging.ts";
+import { sleep } from "./infra/async.ts";
+import { AdminAlerter } from "./infra/adminAlerter.ts";
+import { NowPlayingWatcher } from "./services/nowPlayingWatcher.ts";
+import { StaleRefresher } from "./services/stale.ts";
+import { getSettings } from "./settings.ts";
+import { cachePool, usersPool } from "./storage/pool.ts";
+
+const log = getLogger("main");
+
+function secretMatches(header: string | undefined, expected: string): boolean {
+  if (!expected) return true; // секрет не задан — не проверяем
+  if (!header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function withRetry(label: string, fn: () => Promise<void>): Promise<void> {
+  let delay = 2000;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    try {
+      await fn();
+      return;
+    } catch (e) {
+      if (attempt === 6) throw e;
+      log.warning(`[startup] ${label} попытка ${attempt} упала (${e}), retry через ${delay / 1000}s`);
+      await sleep(delay);
+      delay = Math.min(delay * 2, 30000);
+    }
+  }
+}
+
+async function main(): Promise<void> {
+  const s = getSettings();
+  // Плагин @gramio/auto-retry не годится для 429: переотправляет уже потреблённый
+  // payload (→ «there is no audio») без .catch — 429-флуд обрабатывает floodRetry в ChannelSender.
+  // BOT_API_BASE_URL задан → self-hosted Bot API server + long-polling; пусто → облако + webhook
+  const localApi = Boolean(s.BOT_API_BASE_URL);
+  const bot = localApi
+    ? new Bot(s.API_TOKEN, { api: { baseURL: s.BOT_API_BASE_URL } })
+    : new Bot(s.API_TOKEN);
+  const container = new Container();
+  const webhookUrl = s.WEBHOOK_HOST.replace(/\/+$/, "") + s.WEBHOOK_PATH;
+
+  // Резолвим ДО buildMenuDialog: тот зашивает icon-id кнопок при сборке, а
+  // getStickerSet не требует bot.init(). При сбое кнопки остаются на текстовых глифах.
+  await resolveIconSet(bot, s.ICON_SET_NAME);
+
+  // extend ДО registerHandlers: derive ctx.dialog должен стоять раньше хендлеров команд.
+  // Хранилище стека диалогов (кнопки) — Redis (localhost:6379), keyPrefix изолирует ключи.
+  const { plugin: dialogsPlugin, background } = createDialogs([buildMenuDialog(bot, container)], {
+    storage: redisStorage({ keyPrefix: "nowym:dialogs:" }),
+    events: {
+      // DialogEventCtx = CallbackCtx | MessageCtx: answer только на callback-ветке → каст
+      onStale: (ctx) => safeAnswerCb(ctx as never, "это меню устарело — открой заново через /start"),
+    },
+  });
+  bot.extend(dialogsPlugin);
+  container.dialogBackground = background;
+
+  // Реестр «кто писал боту в личку» — источник получателей для /broadcast.
+  // knownChatsDb читаем лениво на каждый вызов: на момент апдейта container.start() уже заполнит поле.
+  bot.use((ctx, next) => {
+    const chatId = (ctx as { chat?: { id?: number; type?: string } }).chat;
+    if (chatId?.type === "private" && typeof chatId.id === "number") {
+      void container.knownChatsDb?.touch(chatId.id).catch((e: unknown) => log.debug(`[known_chats] touch: ${e}`));
+    }
+    return next();
+  });
+
+  registerHandlers(bot, container);
+
+  // Ловит исключения в хендлерах, чтобы throw не ронял обработку апдейта целиком.
+  // + троттленный алерт админу в личку (первый сразу, дальше не чаще 5 мин).
+  const alerter = s.ADMIN_USER_ID
+    ? new AdminAlerter((text) => bot.api.sendMessage({ chat_id: s.ADMIN_USER_ID, text }).then(() => undefined))
+    : null;
+  bot.onError(({ kind, error }) => {
+    const msg = `${kind}: ${error?.message ?? error}`;
+    log.error(`[onError] ${msg}`);
+    alerter?.report(msg);
+  });
+
+  // bot.onError ловит только хендлеры — шальной rejected-промис в фоне иначе валит
+  // процесс без следа. unhandledRejection логируем без exit; uncaughtException
+  // оставляет процесс в неопределённом состоянии — алертим и выходим (pm2 поднимет).
+  process.on("unhandledRejection", (reason) => {
+    const msg = `unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : reason}`;
+    log.error(msg);
+    alerter?.report(msg);
+  });
+  process.on("uncaughtException", (error) => {
+    const msg = `uncaughtException: ${error?.stack ?? error?.message ?? error}`;
+    log.error(msg);
+    alerter?.report(msg);
+    // даём ~1с алерту долететь, затем выходим — pm2 рестартует
+    setTimeout(() => process.exit(1), 1000).unref();
+  });
+
+  await bot.init();
+  await container.start(bot);
+
+  // ── фоновые задачи ──────────────────────────────────────────────────
+  const staleRefresher = new StaleRefresher({
+    cacheDb: container.cacheDb,
+    usersDb: container.usersDb,
+    cacheService: container.cacheService,
+    resolveToken: (uid) => container.resolveToken(uid),
+    getYandexClient: (token, uid) => container.getYandexService(token, uid),
+  });
+  staleRefresher.start();
+
+  const stubCleaner = setInterval(
+    () => {
+      void container.cacheDb
+        .deleteOldStubs(7)
+        .then((n) => {
+          if (n) log.info(`[stub_cleaner] удалено ${n} пустышек`);
+        })
+        .catch((e) => log.error(`[stub_cleaner] ошибка: ${e}`));
+    },
+    24 * 3600 * 1000,
+  );
+  stubCleaner.unref?.();
+
+  // альбомы, упавшие в прошлом запуске — дочитываем в фоне
+  void container.albumService
+    .resumeInflight({
+      resolveToken: (uid) => container.resolveToken(uid),
+      getYandexClient: (token, uid) => container.getYandexService(token, uid),
+    })
+    .catch((e) => log.error(`[album_resume] ${e}`));
+
+  let npWatcher: NowPlayingWatcher | null = null;
+  if (s.OWNER_ID) {
+    npWatcher = new NowPlayingWatcher(container.usersDb, s.OWNER_ID);
+    container.npWatcher = npWatcher; // для inline fast-path
+    npWatcher.start();
+  } else {
+    log.info("[np] OWNER_ID=0, наблюдатель не запущен");
+  }
+
+  // КРИТИЧНО (webhook-режим): без secret_token кто угодно, зная URL, может слать
+  // поддельные апдейты с произвольным from.id (спуфинг, обход admin-гейта). В
+  // long-polling апдейты тянутся с доверенного local-сервера — спуфинг невозможен.
+  if (!localApi && !s.WEBHOOK_SECRET) {
+    log.warning(
+      "[webhook] WEBHOOK_SECRET НЕ ЗАДАН — вебхук принимает любые апдейты без " +
+        "проверки. Возможен спуфинг from.id. Задай WEBHOOK_SECRET в .env.",
+    );
+  }
+
+  await withRetry("register_commands", () => registerCommands(bot));
+  if (localApi) {
+    // long-polling: deleteWebhook снимает облачный вебхук (на случай переезда),
+    // allowedUpdates=all — чтобы inline_query/chosen/callback точно доходили
+    await bot.start({ deleteWebhook: true, allowedUpdates: AllowedUpdatesFilter.all });
+    log.info(`старт ок, long-polling через ${s.BOT_API_BASE_URL}`);
+  } else {
+    await withRetry("set_webhook", async () => {
+      await bot.api.setWebhook({
+        url: webhookUrl,
+        drop_pending_updates: true,
+        ...(s.WEBHOOK_SECRET ? { secret_token: s.WEBHOOK_SECRET } : {}),
+      });
+      log.info(`старт ок, webhook → ${webhookUrl}`);
+    });
+  }
+
+  // ── http(s)-сервер: webhook + /now-playing ──────────────────────────
+  const tgHandler = webhookHandler(bot, "http");
+
+  const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+
+    if (!localApi && req.method === "POST" && url.pathname === s.WEBHOOK_PATH) {
+      if (!secretMatches(req.headers["x-telegram-bot-api-secret-token"] as string | undefined, s.WEBHOOK_SECRET)) {
+        res.writeHead(401).end();
+        return;
+      }
+      void tgHandler(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/now-playing") {
+      handleNowPlaying(req, res, npWatcher, s.NOW_PLAYING_TOKEN);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/health") {
+      void handleHealth(res, container, npWatcher);
+      return;
+    }
+
+    res.writeHead(404).end();
+  };
+
+  const useTls = Boolean(s.WEBHOOK_SSL_CERT && s.WEBHOOK_SSL_KEY);
+  const server = useTls
+    ? createHttpsServer(
+        { cert: readFileSync(s.WEBHOOK_SSL_CERT), key: readFileSync(s.WEBHOOK_SSL_KEY) },
+        requestHandler,
+      )
+    : createHttpServer(requestHandler);
+
+  await new Promise<void>((resolve) => server.listen(s.WEBAPP_PORT, s.WEBAPP_HOST, resolve));
+  log.info(`http слушает ${s.WEBAPP_HOST}:${s.WEBAPP_PORT} (tls=${useTls ? "on" : "off"})`);
+
+  // ── graceful shutdown ───────────────────────────────────────────────
+  const shutdown = async (): Promise<void> => {
+    log.info("остановка...");
+    if (npWatcher) await npWatcher.stop();
+    // трек, уже начатый до stopped-флага, может тянуться до таймаута скачивания
+    // (минимум 10 минут) — не ждём его, чтобы не словить pm2 SIGKILL по kill_timeout.
+    await Promise.race([staleRefresher.stop(), sleep(5000)]).catch((e) =>
+      log.warning(`[stale] stop на shutdown упал: ${e}`),
+    );
+    clearInterval(stubCleaner);
+    if (localApi) {
+      await Promise.race([bot.stop(), sleep(5000)]).catch((e) =>
+        log.warning(`[polling] stop на shutdown упал: ${e}`),
+      );
+    } else {
+      try {
+        await Promise.race([bot.api.deleteWebhook(), sleep(5000)]);
+      } catch (e) {
+        log.warning(`[webhook] delete_webhook на shutdown упал: ${e}`);
+      }
+    }
+    await container.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    log.info("стоп");
+  };
+
+  let stopping = false;
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      if (stopping) return;
+      stopping = true;
+      void shutdown().then(() => process.exit(0));
+    });
+  }
+}
+
+function handleNowPlaying(
+  req: IncomingMessage,
+  res: ServerResponse,
+  watcher: NowPlayingWatcher | null,
+  token: string,
+): void {
+  const sendJson = (status: number, body: unknown): void => {
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+
+  if (!token) {
+    sendJson(401, { error: "disabled" });
+    return;
+  }
+  if (!secretMatches(req.headers.authorization, `Bearer ${token}`)) {
+    sendJson(401, { error: "unauthorized" });
+    return;
+  }
+  if (watcher === null || watcher.current === null) {
+    sendJson(200, { playing: false, recent: watcher?.getRecent() ?? [] });
+    return;
+  }
+  const snap = watcher.getCurrentSnapshot();
+  const progress_ms = snap?.progress_ms ?? null;
+  const duration_ms = snap?.duration_ms ?? null;
+  sendJson(200, {
+    ...watcher.current,
+    paused: snap?.paused ?? null,
+    progress_ms,
+    duration_ms,
+    remaining_ms: progress_ms !== null && duration_ms !== null ? Math.max(duration_ms - progress_ms, 0) : null,
+    recent: watcher.getRecent(),
+  });
+}
+
+/** /health — без авторизации, без чувствительных данных. 200=ok, 503=БД лежит.
+ * Удобно вешать на uptime-монитор: alert по любому не-200. */
+async function handleHealth(
+  res: ServerResponse,
+  container: Container,
+  watcher: NowPlayingWatcher | null,
+): Promise<void> {
+  const [usersOk, cacheOk] = await Promise.all([
+    Promise.race([usersPool.ping(), sleep(3000).then(() => false)]),
+    Promise.race([cachePool.ping(), sleep(3000).then(() => false)]),
+  ]);
+  const dbOk = usersOk && cacheOk;
+
+  const body = {
+    status: dbOk ? "ok" : "degraded",
+    uptime_s: Math.round(process.uptime()),
+    rss_mb: Math.round(process.memoryUsage().rss / 1048576),
+    db: {
+      users: { up: usersOk, ...usersPool.stats() },
+      cache: { up: cacheOk, ...cachePool.stats() },
+    },
+    watcher: watcher ? watcher.health() : { running: false, connected: false, lastStateAgeMs: null, hasTrack: false },
+    caches: {
+      track: container.trackCache.size,
+      avatar: container.avatarCache.size,
+      settings: container.userSettingsCache.size,
+      inline_owners: container.inlineOwners.size,
+    },
+  };
+  res.writeHead(dbOk ? 200 : 503, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+main().catch((e) => {
+  log.error(`фатальная ошибка: ${e}`);
+  process.exit(1);
+});

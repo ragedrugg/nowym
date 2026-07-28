@@ -1,0 +1,53 @@
+# Секреты — НИКОГДА в репо
+.env
+.env.local
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code / агентский тулинг — состояние, индексы, локальные конфиги
+.claude/
+.omc/
+.codegraph/
+.cursor/
+.serena/
+.agents/
+.mcp.json
+skills-lock.json
+llms-full.txt
+.predump-*.txt
+*.log
+/tmp/
+
+# Тестовые/референсные изображения в корне репо (не код)
+/IMG_*.jpg
+/IMG_*.png
+/*.jpg
+/*.png
+!assets/**/*.png
+!assets/**/*.jpg
