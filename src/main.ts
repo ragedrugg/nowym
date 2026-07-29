@@ -204,6 +204,11 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/now-playing/stream") {
+      handleNowPlayingStream(req, res, npWatcher, s.NOW_PLAYING_TOKEN);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/health") {
       void handleHealth(res, container, npWatcher);
       return;
@@ -259,39 +264,75 @@ async function main(): Promise<void> {
   }
 }
 
-function handleNowPlaying(
-  req: IncomingMessage,
-  res: ServerResponse,
-  watcher: NowPlayingWatcher | null,
-  token: string,
-): void {
-  const sendJson = (status: number, body: unknown): void => {
-    res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
-  };
-
-  if (!token) {
-    sendJson(401, { error: "disabled" });
-    return;
-  }
-  if (!secretMatches(req.headers.authorization, `Bearer ${token}`)) {
-    sendJson(401, { error: "unauthorized" });
-    return;
-  }
+function buildNowPlayingPayload(watcher: NowPlayingWatcher | null): unknown {
   if (watcher === null || watcher.current === null) {
-    sendJson(200, { playing: false, recent: watcher?.getRecent() ?? [] });
-    return;
+    return { playing: false, recent: watcher?.getRecent() ?? [] };
   }
   const snap = watcher.getCurrentSnapshot();
   const progress_ms = snap?.progress_ms ?? null;
   const duration_ms = snap?.duration_ms ?? null;
-  sendJson(200, {
+  return {
     ...watcher.current,
     paused: snap?.paused ?? null,
     progress_ms,
     duration_ms,
     remaining_ms: progress_ms !== null && duration_ms !== null ? Math.max(duration_ms - progress_ms, 0) : null,
     recent: watcher.getRecent(),
+  };
+}
+
+function checkNowPlayingAuth(req: IncomingMessage, res: ServerResponse, token: string): boolean {
+  if (!token) {
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "disabled" }));
+    return false;
+  }
+  if (!secretMatches(req.headers.authorization, `Bearer ${token}`)) {
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "unauthorized" }));
+    return false;
+  }
+  return true;
+}
+
+function handleNowPlaying(
+  req: IncomingMessage,
+  res: ServerResponse,
+  watcher: NowPlayingWatcher | null,
+  token: string,
+): void {
+  if (!checkNowPlayingAuth(req, res, token)) return;
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(buildNowPlayingPayload(watcher)));
+}
+
+// heartbeat покрывает paused-дрейф (не событийный) и держит соединение живым
+// через прокси/CDN, которые рвут простаивающие стримы.
+const NOW_PLAYING_STREAM_HEARTBEAT_MS = 10_000;
+
+function handleNowPlayingStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  watcher: NowPlayingWatcher | null,
+  token: string,
+): void {
+  if (!checkNowPlayingAuth(req, res, token)) return;
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const send = (): void => {
+    res.write(`data: ${JSON.stringify(buildNowPlayingPayload(watcher))}\n\n`);
+  };
+  send();
+
+  watcher?.on("change", send);
+  const heartbeat = setInterval(send, NOW_PLAYING_STREAM_HEARTBEAT_MS);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    watcher?.off("change", send);
   });
 }
 
