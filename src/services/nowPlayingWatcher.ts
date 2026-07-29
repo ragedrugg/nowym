@@ -5,6 +5,7 @@
  * go-away, стабильный deviceId, stale-детект и pull-снимок живут в либе. Здесь —
  * только специфика бота: токен владельца из БД (на смену токена пересоздаём
  * клиент) и резолв playable_id → Track. */
+import { EventEmitter } from "node:events";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 import { withTimeout, createInterruptibleSleep } from "../infra/async.ts";
@@ -49,7 +50,8 @@ interface NowPlayingTrack {
   cover: string;
 }
 
-export class NowPlayingWatcher {
+/** эмитит "change" при каждой смене this.current (для SSE /now-playing/stream). */
+export class NowPlayingWatcher extends EventEmitter {
   // публичный — inline fast-path сверяет watcher.ownerId === user.id.
   readonly ownerId: number;
   // JSON-safe snapshot для /now-playing.
@@ -76,6 +78,7 @@ export class NowPlayingWatcher {
   private readonly deviceId = generateDeviceId();
 
   constructor(usersDb: UsersDb, ownerId: number) {
+    super();
     this.usersDb = usersDb;
     this.ownerId = ownerId;
   }
@@ -159,6 +162,7 @@ export class NowPlayingWatcher {
   private updateCurrent(track: LibTrack | null): void {
     if (track === null) {
       this.current = null;
+      this.emit("change");
       return;
     }
     const t = track as unknown as YaTrack;
@@ -179,6 +183,7 @@ export class NowPlayingWatcher {
       if (this.recentHistory.length > RECENT_HISTORY_MAX) this.recentHistory.length = RECENT_HISTORY_MAX;
     }
     this.current = next;
+    this.emit("change");
   }
 
   /** последние сыгранные треки, новый первым, без текущего. */
@@ -269,6 +274,7 @@ export class NowPlayingWatcher {
         this.rt = null;
         this.connected = false;
         this.current = null;
+        this.emit("change");
       }
     }
   }
