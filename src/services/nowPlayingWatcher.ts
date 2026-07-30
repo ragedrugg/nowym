@@ -179,6 +179,10 @@ export class NowPlayingWatcher extends EventEmitter {
       cover: t.coverUri ? normalizeCoverUrl(t.coverUri, "orig") : "",
     };
     if (this.current && this.current.id !== next.id) {
+      // realtime иногда флапает trackChange туда-обратно между теми же двумя
+      // id (заметно на паузе/резюме) — без дедупа тот же id всплывает в
+      // истории несколько раз, а дублирующиеся id ломают keyed-рендер на сайте.
+      this.recentHistory = this.recentHistory.filter((t) => t.id !== this.current!.id);
       this.recentHistory.unshift(this.current);
       if (this.recentHistory.length > RECENT_HISTORY_MAX) this.recentHistory.length = RECENT_HISTORY_MAX;
     }
