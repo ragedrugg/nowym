@@ -307,6 +307,11 @@ function handleNowPlaying(
 // heartbeat покрывает paused-дрейф (не событийный) и держит соединение живым
 // через прокси/CDN, которые рвут простаивающие стримы.
 const NOW_PLAYING_STREAM_HEARTBEAT_MS = 10_000;
+// у каждого SSE-клиента свой аплинк до этого процесса (через Worker-прокси
+// сайта) — без потолка шквал соединений грузит тот же процесс, что держит
+// бота. Легитимных одновременных зрителей у личного сайта в разы меньше.
+const NOW_PLAYING_STREAM_MAX_CONNECTIONS = 20;
+let nowPlayingStreamConnections = 0;
 
 function handleNowPlayingStream(
   req: IncomingMessage,
@@ -315,6 +320,12 @@ function handleNowPlayingStream(
   token: string,
 ): void {
   if (!checkNowPlayingAuth(req, res, token)) return;
+
+  if (nowPlayingStreamConnections >= NOW_PLAYING_STREAM_MAX_CONNECTIONS) {
+    res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "too_many_streams" }));
+    return;
+  }
+  nowPlayingStreamConnections++;
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -333,6 +344,7 @@ function handleNowPlayingStream(
   req.on("close", () => {
     clearInterval(heartbeat);
     watcher?.off("change", send);
+    nowPlayingStreamConnections--;
   });
 }
 
