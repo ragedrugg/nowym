@@ -82,13 +82,13 @@ async function resolveCacheEntry(
 }
 
 /** null, если result_id не сводится к числовому trackId. */
-function parseTrackResultId(resultId: string): string | null {
+export function parseTrackResultId(resultId: string): string | null {
   const id = resultId.startsWith("tm:") ? resultId.slice(3) : resultId;
   return /^\d+$/.test(id) ? id : null;
 }
 
 /** InputMediaAudio для editMessageMedia + reply_markup под выбранный layout. */
-function buildChosenEditPayload(args: {
+export function buildChosenEditPayload(args: {
   trackId: string;
   fileId: string;
   codec: string | null;
