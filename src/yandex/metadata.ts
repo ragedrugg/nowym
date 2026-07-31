@@ -150,6 +150,7 @@ export function albumTypeRu(
 const ALBUM_TYPE_EMOJI: Record<string, string> = {
   podcast: "🎙️",
   audiobook: "🎧",
+  playlist: "🎵",
 };
 
 /** эмодзи-маркер релиза для заголовков выгрузки: подкаст/аудиокнига получают

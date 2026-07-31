@@ -11,7 +11,7 @@ const log = getLogger("bot.albums");
 
 const ALBUM_URL_RE = /music\.yandex(?:\.ru)?\/album\/(\d+)/;
 
-function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormattableString {
+export function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormattableString {
   const head = format`${albumEmoji(albumType)} ${bold(`${artist} — ${title}`)}`;
   return metaLine ? format`${head}\n${metaLine}` : head;
 }
