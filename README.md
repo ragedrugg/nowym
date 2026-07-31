@@ -248,7 +248,11 @@ pm2 logs nowym-ts
 
 `nowym_users` хранит зашифрованные OAuth-токены — потеря базы означает,
 что все переавторизуются заново. `scripts/backup.sh` дампит обе базы
-(`pg_dump -Fc`) и подчищает дампы старше 14 дней (`NOWYM_BACKUP_KEEP_DAYS`).
+(`pg_dump -Fc`), подчищает дампы старше 14 дней (`NOWYM_BACKUP_KEEP_DAYS`)
+и шлёт оба файла `ADMIN_USER_ID` в личку (`TELEGRAM_BOT_TOKEN`/
+`BOT_API_BASE_URL` из `.env`; на self-hosted Bot API сервере лимит на файл
+2ГБ, не 50МБ как в облаке). Отправка best-effort — сбой Telegram не роняет
+сам бэкап, дампы уже на диске.
 
 ```bash
 ./scripts/backup.sh                                    # разово, в /var/backups/nowym
