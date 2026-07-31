@@ -192,3 +192,5 @@ echo "     и /setinlinefeedback → 100% (обязательно — иначе
 echo "  2. добить .env, если что-то осталось пустым (см. предупреждения выше)"
 echo "  3. решить, как бот будет получать апдейты — BOT_API_BASE_URL или WEBHOOK_HOST (см. README)"
 echo "  4. npm run start   — или pm2 start ecosystem.config.cjs для прода"
+echo "  5. бэкапы БД (не обязательно, но советую) — раз в crontab -e:"
+echo "     0 4 * * * $SCRIPT_DIR/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1"
