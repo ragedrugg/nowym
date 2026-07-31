@@ -244,6 +244,21 @@ pm2 save          # чтобы пережило ребут (после pm2 start
 pm2 logs nowym-ts
 ```
 
+### Бэкапы
+
+`nowym_users` хранит зашифрованные OAuth-токены — потеря базы означает,
+что все переавторизуются заново. `scripts/backup.sh` дампит обе базы
+(`pg_dump -Fc`) и подчищает дампы старше 14 дней (`NOWYM_BACKUP_KEEP_DAYS`).
+
+```bash
+./scripts/backup.sh                                    # разово, в /var/backups/nowym
+crontab -e                                              # раз в сутки:
+# 0 4 * * * /path/to/nowym/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1
+
+# восстановление:
+sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowym/nowym_users-*.dump
+```
+
 ## Структура
 
 | Путь | Назначение |
@@ -258,6 +273,7 @@ pm2 logs nowym-ts
 | `test/` | `node:test`, ~123 штуки |
 | `install.sh` | установка в одну команду (см. выше) |
 | `docs/sql/init.sql` | создание Postgres-ролей и баз |
+| `scripts/backup.sh` | pg_dump обеих баз + ротация, крон-скрипт |
 
 ## Если что-то сломалось
 
