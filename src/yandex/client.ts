@@ -580,10 +580,77 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     };
   }
 
+  /** плейлист как AlbumData (переиспользует всю инфру AlbumService: chunked
+   *  download/send/retry/resume) — owner из URL, kind = id плейлиста внутри owner. */
+  async getPlaylist(owner: string, kind: number): Promise<AlbumData | null> {
+    const playlist = await this.withLib(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
+      return (await lib.usersPlaylists(kind, owner)) as unknown as {
+        title?: string;
+        cover?: { uri?: string };
+        tracks?: Array<{ id?: string | number; track?: YaTrack }>;
+      } | null;
+    });
+    if (!playlist) return null;
+
+    const shorts = playlist.tracks ?? [];
+    const byId = new Map<string, YaTrack>();
+    const idsToFetch: (string | number)[] = [];
+    for (const s of shorts) {
+      if (s.track) byId.set(String(s.id), s.track);
+      else if (s.id !== undefined) idsToFetch.push(s.id);
+    }
+
+    if (idsToFetch.length > 0) {
+      // POST с телом (не query) — id одним запросом, без постраничного чанкинга.
+      // ponytail: для плейлистов в тысячи треков стоит бить на пачки, если
+      // вообще станет проблемой — для личной библиотеки это не размер.
+      const fetched = await this.withLib(`getPlaylist tracks(${idsToFetch.length})`, [] as YaTrack[], async (lib) => {
+        return (await lib.tracks(idsToFetch)) as unknown as YaTrack[];
+      });
+      for (const t of fetched) if (t?.id !== undefined) byId.set(String(t.id), t);
+    }
+
+    const orderedTracks: YaTrack[] = [];
+    for (const s of shorts) {
+      const t = s.id !== undefined ? byId.get(String(s.id)) : undefined;
+      if (t) orderedTracks.push(t);
+    }
+
+    return buildPlaylistAlbumData(kind, playlist.title || "", playlist.cover?.uri || "", orderedTracks);
+  }
+
   async close(): Promise<void> {
     this.lib = null;
     this.ynison = null;
   }
+}
+
+/** треки плейлиста → AlbumData (переиспользует карточку/выгрузку альбома).
+ *  Чистая функция — сеть уже отработала, тут только форма и фильтр available. */
+export function buildPlaylistAlbumData(
+  kind: number,
+  title: string,
+  coverUri: string,
+  tracks: YaTrack[],
+): AlbumData | null {
+  const available = tracks.filter((t) => t && t.available);
+  if (available.length === 0) return null;
+  available.forEach((t, i) => {
+    t._trackNumber = i + 1;
+    t._discNumber = 1;
+  });
+  return {
+    id: kind,
+    title,
+    artist: "Плейлист",
+    year: "",
+    label: "",
+    cover_url: coverUri ? normalizeCoverUrl(coverUri, "orig") : "",
+    genre: "",
+    album_type: "playlist",
+    tracks: available,
+    volumes: [available],
+  };
 }
 
 export class YandexClientFactory {
