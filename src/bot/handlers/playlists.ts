@@ -8,7 +8,10 @@ import { albumHeader } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
 
-const PLAYLIST_URL_RE = /music\.yandex(?:\.ru)?\/users\/([^/\s]+)\/playlists\/(\d+)/;
+// owner — логин/uid Яндекса, реальный чарсет [A-Za-z0-9._-]; более широкий
+// класс ([^/\s]+) пропускал бы ?/#/пробелоподобное внутрь URL, который
+// собирается конкатенацией в lib.usersPlaylists() (client.ts.getPlaylist).
+const PLAYLIST_URL_RE = /music\.yandex(?:\.ru)?\/users\/([\w.-]+)\/playlists\/(\d+)/;
 
 /** зовут из бросания ссылки на плейлист боту в личку. */
 export async function startPlaylistUpload(
