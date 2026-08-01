@@ -804,6 +804,14 @@ async function onChosenResult(
     return;
   }
 
+  // тот же лимитер, что у /np и альбомов — без него chosen_inline_result был
+  // единственным путём выгрузки трека без рейт-лимита на скачивание вообще.
+  const [allowed, retryAfter] = container.downloadLimiter.check(userId);
+  if (!allowed) {
+    await safeSetReplyMarkup(bot, inlineMsgId, progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`));
+    return;
+  }
+
   const token = await container.resolveToken(userId);
   if (!token) return;
 
