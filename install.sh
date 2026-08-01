@@ -74,6 +74,7 @@ else
   ENV_IS_NEW=1
   ok "скопировал .env.example → .env"
 fi
+chmod 600 "$ENV_FILE"
 
 set_env() {
   # set_env KEY VALUE — только если сейчас KEY= пусто (не трогаем то, что уже заполнено)
