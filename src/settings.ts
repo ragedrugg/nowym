@@ -1,6 +1,9 @@
 import { config as loadDotenv } from "dotenv";
 
-loadDotenv();
+// pm2/ecosystem.config.cjs уже грузит .env через node --env-file — тут только
+// фолбэк на прямой запуск (npm run start без pm2). quiet — dotenv 17 иначе
+// печатает баннер в лог при каждом рестарте.
+loadDotenv({ quiet: true });
 
 function envInt(name: string, def: string): number {
   return parseInt(process.env[name] ?? def, 10);

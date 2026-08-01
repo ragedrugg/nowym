@@ -16,24 +16,24 @@
   },
   "dependencies": {
     "@dvxch/yandex-music": "^0.2.6",
-    "@gramio/dialogs": "^0.2.0",
+    "@gramio/dialogs": "^0.3.1",
     "@gramio/storage-redis": "^1.0.5",
-    "@napi-rs/canvas": "^0.1.65",
-    "dotenv": "^16.4.7",
+    "@napi-rs/canvas": "^1.0.3",
+    "dotenv": "^17.4.2",
     "gramio": "^0.12.0",
-    "ioredis": "^5.11.1",
-    "node-html-parser": "^7.1.0",
-    "node-wreq": "^2.4.1",
+    "ioredis": "^6.0.0",
+    "node-html-parser": "^9.0.1",
+    "node-wreq": "^3.0.0",
     "pg": "^8.13.1",
     "taglib-wasm": "^1.4.3",
-    "undici": "^7.2.0",
+    "undici": "^8.9.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.5",
-    "@types/pg": "^8.11.10",
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^7.0.2"
   }
 }
