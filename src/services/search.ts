@@ -50,6 +50,10 @@ export class SearchService {
     private resultsCache: TTLCache<InlineResult[]>,
     private cacheService: CacheService | null,
     private botUsername: string | null,
+    // resultsCache — container.trackCache, общий на всех пользователей (SearchService
+    // хоть и per-user, кэш инжектится один и тот же). "недавнее" — приватная история
+    // прослушиваний, без соли userId юзер B словил бы кэш юзера A по тому же ключу.
+    private userId: number | null = null,
   ) {}
 
   cacheTrackObject(track: YaTrack): void {
@@ -313,7 +317,7 @@ export class SearchService {
     const pool = await this.getRecentPool();
     const slice = pool.slice(within, within + pageSize);
 
-    const cacheKey = `recent:${layout}:${sendMode}:${within}:${pageSize}`;
+    const cacheKey = `recent:${this.userId ?? "anon"}:${layout}:${sendMode}:${within}:${pageSize}`;
     let results = this.resultsCache.get(cacheKey);
     if (!results) {
       results = slice.length > 0 ? await this.createTrackResultsParallel(slice, layout, sendMode, signal) : [];

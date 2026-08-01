@@ -5,6 +5,14 @@ import { TTLCache } from "../src/infra/memoryCache.ts";
 import type { YandexClient } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 import type { InlineResult } from "../src/services/search.ts";
+import type { CacheService } from "../src/services/cache.ts";
+
+// всегда "уже закэшировано" → allAlreadyCached()=true → resultsCache реально
+// пишется (без этого cacheService=null в mkService по умолчанию — тест
+// утечки между пользователями иначе тестировал бы пустое место).
+const fakeCacheService = {
+  cacheDb: { get: async () => ({ is_cached: true }) },
+} as unknown as CacheService;
 
 function mkTrack(id: number): YaTrack {
   return { id, title: `track ${id}` };
@@ -12,10 +20,13 @@ function mkTrack(id: number): YaTrack {
 
 /** SearchService без сети: cacheService=null → createInlineResultFromTrack идёт
  * по text_media-пути (только строит InlineQueryResult.article, без I/O). */
-function mkService(fake: Partial<YandexClient>): SearchService {
-  const resultsCache = new TTLCache<InlineResult[]>(100, 300, 60);
-  const service = new SearchService(fake as unknown as YandexClient, resultsCache, null, "nowymbot");
-  return service;
+function mkService(
+  fake: Partial<YandexClient>,
+  userId: number | null = null,
+  resultsCache: TTLCache<InlineResult[]> = new TTLCache<InlineResult[]>(100, 300, 60),
+  cacheService: CacheService | null = null,
+): SearchService {
+  return new SearchService(fake as unknown as YandexClient, resultsCache, cacheService, "nowymbot", userId);
 }
 
 test("recentResultsPaged — листает пул страницами, nextOffset двигается", async () => {
@@ -95,4 +106,25 @@ test("searchTracksPaged — переход внутри страницы, зат
   const e = await service.searchTracksPaged("q", "2:0", pageSize, "button", "text_media");
   assert.equal(e.results.length, 2);
   assert.equal(e.nextOffset, "");
+});
+
+test("recentResultsPaged — resultsCache общий на всех (как container.trackCache), но кэш не течёт между пользователями", async () => {
+  // тот же TTLCache-инстанс, что и в container.ts — там resultsCache = единый
+  // container.trackCache для ЛЮБОГО SearchService, независимо от userId.
+  const sharedCache = new TTLCache<InlineResult[]>(100, 300, 60);
+
+  const poolA = [mkTrack(100), mkTrack(101), mkTrack(102)];
+  const poolB = [mkTrack(200), mkTrack(201), mkTrack(202)];
+  const serviceA = mkService({ getRecentTracks: async () => poolA }, 1, sharedCache, fakeCacheService);
+  const serviceB = mkService({ getRecentTracks: async () => poolB }, 2, sharedCache, fakeCacheService);
+
+  // одинаковые layout/sendMode/offset/pageSize — ровно та ситуация (дефолтные
+  // настройки), где ключ без соли userId у обоих совпал бы.
+  const a = await serviceA.recentResultsPaged("0", 3, "button", "text_media");
+  const b = await serviceB.recentResultsPaged("0", 3, "button", "text_media");
+
+  const idsA = a.results.map((r) => (r as { id: string }).id);
+  const idsB = b.results.map((r) => (r as { id: string }).id);
+  assert.deepEqual(idsA, ["100", "101", "102"]);
+  assert.deepEqual(idsB, ["200", "201", "202"], "юзер B не должен получить недавнее юзера A из общего кэша");
 });
