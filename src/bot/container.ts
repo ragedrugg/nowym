@@ -182,14 +182,14 @@ export class Container {
   async getTrackService(token: string, userId?: number): Promise<SearchService> {
     if (userId === undefined) {
       const yandex = await this.getYandexService(token);
-      return new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername);
+      return new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername, null);
     }
     const key = String(userId);
     const cached = this.searchServices.get(key);
     if (cached !== null) return cached;
 
     const yandex = await this.getYandexService(token, userId);
-    const svc = new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername);
+    const svc = new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername, userId);
     this.searchServices.set(key, svc);
     return svc;
   }
