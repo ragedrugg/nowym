@@ -21,7 +21,7 @@
     "@napi-rs/canvas": "^1.0.3",
     "dotenv": "^17.4.2",
     "gramio": "^0.12.0",
-    "ioredis": "^6.0.0",
+    "ioredis": "^5.11.1",
     "node-html-parser": "^9.0.1",
     "node-wreq": "^3.0.0",
     "pg": "^8.13.1",
