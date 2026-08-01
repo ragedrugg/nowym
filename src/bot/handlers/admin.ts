@@ -14,7 +14,7 @@ const log = getLogger("bot.admin");
 const TG_API = "https://api.telegram.org/";
 const YM_API = "https://api.music.yandex.net/";
 
-function isAdmin(userId: number): boolean {
+export function isAdmin(userId: number): boolean {
   const adminId = getSettings().ADMIN_USER_ID;
   // fail-closed: без ADMIN_USER_ID админ-команды не работают ни для кого,
   // иначе любой юзер в личке вытянет operational-метрики через /health.
