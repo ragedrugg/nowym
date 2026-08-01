@@ -50,7 +50,7 @@ export function isCardResultId(resultId: string): boolean {
 }
 
 /** artist/title/обложки(две размерности)/handle — общий набор для обоих билдеров карточек. */
-function trackCardBasics(
+export function trackCardBasics(
   track: YaTrack,
   user: { username?: string | null; firstName?: string | null },
 ): { artist: string; title: string; coverUrl: string; thumb: string; senderHandle: string } {
@@ -160,20 +160,20 @@ export function buildLyricsCardResult(
 }
 
 /** короткий детерминированный хэш фразы — чтобы result_id различался по цитате. */
-function hashPhrase(s: string): number {
+export function hashPhrase(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
   return h;
 }
 
-function cardCaption(trackId: number | string, artist: string, title: string): FormattableString {
+export function cardCaption(trackId: number | string, artist: string, title: string): FormattableString {
   const a = (artist || "").trim();
   const t = (title || "").trim();
   const head = a ? `🎵 ${a} — ${t}` : `🎵 ${t}`;
   return format`${head}, ${link("в плеере", trackUrl(trackId))}`;
 }
 
-function cardMediaAndMarkup(args: {
+export function cardMediaAndMarkup(args: {
   fileId: string;
   trackId: number | string;
   artist: string;
