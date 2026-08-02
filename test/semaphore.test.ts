@@ -41,3 +41,25 @@ test("Semaphore: лишний release без парного acquire не про�
   s.release();
   assert.equal(await settled(third), true);
 });
+
+test("Semaphore: двойной release() подряд, пока есть живой ожидающий, не создаёт фантомный permit", async () => {
+  const s = new Semaphore(1);
+  await s.acquire(); // A держит единственный permit
+
+  const b = s.acquire();
+  assert.equal(await settled(b), false, "B обязан блокироваться — свободных permits нет");
+
+  // реалистичный баг вызывающего кода: release() дважды подряд синхронно
+  // (напр. и в finally, и явно раньше). Второй — лишний, без парного acquire.
+  s.release(); // легитимный release A — должен уйти напрямую B
+  s.release(); // лишний — outstanding в этот момент ещё не увеличен B (микротаска не успела)
+
+  assert.equal(await settled(b), true, "B должен был получить permit");
+
+  // если бы лишний release создал фантомный permit, C прошёл бы сразу же
+  const c = s.acquire();
+  assert.equal(await settled(c), false, "потолок 1 не должен был вырасти — C обязан ждать");
+
+  s.release(); // теперь настоящий release B
+  assert.equal(await settled(c), true);
+});

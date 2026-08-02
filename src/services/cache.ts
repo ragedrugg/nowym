@@ -231,7 +231,7 @@ export class CacheService {
     // uploadEmptyTrack всегда кладёт пустышку в tier 'lossy' независимо от того,
     // в каком tier'е закончится реальная заливка — при апгрейде lossless-трека
     // ищем пустышку не в 'lossless', а там, где она реально лежит.
-    const stubTier = quality === "lossy" ? quality : "lossy";
+    const stubTier = "lossy";
     const crossTier = stubTier !== quality;
     if (isCached) {
       const old = await this.cache.get(trackId, stubTier);
@@ -392,8 +392,19 @@ export class CacheService {
   /** параллельные попытки со staggered стартом, первая успешная — победитель.
    * CDN яндекса часто виснет на одном узле но отвечает с другого. staggerMs
    * снижен вслед за AUDIO_CONNECT_TIMEOUT (см. http.ts) — при зависшем узле
-   * бэкап должен стартовать заметно раньше его 4с таймаута, не после него. */
-  private async racingDownload(getUrl: UrlGetter, maxAttempts = 3, staggerMs = 2_500): Promise<Buffer | null> {
+   * бэкап должен стартовать заметно раньше его 4с таймаута, не после него.
+   *
+   * overallTimeoutMs — страховка внутри самой функции, а не только у
+   * вызывающих (downloadAndCacheTrack/prepareTrackPayload уже оборачивают
+   * снаружи withTimeout, но будущий вызывающий может забыть). downloadAudio
+   * сам ограничен connect/headers/body-таймаутами (http.ts), так что на
+   * практике это не должно срабатывать — просто structural safety net. */
+  private async racingDownload(
+    getUrl: UrlGetter,
+    maxAttempts = 3,
+    staggerMs = 2_500,
+    overallTimeoutMs = 90_000,
+  ): Promise<Buffer | null> {
     let resolved = false;
     let winner: Buffer | null = null;
     let failedCount = 0;
@@ -440,7 +451,17 @@ export class CacheService {
         if (raced === "done") break;
       }
     }
-    if (!resolved) await done;
+    if (!resolved) {
+      // withTimeout, а не голая Promise.race(done, sleep(...)) — race не чистит
+      // таймер проигравшей ветки: заведённый bare sleep(90с) висел бы полные
+      // 90с даже после победы done, держа event loop живым просто так.
+      try {
+        await withTimeout(done, overallTimeoutMs, "racing-overall-timeout");
+      } catch {
+        log.warning(`[racing] общий таймаут ${overallTimeoutMs}мс — ни одна попытка не ответила`);
+        finish();
+      }
+    }
     for (const c of controllers) c.abort();
     await Promise.allSettled(tasks);
     return winner;
