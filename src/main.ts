@@ -158,6 +158,9 @@ async function main(): Promise<void> {
   let npWatcher: NowPlayingWatcher | null = null;
   if (s.OWNER_ID) {
     npWatcher = new NowPlayingWatcher(container.usersDb, s.OWNER_ID);
+    // по слушателю "change" на каждое SSE-соединение — иначе с 11-го летит
+    // MaxListenersExceededWarning (дефолт EventEmitter — 10)
+    npWatcher.setMaxListeners(NOW_PLAYING_STREAM_MAX_CONNECTIONS + 5);
     container.npWatcher = npWatcher; // для inline fast-path
     npWatcher.start();
   } else {
@@ -365,10 +368,13 @@ async function handleHealth(
   container: Container,
   watcher: NowPlayingWatcher | null,
 ): Promise<void> {
+  // abort гасит таймеры сразу после гонки — /health дёргает монитор раз в минуту вечно
+  const ac = new AbortController();
   const [usersOk, cacheOk] = await Promise.all([
-    Promise.race([usersPool.ping(), sleep(3000).then(() => false)]),
-    Promise.race([cachePool.ping(), sleep(3000).then(() => false)]),
+    Promise.race([usersPool.ping(), sleep(3000, ac.signal).then(() => false)]),
+    Promise.race([cachePool.ping(), sleep(3000, ac.signal).then(() => false)]),
   ]);
+  ac.abort();
   const dbOk = usersOk && cacheOk;
 
   const body = {

@@ -268,9 +268,11 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
     let ids: Set<string>;
     try {
-      const lib = await this.getLib();
-      const library = await lib.usersLikesTracks();
-      ids = new Set((library?.tracks ?? []).map((t) => bareTrackId(t.id)));
+      ids = await this.withRetry(async () => {
+        const lib = await this.getLib();
+        const library = await lib.usersLikesTracks();
+        return new Set((library?.tracks ?? []).map((t) => bareTrackId(t.id)));
+      });
     } catch (e) {
       log.debug(`usersLikesTracks: ${e}`);
       return this.likesCache ?? new Set();
@@ -288,8 +290,10 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   /** ставит/снимает лайк; синхронит локальный likesCache (без лишнего фетча). */
   async setTrackLiked(trackId: number | string, liked: boolean): Promise<boolean> {
     const id = bareTrackId(trackId);
-    const lib = await this.getLib();
-    const ok = liked ? await lib.usersLikesTracksAdd(id) : await lib.usersLikesTracksRemove(id);
+    const ok = await this.withRetry(async () => {
+      const lib = await this.getLib();
+      return liked ? await lib.usersLikesTracksAdd(id) : await lib.usersLikesTracksRemove(id);
+    });
     if (ok && this.likesCache !== null) {
       if (liked) this.likesCache.add(id);
       else this.likesCache.delete(id);
@@ -309,8 +313,10 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
     if (ids.length === 0) return [];
     try {
-      const lib = await this.getLib();
-      return (await lib.tracks(ids)) as unknown as YaTrack[];
+      return await this.withRetry(async () => {
+        const lib = await this.getLib();
+        return (await lib.tracks(ids)) as unknown as YaTrack[];
+      });
     } catch (e) {
       log.warning(`[recent] резолв треков: ${e}`);
       return [];
@@ -421,12 +427,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     let text: string | null = null;
     let apiOk = false;
     try {
-      const lib = await this.getLib();
-      const lyrics = await withTimeout(lib.tracksLyrics(key), 5_000, "lyrics");
-      apiOk = true;
-      if (lyrics) {
-        text = await withTimeout(lyrics.fetchLyrics(), 5_000, "lyrics-fetch");
-      }
+      text = await this.withRetry(async () => {
+        const lib = await this.getLib();
+        const lyrics = await withTimeout(lib.tracksLyrics(key), 5_000, "lyrics");
+        apiOk = true;
+        return lyrics ? await withTimeout(lyrics.fetchLyrics(), 5_000, "lyrics-fetch") : null;
+      });
     } catch (e) {
       // NotFoundError = у трека нет текста (валидный ответ) → кэшируем null
       if (e instanceof LibNotFoundError) apiOk = true;
@@ -487,13 +493,15 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   /** вариант загрузки по качеству (best — макс. битрейт, economy — ≤192). */
   async getBestDownloadInfo(track: YaTrack, quality: AudioQuality = "best"): Promise<DownloadInfo | null> {
     try {
-      const lib = await this.getLib();
-      const infos = (await lib.tracksDownloadInfo(track.id!)) as unknown as DownloadInfo[];
-      const chosen = selectDownloadInfo(infos, quality);
-      if (chosen === null) return null;
-      log.debug(`DownloadInfo для ${track.id} (${quality}): ${chosen.codec} ${chosen.bitrateInKbps}kbps`);
-      // chosen — библиотечная модель (несёт getDirectLink) под структурным типом
-      return chosen;
+      return await this.withRetry(async () => {
+        const lib = await this.getLib();
+        const infos = (await lib.tracksDownloadInfo(track.id!)) as unknown as DownloadInfo[];
+        const chosen = selectDownloadInfo(infos, quality);
+        if (chosen === null) return null;
+        log.debug(`DownloadInfo для ${track.id} (${quality}): ${chosen.codec} ${chosen.bitrateInKbps}kbps`);
+        // chosen — библиотечная модель (несёт getDirectLink) под структурным типом
+        return chosen;
+      });
     } catch (e) {
       log.error(`ошибка getBestDownloadInfo(${track.id}): ${e}`);
       return null;
@@ -505,13 +513,15 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
    * дал ссылок или трек недоступен. */
   async getLosslessDownload(track: YaTrack): Promise<LibLosslessDownloadInfo | null> {
     try {
-      const lib = await this.getLib();
-      const info = await lib.tracksLosslessInfo(track.id!, "lossless");
-      if (!info || info.links().length === 0) return null;
-      log.info(
-        `get-file-info ${track.id}: ${info.codec} ${info.bitrate}kbps enc=${Boolean(info.key)} urls=${info.links().length}`,
-      );
-      return info;
+      return await this.withRetry(async () => {
+        const lib = await this.getLib();
+        const info = await lib.tracksLosslessInfo(track.id!, "lossless");
+        if (!info || info.links().length === 0) return null;
+        log.info(
+          `get-file-info ${track.id}: ${info.codec} ${info.bitrate}kbps enc=${Boolean(info.key)} urls=${info.links().length}`,
+        );
+        return info;
+      });
     } catch (e) {
       log.error(`ошибка getLosslessDownload(${track.id}): ${e}`);
       return null;
@@ -527,9 +537,11 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   /** свежая прямая ссылка из готового DownloadInfo (пере-подписывается каждый вызов). */
   async directLinkFromInfo(info: DownloadInfo): Promise<string | null> {
     try {
-      const libInfo = info as unknown as LibDownloadInfo;
-      libInfo.directLink = undefined; // сбрасываем кэш — нужна свежая подпись (ссылка живёт ~минуту)
-      return await libInfo.getDirectLink();
+      return await this.withRetry(async () => {
+        const libInfo = info as unknown as LibDownloadInfo;
+        libInfo.directLink = undefined; // сбрасываем кэш — нужна свежая подпись (ссылка живёт ~минуту)
+        return await libInfo.getDirectLink();
+      });
     } catch (e) {
       log.error(`ошибка buildDirectLink: ${e}`);
       return null;
@@ -596,16 +608,35 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     };
   }
 
-  /** плейлист как AlbumData (переиспользует всю инфру AlbumService: chunked
-   *  download/send/retry/resume) — owner из URL, kind = id плейлиста внутри owner. */
-  async getPlaylist(owner: string, kind: number): Promise<AlbumData | null> {
-    const playlist = await this.withLib(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
+  /** сырой ответ usersPlaylists: треки тут — «короткие» (часто только id). */
+  private async fetchPlaylist(owner: string, kind: number) {
+    return this.withLib(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
       return (await lib.usersPlaylists(kind, owner)) as unknown as {
         title?: string;
         cover?: { uri?: string };
         tracks?: Array<{ id?: string | number; track?: YaTrack }>;
       } | null;
     });
+  }
+
+  /** шапка плейлиста без резолва треков — для inline-результата (одним запросом). */
+  async getPlaylistShort(
+    owner: string,
+    kind: number,
+  ): Promise<{ title: string; coverUri: string; trackCount: number } | null> {
+    const playlist = await this.fetchPlaylist(owner, kind);
+    if (!playlist) return null;
+    return {
+      title: playlist.title || "",
+      coverUri: playlist.cover?.uri || "",
+      trackCount: playlist.tracks?.length ?? 0,
+    };
+  }
+
+  /** плейлист как AlbumData (переиспользует всю инфру AlbumService: chunked
+   *  download/send/retry/resume) — owner из URL, kind = id плейлиста внутри owner. */
+  async getPlaylist(owner: string, kind: number): Promise<AlbumData | null> {
+    const playlist = await this.fetchPlaylist(owner, kind);
     if (!playlist) return null;
 
     const shorts = playlist.tracks ?? [];

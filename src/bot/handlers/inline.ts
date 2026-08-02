@@ -224,9 +224,7 @@ async function buildEffectTrack(
   effect: AudioEffect,
   tier: string,
 ): Promise<string | null> {
-  const cached = await container.cacheDb.get(trackId, tier);
-  if (cached && cached.is_cached) return cached.telegram_file_id;
-
+  // кэш этого тира проверил ensureFileId — сюда доходим только на промахе
   const [metadata, info] = await Promise.all([
     enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, yandex),
     yandex.getBestDownloadInfo(trackObj, "best"),
@@ -251,27 +249,56 @@ async function buildEffectTrack(
   );
 }
 
-async function ensureFileId(
+/** kind'ы ровно те, что call-сайты различают своими текстами; ok=false — уже финал. */
+export type EnsureResult =
+  | { ok: true; fileId: string; codec: string | null; bitrateKbps: number | null; degraded: boolean }
+  | { ok: false; kind: "not_found" | "too_long" | "no_variants" | "failed" };
+
+/** единственная реализация «взять file_id: есть в кэше — отдать, нет — скачать».
+ * tier — аудио-эффект (ncore/speed/slow): свой тир кэша и сборка ffmpeg'ом вместо
+ * обычной загрузки. onDownloadStart зовётся, только если дело дошло до скачивания. */
+export async function ensureFileId(
   container: Container,
   cached: CachedTrack | null,
   trackObj: YaTrack | null,
   yandex: YandexClient,
   trackId: string,
-  quality: AudioQuality = "best",
-): Promise<[string | null, string | null, number | null, boolean]> {
-  const entry = await resolveCacheEntry(container, trackId, quality, cached);
+  opts: { quality?: AudioQuality; tier?: string | null; onDownloadStart?: () => Promise<void> } = {},
+): Promise<EnsureResult> {
+  const { quality = "best", tier = null, onDownloadStart } = opts;
+  const effect = tier ? AUDIO_EFFECTS[tier] : undefined;
+
+  const entry = effect
+    ? await container.cacheDb.get(trackId, tier!)
+    : await resolveCacheEntry(container, trackId, quality, cached);
   if (entry && entry.is_cached) {
-    return [entry.telegram_file_id, entry.codec, entry.bitrate_kbps, false];
+    const fileId = entry.telegram_file_id;
+    return effect
+      ? { ok: true, fileId, codec: "mp3", bitrateKbps: EFFECT_BITRATE, degraded: false }
+      : { ok: true, fileId, codec: entry.codec, bitrateKbps: entry.bitrate_kbps, degraded: false };
   }
-  if (!trackObj) return [null, null, null, false];
-  const [, fileId, codec, bitrateKbps, degraded] = await downloadFreshTrack(
+
+  if (trackObj === null) return { ok: false, kind: "not_found" };
+  if (trackIsTooLong(trackObj)) return { ok: false, kind: "too_long" };
+  if (onDownloadStart) await onDownloadStart();
+
+  if (effect) {
+    const fileId = await buildEffectTrack(container, trackObj, yandex, trackId, effect, tier!);
+    return fileId
+      ? { ok: true, fileId, codec: "mp3", bitrateKbps: EFFECT_BITRATE, degraded: false }
+      : { ok: false, kind: "failed" };
+  }
+
+  const [infoFound, fileId, codec, bitrateKbps, degraded] = await downloadFreshTrack(
     container,
     trackObj,
     yandex,
     trackId,
     quality,
   );
-  return [fileId, codec, bitrateKbps, degraded];
+  if (!infoFound) return { ok: false, kind: "no_variants" };
+  if (!fileId) return { ok: false, kind: "failed" };
+  return { ok: true, fileId, codec, bitrateKbps, degraded };
 }
 
 async function buildEmptyResults(
@@ -372,27 +399,11 @@ export async function sendTrackToChat(args: {
   try {
     const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId, args.trackObj ?? null);
     const quality = (await container.getUserSettings(userId)).track_quality as AudioQuality;
-    const entry = await resolveCacheEntry(container, trackId, quality, cached);
 
-    let fileId: string | null;
-    let degraded = false;
-    if (entry && entry.is_cached) {
-      fileId = entry.telegram_file_id;
-    } else {
-      if (trackObj === null) {
-        await say(bot, chatId, statusMsgId, format`❌ трек не найден`);
-        return;
-      }
-      if (trackIsTooLong(trackObj)) {
-        await say(
-          bot,
-          chatId,
-          statusMsgId,
-          format`❌ трек слишком длинный (${formatDurationHuman(trackObj.durationMs)}) — telegram не примет, лимит 50 мб`,
-        );
-        return;
-      }
-      if (statusMsgId !== null) {
+    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
+      quality,
+      onDownloadStart: async () => {
+        if (statusMsgId === null) return;
         try {
           await bot.api.editMessageText({
             chat_id: chatId,
@@ -402,24 +413,25 @@ export async function sendTrackToChat(args: {
         } catch {
           /* ignore */
         }
-      }
-      const [infoFound, fid, , , deg] = await downloadFreshTrack(container, trackObj, yandex, trackId, quality);
-      if (!infoFound) {
-        await say(bot, chatId, statusMsgId, format`❌ нет вариантов скачивания`);
-        return;
-      }
-      if (!fid) {
-        await say(bot, chatId, statusMsgId, format`❌ не удалось скачать`);
-        return;
-      }
-      fileId = fid;
-      degraded = deg;
+      },
+    });
+    if (!res.ok) {
+      const text =
+        res.kind === "not_found"
+          ? format`❌ трек не найден`
+          : res.kind === "too_long"
+            ? format`❌ трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет, лимит 50 мб`
+            : res.kind === "no_variants"
+              ? format`❌ нет вариантов скачивания`
+              : format`❌ не удалось скачать`;
+      await say(bot, chatId, statusMsgId, text);
+      return;
     }
 
     await bot.api.sendAudio({
       chat_id: chatId,
-      audio: fileId,
-      ...(degraded ? { caption: format`⚠️ превосходное недоступно — отдаю оптимальное` } : {}),
+      audio: res.fileId,
+      ...(res.degraded ? { caption: format`⚠️ превосходное недоступно — отдаю оптимальное` } : {}),
     });
     if (statusMsgId !== null) {
       try {
@@ -839,7 +851,15 @@ async function onChosenResult(
   const inlineMsgId = ctx.inlineMessageId ?? null;
   log.info(`[chosen] user=${userId} result=${resultId}`);
 
-  if (inlineMsgId) container.inlineOwners.set(inlineMsgId, userId);
+  const queryText = (ctx.query ?? "").trim();
+  const effect = parseEffect(queryText);
+
+  // эффект помним рядом с владельцем: в callback_data кнопки load: он не влезает,
+  // а без него тап по «качаю...»/«загрузить снова» скачал бы оригинал вместо ncore.
+  if (inlineMsgId) {
+    container.inlineOwners.set(inlineMsgId, userId);
+    if (effect) container.inlineEffects.set(inlineMsgId, effect.tier);
+  }
 
   if (resultId.startsWith("album:")) return;
 
@@ -878,12 +898,10 @@ async function onChosenResult(
   const cancelTicker = startProgressTicker(bot, inlineMsgId, trackId);
 
   try {
-    const queryText = (ctx.query ?? "").trim();
     let searchPhrase = "";
     if (queryText.startsWith('"') || queryText.startsWith("«")) {
       searchPhrase = queryText.replace(/^["«]+/, "").trim();
     }
-    const effect = parseEffect(queryText);
 
     const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
@@ -912,33 +930,18 @@ async function onChosenResult(
       return;
     }
 
-    let fileId: string | null;
-    let codec: string | null;
-    let bitrateKbps: number | null;
-    let degraded = false;
+    const ensureOpts = { quality, tier: effect?.tier ?? null };
     let lyricsQuote: string | null = null;
-    if (effect) {
-      fileId = trackObj
-        ? await buildEffectTrack(container, trackObj, yandex, trackId, effect.effect, effect.tier)
-        : null;
-      codec = "mp3";
-      bitrateKbps = EFFECT_BITRATE;
-    } else if (searchPhrase) {
+    let res: EnsureResult;
+    if (searchPhrase) {
       const [ensure, lq] = await Promise.all([
-        ensureFileId(container, cached, trackObj, yandex, trackId, quality),
+        ensureFileId(container, cached, trackObj, yandex, trackId, ensureOpts),
         fetchLyricsForQuery(container, token, userId, trackId, searchPhrase, artist, title),
       ]);
-      [fileId, codec, bitrateKbps, degraded] = ensure;
+      res = ensure;
       lyricsQuote = lq;
     } else {
-      [fileId, codec, bitrateKbps, degraded] = await ensureFileId(
-        container,
-        cached,
-        trackObj,
-        yandex,
-        trackId,
-        quality,
-      );
+      res = await ensureFileId(container, cached, trackObj, yandex, trackId, ensureOpts);
     }
 
     // для lossless mp3-кэш не считается «уже на месте» — нужен своп на FLAC
@@ -950,11 +953,12 @@ async function onChosenResult(
       return;
     }
 
-    if (!fileId) {
-      log.error(`[chosen] скачивание не удалось track=${trackId}`);
+    if (!res.ok) {
+      log.error(`[chosen] скачивание не удалось track=${trackId} (${res.kind})`);
       await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
       return;
     }
+    const { fileId, codec, bitrateKbps, degraded } = res;
 
     const layout = settings.track_layout;
     const { media, markup } = buildChosenEditPayload({
@@ -1027,42 +1031,23 @@ async function onLoadCallback(
     const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
-    const entry = await resolveCacheEntry(container, trackId, quality, cached);
-    let fileId: string | null;
-    let codec: string | null;
-    let bitrateKbps: number | null;
-    let degraded = false;
-    if (entry && entry.is_cached) {
-      fileId = entry.telegram_file_id;
-      codec = entry.codec;
-      bitrateKbps = entry.bitrate_kbps;
-    } else {
-      if (trackObj === null) {
-        await safeAnswerCb(ctx, { text: "трек не найден", show_alert: true });
-        return;
-      }
-      if (trackIsTooLong(trackObj)) {
-        await safeAnswerCb(ctx, {
-          text: `трек слишком длинный (${formatDurationHuman(trackObj.durationMs)}) — telegram не примет`,
-          show_alert: true,
-        });
-        return;
-      }
-      const [infoFound, fid, c, b, deg] = await downloadFreshTrack(container, trackObj, yandex, trackId, quality);
-      if (!infoFound) {
-        await safeAnswerCb(ctx, { text: "нет вариантов скачивания", show_alert: true });
-        return;
-      }
-      fileId = fid;
-      codec = c;
-      bitrateKbps = b;
-      degraded = deg;
-    }
-
-    if (!fileId) {
-      await safeAnswerCb(ctx, { text: "не удалось загрузить, попробуй ещё раз", show_alert: true });
+    // эффект берём из запроса, запомненного на chosen_result: в callback_data его нет,
+    // а «качаю...»/«загрузить снова» обязаны отдать тот же вариант, что просили.
+    const tier = container.inlineEffects.get(inlineMsgId);
+    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, { quality, tier });
+    if (!res.ok) {
+      const text =
+        res.kind === "not_found"
+          ? "трек не найден"
+          : res.kind === "too_long"
+            ? `трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет`
+            : res.kind === "no_variants"
+              ? "нет вариантов скачивания"
+              : "не удалось загрузить, попробуй ещё раз";
+      await safeAnswerCb(ctx, { text, show_alert: true });
       return;
     }
+    const { fileId, codec, bitrateKbps, degraded } = res;
 
     // единственный оставшийся answerCallbackQuery на этот callback_query_id —
     // держим его до сюда: Telegram позволяет ответить только раз, а все ошибки

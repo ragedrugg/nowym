@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { START_PLAYLIST_RE } from "../src/bot/handlers/common.ts";
 import { buildPlaylistAlbumData } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
+
+test("deep-link playlist_<owner>_<kind>: owner с '_' не съедает kind", () => {
+  // owner жадный, kind якорится хвостовым _\d+$ — разбор однозначен
+  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_some_user_42")?.slice(1), ["some_user", "42"]);
+  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_vasya_1035")?.slice(1), ["vasya", "1035"]);
+  // owner, сам кончающийся на _<цифры>
+  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_user_12_34")?.slice(1), ["user_12", "34"]);
+  assert.equal(START_PLAYLIST_RE.exec("playlist_vasya"), null);
+  assert.equal(START_PLAYLIST_RE.exec("album_123"), null);
+});
 
 function mkTrack(id: number, available = true): YaTrack {
   return { id, title: `трек ${id}`, available };

@@ -22,6 +22,21 @@ test("ссылка на альбом → album_link (lookahead отделяет 
   assert.equal(parseSearchQuery("music.yandex.ru/album/789/track/1").type, "track_link");
 });
 
+test("ссылка на плейлист → playlist_link", () => {
+  assert.deepEqual(parseSearchQuery("https://music.yandex.ru/users/ya.playlist/playlists/1035"), {
+    type: "playlist_link",
+    owner: "ya.playlist",
+    kind: 1035,
+  });
+  assert.deepEqual(parseSearchQuery("music.yandex/users/some_user/playlists/3"), {
+    type: "playlist_link",
+    owner: "some_user",
+    kind: 3,
+  });
+  // мусор вместо kind — не ссылка, обычный поиск
+  assert.equal(parseSearchQuery("music.yandex.ru/users/vasya/playlists/abc").type, "search");
+});
+
 test("произвольный текст → search", () => {
   assert.deepEqual(parseSearchQuery("nirvana smells like"), {
     type: "search",
