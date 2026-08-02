@@ -31,6 +31,11 @@ export interface Settings {
 
   TOKEN_ENCRYPTION_KEY: string;
 
+  /** пусто = ioredis-дефолт (127.0.0.1:6379). Нужно задать при запуске через
+   * docker-compose, где redis — отдельный контейнер (REDIS_HOST=redis). */
+  REDIS_HOST: string;
+  REDIS_PORT: number;
+
   LOG_LEVEL: string;
   LOG_FORMAT: string;
 
@@ -87,6 +92,9 @@ function build(): Settings {
     DB_POOL_MAX: envInt("DB_POOL_MAX", "5"),
 
     TOKEN_ENCRYPTION_KEY: env("TOKEN_ENCRYPTION_KEY"),
+
+    REDIS_HOST: env("REDIS_HOST"),
+    REDIS_PORT: envInt("REDIS_PORT", "6379"),
 
     LOG_LEVEL: env("LOG_LEVEL", "INFO").toUpperCase(),
     LOG_FORMAT: env("LOG_FORMAT", "human").toLowerCase(),

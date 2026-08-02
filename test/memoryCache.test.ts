@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { TTLCache } from "../src/infra/memoryCache.ts";
 
 test("get/set/delete", () => {

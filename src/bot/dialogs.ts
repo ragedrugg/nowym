@@ -5,24 +5,47 @@
  * Настройки — stateless `Select` (источник истины — Postgres `settingsDb`): getter
  * читает текущее значение, onClick пишет в БД + `show()` (ре-рендер с пометкой ✓).
  * Иконки кнопок — кастом-эмодзи (iconFor) с фолбэком на монохромный глиф. */
-import { Button, Dialog, Group, Select, SwitchTo, Url, Window, type ClickCtx, type DialogManager, type Keyboard, type OnClick } from "@gramio/dialogs";
-import { type FormattableString, bold, code, format, italic } from "gramio";
+import {
+  Button,
+  type ClickCtx,
+  Dialog,
+  type DialogManager,
+  Group,
+  type Keyboard,
+  type OnClick,
+  Select,
+  SwitchTo,
+  Url,
+  Window,
+} from "@gramio/dialogs";
 import type { Bot } from "gramio";
+import { bold, code, type FormattableString, format, italic } from "gramio";
 import { getLogger } from "../infra/logging.ts";
+import type { DeviceAuthState } from "../services/auth.ts";
+import { CARD_ASPECTS, CARD_TOGGLES, type CardToggleName, type UserSettings } from "../storage/settings.ts";
 import type { Container } from "./container.ts";
+import { helpText, renderNowPlaying, sendCurrentTrack, startText, type TgUser } from "./handlers/common.ts";
 import { iconFor } from "./iconSet.ts";
 import { safeAnswerCb } from "./safeApi.ts";
-import { helpText, renderNowPlaying, sendCurrentTrack, startText, type TgUser } from "./handlers/common.ts";
-import type { DeviceAuthState } from "../services/auth.ts";
-import { CARD_TOGGLES, CARD_ASPECTS, type CardToggleName, type UserSettings } from "../storage/settings.ts";
 
 const log = getLogger("bot.dialogs");
 
 const TRACK_LAYOUT_LABELS: Record<string, string> = { button: "кнопка", text: "текст", both: "всё", none: "ничего" };
 const TRACK_SEND_MODE_LABELS: Record<string, string> = { stub: "пустышка", text_media: "текст → медиа" };
-const TRACK_QUALITY_LABELS: Record<string, string> = { best: "оптимальное", economy: "экономичное", lossless: "превосходное" };
+const TRACK_QUALITY_LABELS: Record<string, string> = {
+  best: "оптимальное",
+  economy: "экономичное",
+  lossless: "превосходное",
+};
 const CARD_PROGRESS_LABELS: Record<string, string> = { wavy: "волна", bar: "полоска" };
-const CARD_FIELD_LABELS: Record<string, string> = { album: "альбом", type: "тип релиза", year: "год", label: "лейбл", track_no: "номер трека", avatar: "аватарка" };
+const CARD_FIELD_LABELS: Record<string, string> = {
+  album: "альбом",
+  type: "тип релиза",
+  year: "год",
+  label: "лейбл",
+  track_no: "номер трека",
+  avatar: "аватарка",
+};
 const CARD_ASPECT_LABELS: Record<string, string> = { "16:9": "16:9", "9:16": "9:16" };
 const trackLayoutLabel = (v: string): string => TRACK_LAYOUT_LABELS[v] ?? TRACK_LAYOUT_LABELS.button!;
 const trackSendModeLabel = (v: string): string => TRACK_SEND_MODE_LABELS[v] ?? TRACK_SEND_MODE_LABELS.stub!;
@@ -75,7 +98,8 @@ ${bold("кнопка")} — под фото кнопки «слушать в л�
 ${bold("текст")} — подпись со ссылкой «в плеере»
 ${bold("всё")} — и подпись, и кнопки
 ${bold("ничего")} — только фото`;
-const cardFieldsText = (t: Record<string, boolean>): FormattableString => format`${bold("поля карточки")}\n\n${italic(toggleSummary(t))}`;
+const cardFieldsText = (t: Record<string, boolean>): FormattableString =>
+  format`${bold("поля карточки")}\n\n${italic(toggleSummary(t))}`;
 const cardProgressText = (): FormattableString => format`${bold("прогресс трека")}
 
 ${bold("волна")} — волнистый
@@ -85,9 +109,16 @@ type BtnStyle = "danger" | "primary" | "success";
 
 /** текст кнопки: чистая кастом-иконка вместо глифа, если набор покрывает эмодзи;
  * иначе монохромный глиф + лейбл (тот же фолбэк, что dmText в markup.ts). */
-function chrome(emoji: string, glyph: string, label: string, style?: BtnStyle): { text: string; icon?: string; style?: BtnStyle } {
+function chrome(
+  emoji: string,
+  glyph: string,
+  label: string,
+  style?: BtnStyle,
+): { text: string; icon?: string; style?: BtnStyle } {
   const id = iconFor(emoji);
-  const out: { text: string; icon?: string; style?: BtnStyle } = id ? { text: label, icon: id } : { text: `${glyph} ${label}` };
+  const out: { text: string; icon?: string; style?: BtnStyle } = id
+    ? { text: label, icon: id }
+    : { text: `${glyph} ${label}` };
   if (style) out.style = style;
   return out;
 }
@@ -174,7 +205,9 @@ export async function startLogout(dialog: DialogManager, container: Container, u
   // расшифрованный токен и историю юзера в памяти до истечения TTL кэша
   container.invalidateTokenCacheForUser(userId);
   await dialog.switchTo("logout_done", {
-    data: { logoutMsg: deleted ? "вышел из аккаунта ✅\nкогда понадобится — жми кнопку" : "ты пока не входил в аккаунт" },
+    data: {
+      logoutMsg: deleted ? "вышел из аккаунта ✅\nкогда понадобится — жми кнопку" : "ты пока не входил в аккаунт",
+    },
   });
 }
 
@@ -186,18 +219,26 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   const isLoggedIn = async (userId: number): Promise<boolean> => Boolean(await container.usersDb.getToken(userId));
 
   // действия шлют новые сообщения, меню-сообщение не трогают
-  const dmAction = (
-    label: string,
-    action: (bot: Bot, chatId: number, user: TgUser, container: Container, statusMsgId: number | null) => Promise<void>,
-  ): OnClick => async (ctx) => {
-    const chatId = ctx.message?.chat?.id;
-    if (chatId === undefined) {
-      await safeAnswerCb(ctx); // закрыть «часики», а не молча выйти
-      return;
-    }
-    await safeAnswerCb(ctx, label);
-    await action(bot, chatId, toTgUser(ctx.from), container, null);
-  };
+  const dmAction =
+    (
+      label: string,
+      action: (
+        bot: Bot,
+        chatId: number,
+        user: TgUser,
+        container: Container,
+        statusMsgId: number | null,
+      ) => Promise<void>,
+    ): OnClick =>
+    async (ctx) => {
+      const chatId = ctx.message?.chat?.id;
+      if (chatId === undefined) {
+        await safeAnswerCb(ctx); // закрыть «часики», а не молча выйти
+        return;
+      }
+      await safeAnswerCb(ctx, label);
+      await action(bot, chatId, toTgUser(ctx.from), container, null);
+    };
   const onCard: OnClick = dmAction("⏳ рисую карточку...", renderNowPlaying);
   const onCurrent: OnClick = dmAction("⏳ ищу что играет...", sendCurrentTrack);
   const onLogin: OnClick = async (ctx) => {
@@ -242,7 +283,8 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       id: "card_fields",
       items: () => [...CARD_TOGGLES],
       itemId: (v) => v,
-      text: (st) => `${cardFieldLabel(st.item)} — ${cur(st).card_toggles[st.item as CardToggleName] ? "вкл." : "выкл."}`,
+      text: (st) =>
+        `${cardFieldLabel(st.item)} — ${cur(st).card_toggles[st.item as CardToggleName] ? "вкл." : "выкл."}`,
       onClick: async (ctx: ClickCtx, id) => {
         const s = await container.getUserSettings(ctx.from.id);
         const next = !s.card_toggles[id as CardToggleName];
@@ -257,10 +299,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
 
   // loggedIn-кнопки шириной 2, loggedOut — шириной 1 (везде одна и та же раскладка).
   const authGated = (loggedInBtns: Keyboard[], loggedOutBtns: Keyboard[]): Keyboard =>
-    Group([
-      Group(loggedInBtns, { width: 2, when: loggedIn }),
-      Group(loggedOutBtns, { width: 1, when: loggedOut }),
-    ]);
+    Group([Group(loggedInBtns, { width: 2, when: loggedIn }), Group(loggedOutBtns, { width: 1, when: loggedOut })]);
 
   const main = new Window<MenuData>({
     state: "main",
@@ -275,10 +314,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
         actBtn("🚪", "⏏", "выйти", "logout", onLogout, "danger"),
         navBtn("❓", "⍰", "что умею", "help"),
       ],
-      [
-        actBtn("🔓", "⏻", "войти", "login", onLogin, "success"),
-        navBtn("❓", "⍰", "что умею", "help"),
-      ],
+      [actBtn("🔓", "⏻", "войти", "login", onLogin, "success"), navBtn("❓", "⍰", "что умею", "help")],
     ),
   });
 
@@ -293,10 +329,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
         actBtn("🖼", "◫", "карточка", "card", onCard),
         navBtn("🏠", "⌂", "в меню", "main", "primary"),
       ],
-      [
-        actBtn("🔓", "⏻", "войти", "login", onLogin, "success"),
-        navBtn("🏠", "⌂", "в меню", "main", "primary"),
-      ],
+      [actBtn("🔓", "⏻", "войти", "login", onLogin, "success"), navBtn("🏠", "⌂", "в меню", "main", "primary")],
     ),
   });
 
@@ -309,61 +342,73 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     state: "settings",
     getter: settingsGetter,
     text: (d) => settingsMainText(d.s),
-    keyboard: Group([
-      navBtn("🗂", "✉", "как слать трек", "s_layout"),
-      navBtn("📤", "↥", "тип отправки", "s_sendmode"),
-      navBtn("🎛", "☰", "качество", "s_quality"),
-      navBtn("🖼", "◫", "карточка", "s_card"),
-      navBtn("🏠", "⌂", "в меню", "main", "primary"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        navBtn("🗂", "✉", "как слать трек", "s_layout"),
+        navBtn("📤", "↥", "тип отправки", "s_sendmode"),
+        navBtn("🎛", "☰", "качество", "s_quality"),
+        navBtn("🖼", "◫", "карточка", "s_card"),
+        navBtn("🏠", "⌂", "в меню", "main", "primary"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sLayout = new Window<SettingsData>({
     state: "s_layout",
     getter: settingsGetter,
     text: () => layoutPickText(),
-    keyboard: Group([
-      radioSelect({
-        id: "track_layout",
-        values: ["button", "text", "both", "none"],
-        label: trackLayoutLabel,
-        current: (s) => s.track_layout,
-        save: (u, v) => container.settingsDb.setTrackLayout(u, v),
-      }),
-      back("settings"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "track_layout",
+          values: ["button", "text", "both", "none"],
+          label: trackLayoutLabel,
+          current: (s) => s.track_layout,
+          save: (u, v) => container.settingsDb.setTrackLayout(u, v),
+        }),
+        back("settings"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sSendMode = new Window<SettingsData>({
     state: "s_sendmode",
     getter: settingsGetter,
     text: () => sendModePickText(),
-    keyboard: Group([
-      radioSelect({
-        id: "track_send_mode",
-        values: ["stub", "text_media"],
-        label: trackSendModeLabel,
-        current: (s) => s.track_send_mode,
-        save: (u, v) => container.settingsDb.setTrackSendMode(u, v),
-      }),
-      back("settings"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "track_send_mode",
+          values: ["stub", "text_media"],
+          label: trackSendModeLabel,
+          current: (s) => s.track_send_mode,
+          save: (u, v) => container.settingsDb.setTrackSendMode(u, v),
+        }),
+        back("settings"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sQuality = new Window<SettingsData>({
     state: "s_quality",
     getter: settingsGetter,
     text: () => qualityPickText(),
-    keyboard: Group([
-      radioSelect({
-        id: "track_quality",
-        values: ["best", "economy", "lossless"],
-        label: trackQualityLabel,
-        current: (s) => s.track_quality,
-        save: (u, v) => container.settingsDb.setTrackQuality(u, v),
-      }),
-      back("settings"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "track_quality",
+          values: ["best", "economy", "lossless"],
+          label: trackQualityLabel,
+          current: (s) => s.track_quality,
+          save: (u, v) => container.settingsDb.setTrackQuality(u, v),
+        }),
+        back("settings"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sCard = new Window<SettingsData>({
@@ -371,10 +416,9 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     getter: settingsGetter,
     text: (d) => cardRootText(d.s),
     keyboard: Group([
-      Group([
-        navBtn("📝", "▤", "поля", "s_card_fields"),
-        navBtn("📊", "∿", "прогресс", "s_card_progress"),
-      ], { width: 2 }),
+      Group([navBtn("📝", "▤", "поля", "s_card_fields"), navBtn("📊", "∿", "прогресс", "s_card_progress")], {
+        width: 2,
+      }),
       navBtn("🧩", "▦", "формат", "s_card_layout"),
       navBtn("📐", "⬚", "соотношение", "s_card_aspect"),
       back("settings"),
@@ -385,16 +429,19 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     state: "s_card_layout",
     getter: settingsGetter,
     text: () => cardLayoutPickText(),
-    keyboard: Group([
-      radioSelect({
-        id: "card_layout",
-        values: ["button", "text", "both", "none"],
-        label: cardLayoutLabel,
-        current: (s) => s.card_layout,
-        save: (u, v) => container.settingsDb.setCardLayout(u, v),
-      }),
-      back("s_card"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "card_layout",
+          values: ["button", "text", "both", "none"],
+          label: cardLayoutLabel,
+          current: (s) => s.card_layout,
+          save: (u, v) => container.settingsDb.setCardLayout(u, v),
+        }),
+        back("s_card"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sCardFields = new Window<SettingsData>({
@@ -408,32 +455,38 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     state: "s_card_progress",
     getter: settingsGetter,
     text: () => cardProgressText(),
-    keyboard: Group([
-      radioSelect({
-        id: "card_progress",
-        values: ["wavy", "bar"],
-        label: cardProgressLabel,
-        current: (s) => s.card_progress,
-        save: (u, v) => container.settingsDb.setCardProgress(u, v),
-      }),
-      back("s_card"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "card_progress",
+          values: ["wavy", "bar"],
+          label: cardProgressLabel,
+          current: (s) => s.card_progress,
+          save: (u, v) => container.settingsDb.setCardProgress(u, v),
+        }),
+        back("s_card"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const sCardAspect = new Window<SettingsData>({
     state: "s_card_aspect",
     getter: settingsGetter,
     text: () => cardAspectPickText(),
-    keyboard: Group([
-      radioSelect({
-        id: "card_aspect",
-        values: [...CARD_ASPECTS],
-        label: cardAspectLabel,
-        current: (s) => s.card_aspect,
-        save: (u, v) => container.settingsDb.setCardAspect(u, v),
-      }),
-      back("s_card"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "card_aspect",
+          values: [...CARD_ASPECTS],
+          label: cardAspectLabel,
+          current: (s) => s.card_aspect,
+          save: (u, v) => container.settingsDb.setCardAspect(u, v),
+        }),
+        back("s_card"),
+      ],
+      { width: 1 },
+    ),
   });
 
   // данные окон читаем из d.dialogData (не из ctx.dialog): под background() ctx headless
@@ -444,23 +497,25 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       const l = ld(d).login;
       return l ? deviceFlowText(l) : format`⏳ готовлю вход...`;
     },
-    keyboard: Group([
-      Url({
-        ...chrome("➡️", "▸", "продолжить", "success"),
-        url: (rc) => ld(rc.data).login?.verificationUrl ?? "https://music.yandex",
-      }),
-      actBtn("❌", "✕", "отмена", "cancel_login", onCancelLogin, "danger"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [
+        Url({
+          ...chrome("➡️", "▸", "продолжить", "success"),
+          url: (rc) => ld(rc.data).login?.verificationUrl ?? "https://music.yandex",
+        }),
+        actBtn("❌", "✕", "отмена", "cancel_login", onCancelLogin, "danger"),
+      ],
+      { width: 1 },
+    ),
   });
 
   const loginDone = new Window({
     state: "login_done",
     text: (d) => format`${ld(d).loginMsg ?? "✅ готово"}`,
     keyboard: Group([
-      Group([
-        actBtn("🎶", "♪", "что играет", "current", onCurrent),
-        actBtn("🖼", "◫", "карточка", "card", onCard),
-      ], { width: 2 }),
+      Group([actBtn("🎶", "♪", "что играет", "current", onCurrent), actBtn("🖼", "◫", "карточка", "card", onCard)], {
+        width: 2,
+      }),
       navBtn("🏠", "⌂", "в меню", "main", "primary"),
     ]),
   });
@@ -477,18 +532,30 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   const logoutDone = new Window({
     state: "logout_done",
     text: (d) => format`${ld(d).logoutMsg ?? "вышел из аккаунта ✅"}`,
-    keyboard: Group([
-      actBtn("🔓", "⏻", "войти снова", "login", onLogin, "success"),
-      navBtn("🏠", "⌂", "в меню", "main", "primary"),
-    ], { width: 1 }),
+    keyboard: Group(
+      [actBtn("🔓", "⏻", "войти снова", "login", onLogin, "success"), navBtn("🏠", "⌂", "в меню", "main", "primary")],
+      { width: 1 },
+    ),
   });
 
   return new Dialog({
     id: "menu",
     windows: [
-      main, help, settings, sLayout, sSendMode, sQuality, sCard, sCardLayout, sCardFields, sCardProgress,
+      main,
+      help,
+      settings,
+      sLayout,
+      sSendMode,
+      sQuality,
+      sCard,
+      sCardLayout,
+      sCardFields,
+      sCardProgress,
       sCardAspect,
-      login, loginDone, loginFail, logoutDone,
+      login,
+      loginDone,
+      loginFail,
+      logoutDone,
     ],
   });
 }

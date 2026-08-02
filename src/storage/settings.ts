@@ -88,9 +88,7 @@ export class SettingsDb {
       "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS track_send_mode TEXT NOT NULL DEFAULT 'text_media'",
     );
     // ADD COLUMN IF NOT EXISTS не меняет дефолт существующей колонки — выставляем явно
-    await usersPool.query(
-      "ALTER TABLE user_settings ALTER COLUMN track_send_mode SET DEFAULT 'text_media'",
-    );
+    await usersPool.query("ALTER TABLE user_settings ALTER COLUMN track_send_mode SET DEFAULT 'text_media'");
     await usersPool.query(
       "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS track_quality TEXT NOT NULL DEFAULT 'best'",
     );
@@ -109,10 +107,9 @@ export class SettingsDb {
     const cols =
       "track_layout, track_send_mode, track_quality, card_style, card_layout, card_progress, card_aspect, " +
       toggleColumns().join(", ");
-    const res = await usersPool.query<Record<string, unknown>>(
-      `SELECT ${cols} FROM user_settings WHERE user_id = $1`,
-      [userId],
-    );
+    const res = await usersPool.query<Record<string, unknown>>(`SELECT ${cols} FROM user_settings WHERE user_id = $1`, [
+      userId,
+    ]);
     const row = res.rows[0];
     if (row === undefined) {
       return {
@@ -154,7 +151,13 @@ export class SettingsDb {
   }
 
   /** Общий паттерн для «выбери один из» настроек; setCardToggle — отдельно, там булев флаг. */
-  private async setNormalized(userId: number, column: string, value: string, valid: Set<string>, def: string): Promise<string> {
+  private async setNormalized(
+    userId: number,
+    column: string,
+    value: string,
+    valid: Set<string>,
+    def: string,
+  ): Promise<string> {
     const v = norm(value, valid, def);
     await this.setColumn(userId, column, v);
     return v;

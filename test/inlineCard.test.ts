@@ -1,15 +1,15 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { Container } from "../src/bot/container.ts";
 import {
-  isCardResultId,
-  hashPhrase,
+  buildLyricsCardResult,
+  buildNowPlayingCardResult,
   cardCaption,
   cardMediaAndMarkup,
+  hashPhrase,
+  isCardResultId,
   trackCardBasics,
-  buildNowPlayingCardResult,
-  buildLyricsCardResult,
 } from "../src/bot/handlers/inlineCard.ts";
-import type { Container } from "../src/bot/container.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 function mkTrack(id: number | string = 1): YaTrack {
@@ -42,7 +42,12 @@ test("cardCaption — без артиста не дублирует «—»", ()
 
 test("cardMediaAndMarkup — layout 'none': без caption и markup", () => {
   const { media, markup } = cardMediaAndMarkup({
-    fileId: "f1", trackId: 1, artist: "A", title: "T", cardLayout: "none", botUsername: "bot",
+    fileId: "f1",
+    trackId: 1,
+    artist: "A",
+    title: "T",
+    cardLayout: "none",
+    botUsername: "bot",
   });
   assert.equal(media.type, "photo");
   assert.equal("caption" in media, false);
@@ -51,7 +56,12 @@ test("cardMediaAndMarkup — layout 'none': без caption и markup", () => {
 
 test("cardMediaAndMarkup — layout 'text': caption есть, markup нет", () => {
   const { media, markup } = cardMediaAndMarkup({
-    fileId: "f1", trackId: 1, artist: "A", title: "T", cardLayout: "text", botUsername: "bot",
+    fileId: "f1",
+    trackId: 1,
+    artist: "A",
+    title: "T",
+    cardLayout: "text",
+    botUsername: "bot",
   });
   assert.ok(media.caption);
   assert.equal(markup, undefined);
@@ -59,7 +69,12 @@ test("cardMediaAndMarkup — layout 'text': caption есть, markup нет", ()
 
 test("cardMediaAndMarkup — layout 'both': caption и markup есть", () => {
   const { media, markup } = cardMediaAndMarkup({
-    fileId: "f1", trackId: 1, artist: "A", title: "T", cardLayout: "both", botUsername: "bot",
+    fileId: "f1",
+    trackId: 1,
+    artist: "A",
+    title: "T",
+    cardLayout: "both",
+    botUsername: "bot",
   });
   assert.ok(media.caption);
   assert.ok(markup);
@@ -67,7 +82,12 @@ test("cardMediaAndMarkup — layout 'both': caption и markup есть", () => {
 
 test("cardMediaAndMarkup — layout 'button' (дефолт): markup есть, caption нет", () => {
   const { media, markup } = cardMediaAndMarkup({
-    fileId: "f1", trackId: 1, artist: "A", title: "T", cardLayout: "button", botUsername: "bot",
+    fileId: "f1",
+    trackId: 1,
+    artist: "A",
+    title: "T",
+    cardLayout: "button",
+    botUsername: "bot",
   });
   assert.equal("caption" in media, false);
   assert.ok(markup);

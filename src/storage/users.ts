@@ -1,7 +1,7 @@
 /** БД пользователей — токены зашифрованы через infra/crypto. */
 import { crypto } from "../infra/crypto.ts";
-import { usersPool } from "./pool.ts";
 import { getLogger } from "../infra/logging.ts";
+import { usersPool } from "./pool.ts";
 
 const log = getLogger("storage.users");
 
@@ -55,10 +55,7 @@ export class UsersDb {
       access_token: string;
       refresh_token: string | null;
       expires_at: number | null;
-    }>(
-      "SELECT access_token, refresh_token, expires_at FROM user_credentials WHERE user_id = $1",
-      [userId],
-    );
+    }>("SELECT access_token, refresh_token, expires_at FROM user_credentials WHERE user_id = $1", [userId]);
     const row = res.rows[0];
     if (row === undefined) return null;
     return {
@@ -73,32 +70,23 @@ export class UsersDb {
   }
 
   async delete(userId: number): Promise<boolean> {
-    const res = await usersPool.query(
-      "DELETE FROM user_credentials WHERE user_id = $1",
-      [userId],
-    );
+    const res = await usersPool.query("DELETE FROM user_credentials WHERE user_id = $1", [userId]);
     return (res.rowCount ?? 0) > 0;
   }
 
   async count(): Promise<number> {
-    const res = await usersPool.query<{ count: string }>(
-      "SELECT COUNT(*) FROM user_credentials",
-    );
+    const res = await usersPool.query<{ count: string }>("SELECT COUNT(*) FROM user_credentials");
     return parseInt(res.rows[0]?.count ?? "0", 10);
   }
 
   async dbSizeBytes(): Promise<number> {
-    const res = await usersPool.query<{ pg_database_size: number }>(
-      "SELECT pg_database_size(current_database())",
-    );
+    const res = await usersPool.query<{ pg_database_size: number }>("SELECT pg_database_size(current_database())");
     return res.rows[0]?.pg_database_size ?? 0;
   }
 
   /** произвольный существующий юзер — нужен один валидный токен для служебных запросов к CDN. */
   async anyUserId(): Promise<number | null> {
-    const res = await usersPool.query<{ user_id: number }>(
-      "SELECT user_id FROM user_credentials LIMIT 1",
-    );
+    const res = await usersPool.query<{ user_id: number }>("SELECT user_id FROM user_credentials LIMIT 1");
     return res.rows[0]?.user_id ?? null;
   }
 }

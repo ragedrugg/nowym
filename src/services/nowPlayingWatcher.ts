@@ -6,23 +6,23 @@
  * только специфика бота: токен владельца из БД (на смену токена пересоздаём
  * клиент) и резолв playable_id → Track. */
 import { EventEmitter } from "node:events";
+import {
+  ANDROID_DEVICE_INFO,
+  type DeviceInfoOverride,
+  generateDeviceId,
+  Client as LibClient,
+  type Track as LibTrack,
+  RealtimeClient,
+} from "@dvxch/yandex-music";
+import { createInterruptibleSleep, withTimeout } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
-import { withTimeout, createInterruptibleSleep } from "../infra/async.ts";
-import type { YaTrack } from "../yandex/types.ts";
-import { formatArtists } from "../yandex/metadata.ts";
-import { normalizeCoverUrl } from "../yandex/media.ts";
-import { trackUrl } from "../yandex/urls.ts";
-import {
-  Client as LibClient,
-  RealtimeClient,
-  ANDROID_DEVICE_INFO,
-  generateDeviceId,
-  type Track as LibTrack,
-  type DeviceInfoOverride,
-} from "@dvxch/yandex-music";
-import type { CurrentTrack } from "../yandex/ynison.ts";
 import type { UsersDb } from "../storage/users.ts";
+import { normalizeCoverUrl } from "../yandex/media.ts";
+import { formatArtists } from "../yandex/metadata.ts";
+import type { YaTrack } from "../yandex/types.ts";
+import { trackUrl } from "../yandex/urls.ts";
+import type { CurrentTrack } from "../yandex/ynison.ts";
 
 const log = getLogger("services.now_playing");
 
@@ -85,10 +85,7 @@ export class NowPlayingWatcher extends EventEmitter {
 
   /** для inline-handler: {track, paused, duration_ms, progress_ms}.
    * progress_ms уже live-интерполирован RealtimeClient.nowPlaying. */
-  getCurrentSnapshot(): Pick<
-    CurrentTrack,
-    "track" | "paused" | "duration_ms" | "progress_ms"
-  > | null {
+  getCurrentSnapshot(): Pick<CurrentTrack, "track" | "paused" | "duration_ms" | "progress_ms"> | null {
     const np = this.rt?.nowPlaying;
     if (!np || np.track === null) return null;
     return {
@@ -223,7 +220,13 @@ export class NowPlayingWatcher extends EventEmitter {
         }
       }
     })();
-    return { promise, cancel: () => { cancelled = true; wake(); } };
+    return {
+      promise,
+      cancel: () => {
+        cancelled = true;
+        wake();
+      },
+    };
   }
 
   /** главный цикл: токен → realtime-клиент (он сам реконнектится) → пересоздание

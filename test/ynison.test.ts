@@ -2,19 +2,19 @@
  * (структура сверена с betterproto-json из venv) и парсер state-фрейма.
  *
  * Live ws не тестируем — нет кредов; фокус на чистой логике и форме payload'ов. */
-import { test } from "node:test";
-import assert from "node:assert/strict";
 
-import { liveProgressMs } from "../src/yandex/ynison.ts";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
+  ANDROID_DEVICE_INFO,
   buildUpdateFullStateRequest,
+  type DeviceInfoOverride,
   generateDeviceId,
   generateRequestId,
-  parseStateFrame,
   parseRedirectFrame,
-  ANDROID_DEVICE_INFO,
-  type DeviceInfoOverride,
+  parseStateFrame,
 } from "@dvxch/yandex-music";
+import { liveProgressMs } from "../src/yandex/ynison.ts";
 
 // идентитет наблюдателя, как его собирает nowPlayingWatcher.
 const WATCHER_DEVICE_INFO: DeviceInfoOverride = { ...ANDROID_DEVICE_INFO, title: "Мойва" };
@@ -105,10 +105,7 @@ test("buildUpdateFullStateRequest (watcher): info = Android-идентитет",
   assert.deepEqual(req.updateFullState.device.info, PY_WATCHER_INFO);
   // остальное (status/playerQueue/capabilities) идентично default'у
   assert.deepEqual(req.updateFullState.playerState, PY_DEFAULT.updateFullState.playerState);
-  assert.deepEqual(
-    req.updateFullState.device.capabilities,
-    PY_DEFAULT.updateFullState.device.capabilities,
-  );
+  assert.deepEqual(req.updateFullState.device.capabilities, PY_DEFAULT.updateFullState.device.capabilities);
 });
 
 test("buildUpdateFullStateRequest: сериализуется в валидный JSON без лишних полей", () => {
@@ -126,10 +123,7 @@ test("generateDeviceId: непустой hex", () => {
 });
 
 test("generateRequestId: валидный uuid4", () => {
-  assert.match(
-    generateRequestId(),
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  assert.match(generateRequestId(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 // ── парсер state-фрейма ──────────────────────────────────────────────────────

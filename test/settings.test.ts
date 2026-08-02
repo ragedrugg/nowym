@@ -5,9 +5,9 @@ import {
   CARD_DEFAULT_TOGGLE,
   CARD_TOGGLES,
   DEFAULT_TRACK_LAYOUT,
+  norm,
   TRACK_LAYOUTS,
   TRACK_QUALITIES,
-  norm,
 } from "../src/storage/settings.ts";
 
 test("norm: валидное значение проходит как есть", () => {

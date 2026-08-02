@@ -2,16 +2,13 @@
  *
  * Зависимости инъекцией: берём список протухших из cacheDb, ходим за CDN
  * под токеном любого живого юзера. */
-import { getLogger } from "../infra/logging.ts";
+
 import { createInterruptibleSleep } from "../infra/async.ts";
-import {
-  buildTrackMetadata,
-  enrichMetadataFromAlbum,
-  trackIsTooLong,
-} from "../yandex/metadata.ts";
-import type { YandexClient } from "../yandex/client.ts";
+import { getLogger } from "../infra/logging.ts";
 import type { CacheDb } from "../storage/cache.ts";
 import type { UsersDb } from "../storage/users.ts";
+import type { YandexClient } from "../yandex/client.ts";
+import { buildTrackMetadata, enrichMetadataFromAlbum, trackIsTooLong } from "../yandex/metadata.ts";
 import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.stale");

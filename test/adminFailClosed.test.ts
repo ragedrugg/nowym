@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 
 // ADMIN_USER_ID сознательно НЕ задаём — проверяем fail-closed ветку:
 // без ADMIN_USER_ID админ-команды не должны работать вообще ни для кого,

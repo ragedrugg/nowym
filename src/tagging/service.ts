@@ -12,10 +12,10 @@
  *
  * На любую ошибку — исходник без тегов. */
 import { spawn } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TagLib, type AudioFile } from "taglib-wasm";
+import { type AudioFile, TagLib } from "taglib-wasm";
 import { getLogger } from "../infra/logging.ts";
 import type { TrackMetadata } from "../yandex/types.ts";
 

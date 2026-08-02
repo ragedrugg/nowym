@@ -94,9 +94,7 @@ function formatLabel(labels: YaLabel[] | null | undefined): string {
 /** Все лейблы альбома в виде массива строк (для CardMeta.labels / ℗-строки). */
 function formatAllLabels(labels: YaLabel[] | null | undefined): string[] {
   if (!labels || labels.length === 0) return [];
-  return labels
-    .map((l) => (typeof l === "string" ? l : (l.name ?? "")).trim())
-    .filter(Boolean);
+  return labels.map((l) => (typeof l === "string" ? l : (l.name ?? "")).trim()).filter(Boolean);
 }
 
 function strOrEmpty(v: unknown): string {
@@ -164,10 +162,7 @@ export function albumEmoji(albumType: string | null | undefined): string {
 export const LABELED_ALBUM_TYPES = new Set(["podcast", "audiobook"]);
 
 /** для сингла album.title часто == track.title → дубль на карточке. */
-export function isSingle(
-  albumType: string | null | undefined,
-  trackCount: number | null | undefined = null,
-): boolean {
+export function isSingle(albumType: string | null | undefined, trackCount: number | null | undefined = null): boolean {
   if (albumType && albumType.toLowerCase() === "single") return true;
   return trackCount === 1;
 }
@@ -184,10 +179,7 @@ function derivedColors(track: YaTrack): CardColors {
 }
 
 /** (trackNumber, discNumber) из trackPosition. пробуем album, потом track. */
-function trackPosition(
-  track: YaTrack,
-  album: YaAlbum | null,
-): [number | null, number | null] {
+function trackPosition(track: YaTrack, album: YaAlbum | null): [number | null, number | null] {
   for (const src of [album, track] as Array<{ trackPosition?: YaTrackPosition | null } | null>) {
     const tp = src ? src.trackPosition : null;
     if (tp) {
@@ -392,8 +384,7 @@ export async function enrichMetadataFromAlbum(
   const albums = track.albums ?? [];
   if (albums.length === 0) return metadata;
 
-  const need =
-    !metadata.year || !metadata.label || !metadata.genre || !metadata.track_total;
+  const need = !metadata.year || !metadata.label || !metadata.genre || !metadata.track_total;
   if (!need) return metadata;
 
   const albumId = albums[0]!.id ?? null;

@@ -1,6 +1,7 @@
 /** Чистые функции yandex/metadata.ts — порт логики из Python. */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { normalizeCoverUrl } from "../src/yandex/media.ts";
 import {
   albumEmoji,
   albumTypeRu,
@@ -14,7 +15,6 @@ import {
   selectDownloadInfo,
   waveColorFromLottie,
 } from "../src/yandex/metadata.ts";
-import { normalizeCoverUrl } from "../src/yandex/media.ts";
 import type { CardMeta, YaTrack } from "../src/yandex/types.ts";
 
 test("formatArtists", () => {

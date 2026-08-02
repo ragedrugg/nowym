@@ -4,10 +4,10 @@
  *  - request()      — общий keep-alive пул для обложек, api, retrieve;
  *  - downloadAudio() — свежее TCP-соединение на каждый запрос (без keepalive),
  *    CDN яндекса из EU иногда виснет на keepalive. */
-import { Agent, interceptors, request, type Dispatcher } from "undici";
+import { Agent, type Dispatcher, interceptors, request } from "undici";
 import { getSettings } from "../settings.ts";
-import { getLogger } from "./logging.ts";
 import { sleep } from "./async.ts";
+import { getLogger } from "./logging.ts";
 
 const log = getLogger("infra.http");
 
@@ -18,8 +18,7 @@ const BODY_TIMEOUT = 20_000;
 const AUDIO_CONNECT_TIMEOUT = 4_000;
 const AUDIO_BODY_TIMEOUT = 15_000;
 
-const BROWSER_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
 export interface HttpResponse {
   status: number;

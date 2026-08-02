@@ -1,11 +1,11 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SearchService } from "../src/services/search.ts";
+import { test } from "node:test";
 import { TTLCache } from "../src/infra/memoryCache.ts";
+import type { CacheService } from "../src/services/cache.ts";
+import type { InlineResult } from "../src/services/search.ts";
+import { SearchService } from "../src/services/search.ts";
 import type { YandexClient } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
-import type { InlineResult } from "../src/services/search.ts";
-import type { CacheService } from "../src/services/cache.ts";
 
 // всегда "уже закэшировано" → allAlreadyCached()=true → resultsCache реально
 // пишется (без этого cacheService=null в mkService по умолчанию — тест

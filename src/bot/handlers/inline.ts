@@ -1,24 +1,12 @@
-import { format } from "gramio";
 import type { Bot } from "gramio";
-import type { Container } from "../container.ts";
-import { buildLyricsQuote, buildTrackCaption } from "../captions.ts";
-import { progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
-import { getLogger } from "../../infra/logging.ts";
+import { format } from "gramio";
 import { createInterruptibleSleep, withTimeout } from "../../infra/async.ts";
+import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
-import { getSettings } from "../../settings.ts";
-import { cbData } from "../ctxutil.ts";
-import { say, safeAnswerCb, safeEditMedia, safeSetReplyMarkup } from "../safeApi.ts";
-import {
-  buildLyricsCardResult,
-  buildNowPlayingCardResult,
-  isCardResultId,
-  renderAndSwapCard,
-} from "./inlineCard.ts";
 import type { InlineResult, SearchService } from "../../services/search.ts";
-import { type YandexClient, makeEncrawDecrypt } from "../../yandex/client.ts";
+import { getSettings } from "../../settings.ts";
 import type { CachedTrack } from "../../storage/types.ts";
-import type { YaTrack } from "../../yandex/types.ts";
+import { makeEncrawDecrypt, type YandexClient } from "../../yandex/client.ts";
 import {
   type AudioQuality,
   buildTrackMetadata,
@@ -28,6 +16,13 @@ import {
   formatTrackBasics,
   trackIsTooLong,
 } from "../../yandex/metadata.ts";
+import type { YaTrack } from "../../yandex/types.ts";
+import { buildLyricsQuote, buildTrackCaption } from "../captions.ts";
+import type { Container } from "../container.ts";
+import { cbData } from "../ctxutil.ts";
+import { progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
+import { safeAnswerCb, safeEditMedia, safeSetReplyMarkup, say } from "../safeApi.ts";
+import { buildLyricsCardResult, buildNowPlayingCardResult, isCardResultId, renderAndSwapCard } from "./inlineCard.ts";
 
 const log = getLogger("bot.inline");
 
@@ -51,7 +46,11 @@ const AUDIO_EFFECTS: Record<string, AudioEffect> = {
   // atempo меняет только темп, тон сохраняется — «честное» ускорение.
   speed: { filter: "atempo=1.2", speedFactor: 1.2, suffix: "(sped up)" },
   // asetrate вниз (питч+темп ниже) + многотактовый aecho как реверб-хвост.
-  slow: { filter: "aresample=44100,asetrate=44100*0.9,aresample=44100,aecho=0.8:0.85:55|95:0.35|0.25", speedFactor: 0.9, suffix: "(slowed + reverb)" },
+  slow: {
+    filter: "aresample=44100,asetrate=44100*0.9,aresample=44100,aecho=0.8:0.85:55|95:0.35|0.25",
+    speedFactor: 0.9,
+    suffix: "(slowed + reverb)",
+  },
 };
 
 const EFFECT_RE = new RegExp(`^(${Object.keys(AUDIO_EFFECTS).join("|")})\\s+(.+)`, "i");
@@ -156,8 +155,7 @@ async function downloadFreshTrackLossless(
   const meta = { ...metadata, codec: info.codec, bitrate_kbps: info.bitrate };
   // каждая racing-попытка берёт случайный url из списка — естественный спред по CDN.
   const urls = info.links();
-  const pickUrl = async (): Promise<string | null> =>
-    urls[Math.floor(Math.random() * urls.length)] ?? null;
+  const pickUrl = async (): Promise<string | null> => urls[Math.floor(Math.random() * urls.length)] ?? null;
   const decrypt = makeEncrawDecrypt(info.key);
   const fileId = await container.cacheService.downloadAndCacheTrack(
     trackId,
@@ -266,7 +264,13 @@ async function ensureFileId(
     return [entry.telegram_file_id, entry.codec, entry.bitrate_kbps, false];
   }
   if (!trackObj) return [null, null, null, false];
-  const [, fileId, codec, bitrateKbps, degraded] = await downloadFreshTrack(container, trackObj, yandex, trackId, quality);
+  const [, fileId, codec, bitrateKbps, degraded] = await downloadFreshTrack(
+    container,
+    trackObj,
+    yandex,
+    trackId,
+    quality,
+  );
   return [fileId, codec, bitrateKbps, degraded];
 }
 
@@ -298,10 +302,12 @@ async function buildEmptyResults(
   const results: unknown[] = [];
 
   if (track) {
-    const audio = await trackService.createInlineResultFromTrack(track, opts.layout, opts.sendMode, signal).catch((e) => {
-      log.warning(`[inline] не вышло сделать результат для текущего трека: ${e}`);
-      return null;
-    });
+    const audio = await trackService
+      .createInlineResultFromTrack(track, opts.layout, opts.sendMode, signal)
+      .catch((e) => {
+        log.warning(`[inline] не вышло сделать результат для текущего трека: ${e}`);
+        return null;
+      });
     if (audio) results.push(audio);
 
     try {
@@ -379,14 +385,20 @@ export async function sendTrackToChat(args: {
       }
       if (trackIsTooLong(trackObj)) {
         await say(
-          bot, chatId, statusMsgId,
+          bot,
+          chatId,
+          statusMsgId,
           format`❌ трек слишком длинный (${formatDurationHuman(trackObj.durationMs)}) — telegram не примет, лимит 50 мб`,
         );
         return;
       }
       if (statusMsgId !== null) {
         try {
-          await bot.api.editMessageText({ chat_id: chatId, message_id: statusMsgId, text: format`⬇️ качаю...` } as never);
+          await bot.api.editMessageText({
+            chat_id: chatId,
+            message_id: statusMsgId,
+            text: format`⬇️ качаю...`,
+          } as never);
         } catch {
           /* ignore */
         }
@@ -514,10 +526,25 @@ async function dispatchQuery(
   opts: QueryDispatchOpts,
   signal: AbortSignal,
 ): Promise<{ results: unknown[]; nextOffset: string }> {
-  const { text, offset, searchText, isRecent, isPagedSearch, isLyric, layout, sendMode, cardLayout, pageSize, timeout } = opts;
+  const {
+    text,
+    offset,
+    searchText,
+    isRecent,
+    isPagedSearch,
+    isLyric,
+    layout,
+    sendMode,
+    cardLayout,
+    pageSize,
+    timeout,
+  } = opts;
 
   if (!text && !offset) {
-    return withTimeout(buildEmptyResults(container, trackService, user, { layout, cardLayout, sendMode }, signal), timeout);
+    return withTimeout(
+      buildEmptyResults(container, trackService, user, { layout, cardLayout, sendMode }, signal),
+      timeout,
+    );
   }
   if (isRecent || (!text && offset)) {
     return withTimeout(trackService.recentResultsPaged(offset, pageSize, layout, sendMode, signal), timeout);
@@ -536,7 +563,15 @@ async function dispatchQuery(
 /** возвращает исходный `current`, если suggest ничего не дал или перезапрос не вышел. */
 async function applySuggestCorrection(
   trackService: SearchService,
-  opts: { offset: string; isPagedSearch: boolean; searchText: string; layout: string; sendMode: string; pageSize: number; timeout: number },
+  opts: {
+    offset: string;
+    isPagedSearch: boolean;
+    searchText: string;
+    layout: string;
+    sendMode: string;
+    pageSize: number;
+    timeout: number;
+  },
   current: { results: unknown[]; nextOffset: string },
 ): Promise<{ results: unknown[]; nextOffset: string }> {
   const corrected = await trackService.yandexService.suggestCorrection(opts.searchText).catch(() => null);
@@ -566,7 +601,14 @@ async function applySuggestCorrection(
 /** genius-строку («артист название») Яндекс иногда не находит — фолбэк на саму фразу. */
 async function applyLyricFallback(
   trackService: SearchService,
-  opts: { isLyric: boolean; lyricPhrase: string; searchText: string; layout: string; sendMode: string; timeout: number },
+  opts: {
+    isLyric: boolean;
+    lyricPhrase: string;
+    searchText: string;
+    layout: string;
+    sendMode: string;
+    timeout: number;
+  },
   currentResults: unknown[],
 ): Promise<unknown[]> {
   if (!opts.isLyric || currentResults.length > 0 || !opts.lyricPhrase || opts.searchText === opts.lyricPhrase) {
@@ -578,7 +620,14 @@ async function applyLyricFallback(
   const fbAc = new AbortController();
   try {
     return await withTimeout(
-      trackService.searchAndCreateResults(opts.lyricPhrase, undefined, opts.layout, opts.sendMode, fbAc.signal, opts.isLyric),
+      trackService.searchAndCreateResults(
+        opts.lyricPhrase,
+        undefined,
+        opts.layout,
+        opts.sendMode,
+        fbAc.signal,
+        opts.isLyric,
+      ),
       opts.timeout,
     );
   } catch (e) {
@@ -627,7 +676,10 @@ async function onInlineQuery(
 
   const [allowed, retryAfter] = container.inlineLimiter.check(userId);
   if (!allowed) {
-    await ctx.answer([], { cache_time: 5, button: { text: `⏳ подожди ${Math.round(retryAfter)}с`, start_parameter: "start" } });
+    await ctx.answer([], {
+      cache_time: 5,
+      button: { text: `⏳ подожди ${Math.round(retryAfter)}с`, start_parameter: "start" },
+    });
     return;
   }
 
@@ -669,7 +721,10 @@ async function onInlineQuery(
       trackService = await container.getTrackService(token, userId);
     } catch (e) {
       log.warning(`[inline] яндекс-клиент не создан user=${userId}: ${e}`);
-      await ctx.answer([], { cache_time: 3, button: { text: "⏳ Яндекс не отвечает, попробуй ещё раз", start_parameter: "start" } });
+      await ctx.answer([], {
+        cache_time: 3,
+        button: { text: "⏳ Яндекс не отвечает, попробуй ещё раз", start_parameter: "start" },
+      });
       return;
     }
 
@@ -701,7 +756,9 @@ async function onInlineQuery(
     let timedOut = false;
     try {
       const built = await dispatchQuery(
-        container, trackService, user,
+        container,
+        trackService,
+        user,
         { text, offset, searchText, isRecent, isPagedSearch, isLyric, layout, sendMode, cardLayout, pageSize, timeout },
         ac.signal,
       );
@@ -715,8 +772,7 @@ async function onInlineQuery(
     }
 
     // nocorrect у /search чинит не всякую опечатку, suggest — чинит
-    const correctable =
-      !!text && !isLyric && !isRecent && !offset && parseSearchQuery(searchText).type === "search";
+    const correctable = !!text && !isLyric && !isRecent && !offset && parseSearchQuery(searchText).type === "search";
     if (correctable && results.length === 0) {
       const corrected = await applySuggestCorrection(
         trackService,
@@ -808,7 +864,11 @@ async function onChosenResult(
   // единственным путём выгрузки трека без рейт-лимита на скачивание вообще.
   const [allowed, retryAfter] = container.downloadLimiter.check(userId);
   if (!allowed) {
-    await safeSetReplyMarkup(bot, inlineMsgId, progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`));
+    await safeSetReplyMarkup(
+      bot,
+      inlineMsgId,
+      progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`),
+    );
     return;
   }
 
@@ -858,7 +918,9 @@ async function onChosenResult(
     let degraded = false;
     let lyricsQuote: string | null = null;
     if (effect) {
-      fileId = trackObj ? await buildEffectTrack(container, trackObj, yandex, trackId, effect.effect, effect.tier) : null;
+      fileId = trackObj
+        ? await buildEffectTrack(container, trackObj, yandex, trackId, effect.effect, effect.tier)
+        : null;
       codec = "mp3";
       bitrateKbps = EFFECT_BITRATE;
     } else if (searchPhrase) {
@@ -869,7 +931,14 @@ async function onChosenResult(
       [fileId, codec, bitrateKbps, degraded] = ensure;
       lyricsQuote = lq;
     } else {
-      [fileId, codec, bitrateKbps, degraded] = await ensureFileId(container, cached, trackObj, yandex, trackId, quality);
+      [fileId, codec, bitrateKbps, degraded] = await ensureFileId(
+        container,
+        cached,
+        trackObj,
+        yandex,
+        trackId,
+        quality,
+      );
     }
 
     // для lossless mp3-кэш не считается «уже на месте» — нужен своп на FLAC
@@ -889,7 +958,13 @@ async function onChosenResult(
 
     const layout = settings.track_layout;
     const { media, markup } = buildChosenEditPayload({
-      trackId, fileId, codec, bitrateKbps, layout, lyricsQuote, degraded,
+      trackId,
+      fileId,
+      codec,
+      bitrateKbps,
+      layout,
+      lyricsQuote,
+      degraded,
     });
 
     await cancelTicker(); // ДО edit'а: иначе «отправляю…» тикера легло бы поверх аудио
@@ -913,7 +988,7 @@ async function onLoadCallback(
   bot: Bot,
 ): Promise<void> {
   const data = cbData(ctx);
-  const raw = data.includes(":") ? data.split(":", 2)[1] ?? "" : "";
+  const raw = data.includes(":") ? (data.split(":", 2)[1] ?? "") : "";
   if (!/^\d+$/.test(raw)) {
     await safeAnswerCb(ctx, { text: "некорректный track_id", show_alert: true });
     return;
@@ -967,7 +1042,10 @@ async function onLoadCallback(
         return;
       }
       if (trackIsTooLong(trackObj)) {
-        await safeAnswerCb(ctx, { text: `трек слишком длинный (${formatDurationHuman(trackObj.durationMs)}) — telegram не примет`, show_alert: true });
+        await safeAnswerCb(ctx, {
+          text: `трек слишком длинный (${formatDurationHuman(trackObj.durationMs)}) — telegram не примет`,
+          show_alert: true,
+        });
         return;
       }
       const [infoFound, fid, c, b, deg] = await downloadFreshTrack(container, trackObj, yandex, trackId, quality);

@@ -1,17 +1,20 @@
 /** Чистая FSM-логика BroadcastService (без реального Telegram/Postgres) +
  * run() на стаб-боте: проверяем разделение sent/failed/blocked и чистку
  * known_chats при недоступном получателе. */
-import { test, mock } from "node:test";
+
 import assert from "node:assert/strict";
+import { mock, test } from "node:test";
+import type { Bot } from "gramio";
 import { BroadcastService } from "../src/services/broadcast.ts";
 import type { KnownChatsDb } from "../src/storage/knownChats.ts";
-import type { Bot } from "gramio";
 
 function mkKnownChatsDb(chatIds: number[]): { db: KnownChatsDb; removed: number[] } {
   const removed: number[] = [];
   const db = {
     allChatIds: async () => chatIds,
-    remove: async (chatId: number) => { removed.push(chatId); },
+    remove: async (chatId: number) => {
+      removed.push(chatId);
+    },
     count: async () => chatIds.length,
     touch: async () => {},
     initSchema: async () => {},
@@ -25,7 +28,10 @@ function mkBot(copyMessage: (params: { chat_id: number }) => Promise<unknown>): 
 
 test("startCompose → captureContent → pendingConfirm — счастливый путь", () => {
   const { db } = mkKnownChatsDb([]);
-  const svc = new BroadcastService(db, mkBot(async () => ({})));
+  const svc = new BroadcastService(
+    db,
+    mkBot(async () => ({})),
+  );
 
   assert.equal(svc.isAwaitingContent(1), false);
   svc.startCompose(1);
@@ -39,14 +45,20 @@ test("startCompose → captureContent → pendingConfirm — счастливы�
 
 test("captureContent без startCompose — не в режиме ожидания, возвращает false", () => {
   const { db } = mkKnownChatsDb([]);
-  const svc = new BroadcastService(db, mkBot(async () => ({})));
+  const svc = new BroadcastService(
+    db,
+    mkBot(async () => ({})),
+  );
   assert.equal(svc.captureContent(1, 1, 42), false);
   assert.equal(svc.pendingConfirm(1), null);
 });
 
 test("cancelCompose очищает черновик (awaiting и confirm), но не мешает разным админам", () => {
   const { db } = mkKnownChatsDb([]);
-  const svc = new BroadcastService(db, mkBot(async () => ({})));
+  const svc = new BroadcastService(
+    db,
+    mkBot(async () => ({})),
+  );
 
   svc.startCompose(1);
   assert.equal(svc.cancelCompose(1), true);
@@ -60,7 +72,10 @@ test("cancelCompose очищает черновик (awaiting и confirm), но 
 
 test("beginSending — второй тап на confirm получает null (защита от дабл-клика)", () => {
   const { db } = mkKnownChatsDb([]);
-  const svc = new BroadcastService(db, mkBot(async () => ({})));
+  const svc = new BroadcastService(
+    db,
+    mkBot(async () => ({})),
+  );
 
   svc.startCompose(1);
   svc.captureContent(1, 5, 99);
@@ -74,7 +89,10 @@ test("beginSending — второй тап на confirm получает null (�
 
 test("requestStop — работает только на стадии sending", () => {
   const { db } = mkKnownChatsDb([]);
-  const svc = new BroadcastService(db, mkBot(async () => ({})));
+  const svc = new BroadcastService(
+    db,
+    mkBot(async () => ({})),
+  );
 
   assert.equal(svc.requestStop(1), false); // нет состояния вовсе
 
@@ -92,7 +110,10 @@ test("черновик протухает по TTL — captureContent после
   mock.timers.enable({ apis: ["Date"] });
   try {
     const { db } = mkKnownChatsDb([]);
-    const svc = new BroadcastService(db, mkBot(async () => ({})));
+    const svc = new BroadcastService(
+      db,
+      mkBot(async () => ({})),
+    );
     svc.startCompose(1);
     mock.timers.tick(600_001); // COMPOSE_TTL_MS + 1мс
     assert.equal(svc.isAwaitingContent(1), false);

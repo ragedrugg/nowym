@@ -5,8 +5,8 @@
  * yandex track/album id, epoch-секунды) надёжно < 2^53.
  */
 import pg from "pg";
-import { getSettings } from "../settings.ts";
 import { getLogger } from "../infra/logging.ts";
+import { getSettings } from "../settings.ts";
 
 const { Pool, types } = pg;
 
@@ -102,19 +102,9 @@ export class DatabasePool {
 const DB_POOL_MIN = parseInt(process.env.DB_POOL_MIN ?? "1", 10);
 const DB_POOL_MAX = parseInt(process.env.DB_POOL_MAX ?? "5", 10);
 
-export const usersPool = new DatabasePool(
-  () => getSettings().POSTGRES_USERS_DSN,
-  "users",
-  DB_POOL_MIN,
-  DB_POOL_MAX,
-);
+export const usersPool = new DatabasePool(() => getSettings().POSTGRES_USERS_DSN, "users", DB_POOL_MIN, DB_POOL_MAX);
 
-export const cachePool = new DatabasePool(
-  () => getSettings().POSTGRES_CACHE_DSN,
-  "cache",
-  DB_POOL_MIN,
-  DB_POOL_MAX,
-);
+export const cachePool = new DatabasePool(() => getSettings().POSTGRES_CACHE_DSN, "cache", DB_POOL_MIN, DB_POOL_MAX);
 
 export async function initializeAll(): Promise<void> {
   await usersPool.initialize();

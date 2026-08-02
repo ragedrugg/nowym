@@ -2,13 +2,13 @@
  * нужно) wave-цвет, затем рендерит. Общая точка входа для /np и inline-карточки.
  * `enrichCardMetaLiked` не вызывается — лайк живёт кнопкой на треке, не на карточке. */
 import type { Bot } from "gramio";
-import type { Container } from "./container.ts";
 import { getLogger } from "../infra/logging.ts";
+import type { LyricsBlock } from "../services/card.ts";
+import type { UserSettings } from "../storage/settings.ts";
 import { fetchCover } from "../yandex/media.ts";
 import { enrichCardMetaColor, metaNeedsWaveColor } from "../yandex/metadata.ts";
-import type { LyricsBlock } from "../services/card.ts";
 import type { CardMeta } from "../yandex/types.ts";
-import type { UserSettings } from "../storage/settings.ts";
+import type { Container } from "./container.ts";
 
 const log = getLogger("bot.card_builder");
 
@@ -99,7 +99,12 @@ export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
     senderAvatar,
     botUsername: container.botUsername,
     meta,
-    cardOptions: { toggles, progress: settings.card_progress, style: settings.card_style, aspect: settings.card_aspect },
+    cardOptions: {
+      toggles,
+      progress: settings.card_progress,
+      style: settings.card_style,
+      aspect: settings.card_aspect,
+    },
     lyrics: input.lyrics ?? null,
   });
 }
