@@ -177,10 +177,11 @@ export class CacheDb {
   /** двигает updated_at без апгрейда is_cached — трек, который упал на
    * рефреше, иначе выглядел бы «протухшим» вечно и монополизировал бы каждый
    * следующий батч getStaleUncached, оставляя остальные треки без шанса. */
-  async touchStale(trackId: string | number): Promise<void> {
-    await cachePool.query("UPDATE telegram_cache SET updated_at = NOW() WHERE track_id = $1 AND is_cached = FALSE", [
-      Number(trackId),
-    ]);
+  async touchStale(trackId: string | number, quality = "lossy"): Promise<void> {
+    await cachePool.query(
+      "UPDATE telegram_cache SET updated_at = NOW() WHERE track_id = $1 AND quality = $2 AND is_cached = FALSE",
+      [Number(trackId), quality],
+    );
   }
 
   /** удаляет одну строку-пустышку (после того как её канальное сообщение уже

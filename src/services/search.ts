@@ -14,7 +14,7 @@ import type { YandexClient } from "../yandex/client.ts";
 import { normalizeCoverUrl } from "../yandex/media.ts";
 import { formatArtists } from "../yandex/metadata.ts";
 import type { YaAlbum, YaTrack } from "../yandex/types.ts";
-import { albumUrl } from "../yandex/urls.ts";
+import { albumUrl, playlistUrl } from "../yandex/urls.ts";
 import type { CacheService } from "./cache.ts";
 
 const log = getLogger("services.search");
@@ -222,9 +222,40 @@ export class SearchService {
     });
   }
 
+  /** плейлист — статья с кнопкой deep-link'а, как у альбома. */
+  private createPlaylistResult(
+    owner: string,
+    kind: number,
+    pl: { title: string; coverUri: string; trackCount: number },
+  ): InlineResult | null {
+    if (!this.botUsername) return null;
+    // payload deep-link'а телеграм принимает только из [A-Za-z0-9_-], а owner
+    // бывает с точкой — такому плейлисту кнопку просто не показываем.
+    // ponytail: если точечные логины окажутся частыми — кодировать owner в payload.
+    if (!/^[\w-]+$/.test(owner)) return null;
+
+    const title = pl.title || "Без названия";
+    const suffix = pl.trackCount ? `${pl.trackCount} треков` : "";
+    const link = playlistUrl(owner, kind);
+    const text = suffix
+      ? format`🎵 ${bold(title)}\n${italic(suffix)}\n\n${link}`
+      : format`🎵 ${bold(title)}\n\n${link}`;
+    const thumbUrl = normalizeCoverUrl(pl.coverUri, "200x200");
+
+    // owner может содержать '_', поэтому kind якорится хвостовым _\d+$ (см. START_PLAYLIST_RE)
+    const deepLink = `https://t.me/${this.botUsername}?start=playlist_${owner}_${kind}`;
+    return InlineQueryResult.article(`playlist:${owner}:${kind}`, `🎵 ${title}`, InputMessageContent.text(text), {
+      description: suffix || "плейлист",
+      ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
+      reply_markup: { inline_keyboard: [[{ text: "выгрузить плейлист мне в личку", url: deepLink }]] },
+    });
+  }
+
   async searchAndCreateResults(
     query: string,
-    maxResults = 5,
+    // без дефолта: undefined должен доехать до searchTracks, где сработает
+    // фолбэк на MAX_SEARCH_RESULTS (дефолт-параметр подменял бы его раньше).
+    maxResults?: number,
     layout = "button",
     sendMode = "text_media",
     signal?: AbortSignal,
@@ -258,6 +289,12 @@ export class SearchService {
         const album = await this.yandexService.getAlbumShort(parsed.album_id);
         if (album) {
           const r = this.createAlbumResult(album);
+          if (r) results.push(r);
+        }
+      } else if (parsed.type === "playlist_link") {
+        const pl = await this.yandexService.getPlaylistShort(parsed.owner, parsed.kind);
+        if (pl) {
+          const r = this.createPlaylistResult(parsed.owner, parsed.kind, pl);
           if (r) results.push(r);
         }
       } else if (parsed.type === "search") {

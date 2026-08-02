@@ -41,6 +41,10 @@ export class Container {
   // inline_message_id → user_id владельца. Telegram в callback от инлайн-сообщений
   // не отдаёт автора, поэтому запоминаем на chosen_result и проверяем на тапе load.
   inlineOwners!: TTLCache<number>;
+  // inline_message_id → tier аудио-эффекта («ncore»/«speed»/«slow») из инлайн-запроса.
+  // В callback_data кнопки load: влезает только track_id, поэтому эффект, выбранный
+  // в запросе, запоминаем тут на chosen_result и читаем на тапе load.
+  inlineEffects!: TTLCache<string>;
   usersDb!: UsersDb;
   cacheDb!: CacheDb;
   settingsDb!: SettingsDb;
@@ -108,6 +112,7 @@ export class Container {
     this.avatarCache = new TTLCache<Buffer>(500, 6 * 3600, 600);
     // владельцы инлайнов: живут сутки (инлайн-сообщение могут переоткрыть позже)
     this.inlineOwners = new TTLCache<number>(10000, 24 * 3600, 3600);
+    this.inlineEffects = new TTLCache<string>(10000, 24 * 3600, 3600);
     // per-user YandexClient/SearchService — час простоя, пересборка дешёвая
     this.yandexClients = new TTLCache<YandexClient>(1000, 3600, 600);
     this.searchServices = new TTLCache<SearchService>(1000, 3600, 600);
@@ -159,6 +164,7 @@ export class Container {
     await this.trackCache?.close();
     await this.avatarCache?.close();
     await this.inlineOwners?.close();
+    await this.inlineEffects?.close();
     await this.userSettingsCache?.close();
     await this.yandexClients?.close();
     await this.searchServices?.close();

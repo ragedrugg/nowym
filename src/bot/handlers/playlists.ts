@@ -1,19 +1,13 @@
 import type { Bot } from "gramio";
 import { format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
-import { pluralTracks } from "../../infra/text.ts";
-import { ProgressMessage } from "../../services/albums.ts";
+import { PLAYLIST_URL_RE } from "../../infra/parsers.ts";
 import type { Container } from "../container.ts";
-import { albumHeader } from "./albums.ts";
+import { startUpload } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
 
-// owner — логин/uid Яндекса, реальный чарсет [A-Za-z0-9._-]; более широкий
-// класс ([^/\s]+) пропускал бы ?/#/пробелоподобное внутрь URL, который
-// собирается конкатенацией в lib.usersPlaylists() (client.ts.getPlaylist).
-const PLAYLIST_URL_RE = /music\.yandex(?:\.ru)?\/users\/([\w.-]+)\/playlists\/(\d+)/;
-
-/** зовут из бросания ссылки на плейлист боту в личку. */
+/** зовут и из /start playlist_<owner>_<kind>, и из ссылки в личке. */
 export async function startPlaylistUpload(
   bot: Bot,
   chatId: number,
@@ -22,57 +16,15 @@ export async function startPlaylistUpload(
   kind: number,
   container: Container,
 ): Promise<void> {
-  const [allowed, retryAfter] = container.downloadLimiter.check(userId);
-  if (!allowed) {
-    await bot.api.sendMessage({
-      chat_id: chatId,
-      text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`,
-    });
-    return;
-  }
-
-  const token = await container.resolveToken(userId);
-  if (!token) {
-    await bot.api.sendMessage({ chat_id: chatId, text: "сначала войди через /login" });
-    return;
-  }
-
-  // слот занимаем до await'ов — та же гонка, что и с альбомами (AlbumService общий)
-  if (!container.albumService.tryBegin(userId)) {
-    await bot.api.sendMessage({ chat_id: chatId, text: "у тебя уже идёт выгрузка — дождись её или нажми «отмена»" });
-    return;
-  }
-  let handedOff = false;
-  try {
-    const progress = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу плейлист...` });
-    const progressMsg = new ProgressMessage(bot, chatId, progress.message_id);
-
-    const yandex = await container.getYandexService(token, userId);
-    const playlist = await yandex.getPlaylist(owner, kind);
-
-    if (!playlist) {
-      await progressMsg.edit(format`❌ плейлист не найден, недоступен или пуст`);
-      return;
-    }
-
-    const trackCount = playlist.tracks.length;
-    const caption = albumHeader("Плейлист", playlist.title, pluralTracks(trackCount), playlist.album_type);
-
-    const coverBytes = await container.albumService.sendCover(chatId, playlist.cover_url, caption);
-    await progressMsg.edit(format`${caption}\n\nзагружаю ${pluralTracks(trackCount)}...`);
-
-    handedOff = true; // дальше слот ведёт sendAlbumTracks (его finally чистит active)
-    await container.albumService.sendAlbum({
-      chatId,
-      userId,
-      albumData: playlist,
-      progressMsg,
-      yandex,
-      coverBytes,
-    });
-  } finally {
-    if (!handedOff) container.albumService.release(userId);
-  }
+  await startUpload(
+    bot,
+    chatId,
+    userId,
+    container,
+    "плейлист",
+    format`❌ плейлист не найден, недоступен или пуст`,
+    (yandex) => yandex.getPlaylist(owner, kind),
+  );
 }
 
 export function registerPlaylists(bot: Bot, container: Container): void {

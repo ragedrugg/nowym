@@ -5,6 +5,7 @@ import { getLogger } from "../../infra/logging.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
 import type { YaTrack } from "../../yandex/types.ts";
+import type { CurrentTrack } from "../../yandex/ynison.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
@@ -12,6 +13,7 @@ import { nowPlayingMarkup } from "../markup.ts";
 import { say } from "../safeApi.ts";
 import { startAlbumUpload } from "./albums.ts";
 import { sendTrackToChat } from "./inline.ts";
+import { startPlaylistUpload } from "./playlists.ts";
 
 /** ResetStack: дефолтный Normal пушил бы новый диалог на стек на каждый /start|/help|/settings,
  *  и кнопки прежних меню «протухали бы». */
@@ -23,6 +25,10 @@ const log = getLogger("bot.common");
 
 const START_ALBUM_RE = /^album_(\d+)$/;
 const START_TRACK_RE = /^track_(\d+)$/;
+// owner сам может содержать '_', поэтому kind — хвостовой _\d+ (жадный owner
+// отдаёт ровно последнюю группу цифр). Точка в owner в payload не пролезает —
+// телеграм разрешает только [A-Za-z0-9_-] (см. createPlaylistResult).
+export const START_PLAYLIST_RE = /^playlist_([\w-]+)_(\d+)$/;
 
 export interface TgUser {
   id: number;
@@ -77,6 +83,19 @@ async function checkLimitAndToken(
   return token;
 }
 
+/** у владельца снимок уже живёт в памяти watcher'а — ходить за ним в Ynison
+ * (редирект + ожидание первого фрейма, секунды) незачем. Остальным — как раньше. */
+async function currentTrackOf(
+  container: Container,
+  user: TgUser,
+  token: string,
+): Promise<Pick<CurrentTrack, "track" | "paused" | "duration_ms" | "progress_ms"> | null> {
+  const watcher = container.npWatcher;
+  if (watcher !== null && watcher.ownerId === user.id) return watcher.getCurrentSnapshot();
+  const yandex = await container.getYandexService(token, user.id);
+  return yandex.getCurrentTrack();
+}
+
 /** лимит — общий с /np. */
 export async function renderNowPlaying(
   bot: Bot,
@@ -89,9 +108,8 @@ export async function renderNowPlaying(
   if (!token) return;
 
   try {
-    const yandex = await container.getYandexService(token, user.id);
-    const current = await yandex.getCurrentTrack();
-    const track = current.track;
+    const current = await currentTrackOf(container, user, token);
+    const track = current?.track;
     if (!track) {
       await say(bot, chatId, statusMsgId, format`🎵 сейчас ничего не играет`);
       return;
@@ -109,9 +127,9 @@ export async function renderNowPlaying(
       coverUrl: normalizeCoverUrl(track.coverUri ?? "", "1000x1000"),
       title,
       artist,
-      progressMs: current.progress_ms ?? 0,
-      durationMs: current.duration_ms ?? 0,
-      paused: Boolean(current.paused),
+      progressMs: current?.progress_ms ?? 0,
+      durationMs: current?.duration_ms ?? 0,
+      paused: Boolean(current?.paused),
       senderHandle,
       meta: buildCardMeta(track),
       settings,
@@ -146,11 +164,9 @@ export async function sendCurrentTrack(
   const token = await checkLimitAndToken(bot, chatId, user, container, statusMsgId);
   if (!token) return;
 
-  let track: YaTrack | null;
+  let track: YaTrack | null | undefined;
   try {
-    const yandex = await container.getYandexService(token, user.id);
-    const current = await yandex.getCurrentTrack();
-    track = current.track;
+    track = (await currentTrackOf(container, user, token))?.track;
   } catch (e) {
     log.error(`[current] ошибка user=${user.id}: ${e}`);
     await say(bot, chatId, statusMsgId, format`❌ не получилось, попробуй ещё раз`);
@@ -194,6 +210,11 @@ export function registerCommon(bot: Bot, container: Container): void {
       const mt = START_TRACK_RE.exec(args);
       if (mt) {
         await startTrackUploadReply(bot, ctx.chat.id, user.id, mt[1]!, container);
+        return;
+      }
+      const mp = START_PLAYLIST_RE.exec(args);
+      if (mp) {
+        await startPlaylistUpload(bot, ctx.chat.id, user.id, mp[1]!, Number(mp[2]), container);
         return;
       }
     }
