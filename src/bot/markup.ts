@@ -21,7 +21,14 @@ interface BtnOpts {
   icon_custom_emoji_id?: string;
 }
 
-function dmText(kb: InlineKeyboard, emoji: string, glyph: string, label: string, data: string, style?: BtnStyle): InlineKeyboard {
+function dmText(
+  kb: InlineKeyboard,
+  emoji: string,
+  glyph: string,
+  label: string,
+  data: string,
+  style?: BtnStyle,
+): InlineKeyboard {
   const id = iconFor(emoji);
   const o: BtnOpts = {};
   if (style) o.style = style;
@@ -34,14 +41,28 @@ function dmText(kb: InlineKeyboard, emoji: string, glyph: string, label: string,
 
 // инлайн-кнопки (трек/карточка) — без глифов/эмодзи: кастом-иконки без Fragment
 // не рендерятся. Исключение — сердце лайка (kb.text("♥") в trackMarkup).
-function inlineText(kb: InlineKeyboard, _emoji: string, glyph: string, label: string, data: string, style?: BtnStyle): InlineKeyboard {
+function inlineText(
+  kb: InlineKeyboard,
+  _emoji: string,
+  glyph: string,
+  label: string,
+  data: string,
+  style?: BtnStyle,
+): InlineKeyboard {
   const o: BtnOpts = {};
   if (style) o.style = style;
   kb.text(label || glyph, data, o); // glyph только если лейбла нет вовсе
   return kb;
 }
 
-function inlineUrl(kb: InlineKeyboard, _emoji: string, _glyph: string, label: string, url: string, style?: BtnStyle): InlineKeyboard {
+function inlineUrl(
+  kb: InlineKeyboard,
+  _emoji: string,
+  _glyph: string,
+  label: string,
+  url: string,
+  style?: BtnStyle,
+): InlineKeyboard {
   const o: BtnOpts = {};
   if (style) o.style = style;
   kb.url(label, url, o);

@@ -1,14 +1,14 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AlbumService, renderProgressBar, formatEta } from "../src/services/albums.ts";
-import type { CacheDb } from "../src/storage/cache.ts";
-import type { CacheService } from "../src/services/cache.ts";
-import type { DownloadConcurrency } from "../src/infra/queue.ts";
-import type { HttpClient } from "../src/infra/http.ts";
+import { test } from "node:test";
 import type { Bot } from "gramio";
+import type { HttpClient } from "../src/infra/http.ts";
+import type { DownloadConcurrency } from "../src/infra/queue.ts";
+import { AlbumService, formatEta, renderProgressBar } from "../src/services/albums.ts";
+import type { CacheService } from "../src/services/cache.ts";
+import type { CacheDb } from "../src/storage/cache.ts";
 import type { UserSettings } from "../src/storage/settings.ts";
-import type { AlbumData, YaTrack } from "../src/yandex/types.ts";
 import type { YandexClient } from "../src/yandex/client.ts";
+import type { AlbumData, YaTrack } from "../src/yandex/types.ts";
 
 function mkService(): AlbumService {
   return new AlbumService(

@@ -6,9 +6,9 @@
  * конструкторе, а device-эндпоинты на oauth.yandex.ru его не требуют.
  * client_id/secret берём из settings (по умолчанию — публичный клиент Android-
  * приложения Я.Музыки). */
-import { Client as LibClient, DeviceAuthError, type DeviceCode, type OAuthToken } from "@dvxch/yandex-music";
-import { getLogger } from "../infra/logging.ts";
+import { DeviceAuthError, type DeviceCode, Client as LibClient, type OAuthToken } from "@dvxch/yandex-music";
 import { sleep } from "../infra/async.ts";
+import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
 import type { UsersDb } from "../storage/users.ts";
 
@@ -118,7 +118,11 @@ export class AuthService {
   async refreshToken(userId: number, refreshToken: string): Promise<string | null> {
     const s = getSettings();
     try {
-      const token = await this.lib.refreshAccessToken(refreshToken, s.YANDEX_OAUTH_CLIENT_ID, s.YANDEX_OAUTH_CLIENT_SECRET);
+      const token = await this.lib.refreshAccessToken(
+        refreshToken,
+        s.YANDEX_OAUTH_CLIENT_ID,
+        s.YANDEX_OAUTH_CLIENT_SECRET,
+      );
       await this.usersDb.save(userId, token.accessToken!, token.refreshToken || refreshToken, token.expiresIn ?? null);
       log.info(`access обновлён для ${userId}`);
       return token.accessToken!;
@@ -154,9 +158,13 @@ export class AuthService {
 
         // null = authorization_pending (юзер ещё не подтвердил) → опрашиваем дальше.
         // прочие ошибки (в т.ч. expired/denied) pollDeviceToken бросает — ловим ниже.
-        let token;
+        let token: OAuthToken | null;
         try {
-          token = await this.lib.pollDeviceToken(code.deviceCode!, s.YANDEX_OAUTH_CLIENT_ID, s.YANDEX_OAUTH_CLIENT_SECRET);
+          token = await this.lib.pollDeviceToken(
+            code.deviceCode!,
+            s.YANDEX_OAUTH_CLIENT_ID,
+            s.YANDEX_OAUTH_CLIENT_SECRET,
+          );
         } catch (e) {
           const reason = e instanceof DeviceAuthError ? e.message : String(e);
           log.warning(`DeviceAuthError ${userId}: ${reason}`);

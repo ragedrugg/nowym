@@ -57,6 +57,7 @@ export function getFilename(artist: string, title: string, codec = "mp3"): strin
   const t = title || "Unknown";
   // спецсимволы пути + управляющие (CR/LF/NUL): последние защищают от инъекции
   // в Content-Disposition multipart-формы при заливке файла.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: намеренно — вырезаем control chars, а не пропускаем их
   const invalid = /[<>:"/\\|?*\x00-\x1f]/g;
   const safeArtist = a.replace(invalid, "_");
   const safeTitle = t.replace(invalid, "_");

@@ -1,32 +1,26 @@
 /** Высокоуровневый клиент Yandex Music: кэши, retry, rate-limit, refresh.
  * Поверх @dvxch/yandex-music (каталог/лайки/ynison/download). */
 import { performance } from "node:perf_hooks";
-import { getLogger } from "../infra/logging.ts";
-import { sleep, withTimeout } from "../infra/async.ts";
-import { LRUMap } from "../infra/lruMap.ts";
-import { AsyncTokenGate } from "../infra/rateLimit.ts";
-import { getSettings } from "../settings.ts";
 import {
-  bareTrackId,
-  formatArtists,
-  selectDownloadInfo,
-  type AudioQuality,
-  waveColorFromLottie,
-} from "./metadata.ts";
-import { normalizeCoverUrl } from "./media.ts";
-import type { AlbumShortProvider, LikeProvider, WaveColorProvider } from "./metadata.ts";
-import { isLrc } from "./lrc.ts";
-import type { AlbumData, DownloadInfo, YaAlbum, YaTrack } from "./types.ts";
-import { YnisonService, type CurrentTrack } from "./ynison.ts";
-import {
+  decryptEncraw,
   Client as LibClient,
+  type DownloadInfo as LibDownloadInfo,
+  type LosslessDownloadInfo as LibLosslessDownloadInfo,
   NetworkError as LibNetworkError,
   NotFoundError as LibNotFoundError,
   UnauthorizedError as LibUnauthorizedError,
-  DownloadInfo as LibDownloadInfo,
-  LosslessDownloadInfo as LibLosslessDownloadInfo,
-  decryptEncraw,
 } from "@dvxch/yandex-music";
+import { sleep, withTimeout } from "../infra/async.ts";
+import { getLogger } from "../infra/logging.ts";
+import { LRUMap } from "../infra/lruMap.ts";
+import { AsyncTokenGate } from "../infra/rateLimit.ts";
+import { getSettings } from "../settings.ts";
+import { isLrc } from "./lrc.ts";
+import { normalizeCoverUrl } from "./media.ts";
+import type { AlbumShortProvider, LikeProvider, WaveColorProvider } from "./metadata.ts";
+import { type AudioQuality, bareTrackId, formatArtists, selectDownloadInfo, waveColorFromLottie } from "./metadata.ts";
+import type { AlbumData, DownloadInfo, YaAlbum, YaTrack } from "./types.ts";
+import { type CurrentTrack, YnisonService } from "./ynison.ts";
 
 const log = getLogger("yandex.client");
 
@@ -154,9 +148,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
         const isRateLimit = e instanceof LibNetworkError && /\(429\)$/.test(e.message);
         if (isRateLimit && attempt < this.maxRetries) {
           const delay = baseDelayMs * 2 ** attempt + Math.random() * 1000;
-          log.warning(
-            `rate limit, попытка ${attempt + 1}/${this.maxRetries + 1}, ждём ${(delay / 1000).toFixed(1)}с`,
-          );
+          log.warning(`rate limit, попытка ${attempt + 1}/${this.maxRetries + 1}, ждём ${(delay / 1000).toFixed(1)}с`);
           await sleep(delay);
           lastError = e;
         } else {
@@ -200,24 +192,33 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
 
   /** полная страница поиска треков (для inline-пагинации): результаты + total/perPage. */
   async searchTracksPage(query: string, page = 0): Promise<{ tracks: YaTrack[]; total: number; perPage: number }> {
-    return this.withLib(`searchTracksPage(${JSON.stringify(query)}, ${page})`, { tracks: [], total: 0, perPage: 0 }, async (lib) => {
-      const result = await lib.search(query, false, "track", page);
-      const t = result?.tracks;
-      return {
-        tracks: (t?.results ?? []) as unknown as YaTrack[],
-        total: t?.total ?? 0,
-        perPage: t?.perPage ?? 0,
-      };
-    });
+    return this.withLib(
+      `searchTracksPage(${JSON.stringify(query)}, ${page})`,
+      { tracks: [], total: 0, perPage: 0 },
+      async (lib) => {
+        const result = await lib.search(query, false, "track", page);
+        const t = result?.tracks;
+        return {
+          tracks: (t?.results ?? []) as unknown as YaTrack[],
+          total: t?.total ?? 0,
+          perPage: t?.perPage ?? 0,
+        };
+      },
+    );
   }
 
   /** исправленный/канонический текст запроса через /search/suggest (best.text).
    * Лучший-эффект: null при ошибке/отсутствии подсказки. */
   async suggestCorrection(query: string): Promise<string | null> {
-    return this.withLib(`suggestCorrection(${JSON.stringify(query)})`, null, async (lib) => {
-      const res = await lib.searchSuggest(query);
-      return res?.best?.text?.trim() || null;
-    }, "warning");
+    return this.withLib(
+      `suggestCorrection(${JSON.stringify(query)})`,
+      null,
+      async (lib) => {
+        const res = await lib.searchSuggest(query);
+        return res?.best?.text?.trim() || null;
+      },
+      "warning",
+    );
   }
 
   /** альбом БЕЗ трек-листа (1 запрос) — добор year/labels/genre. */
@@ -375,10 +376,22 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     for (const block of landing?.blocks ?? []) {
       const data = block.data as
         | {
-            otherTracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
-            other_tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
-            play_contexts?: Array<{ tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }> }>;
-            playContexts?: Array<{ tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }> }>;
+            otherTracks?: Array<{
+              id?: number | string;
+              track_id?: number | string;
+              trackId?: { id?: number | string };
+            }>;
+            other_tracks?: Array<{
+              id?: number | string;
+              track_id?: number | string;
+              trackId?: { id?: number | string };
+            }>;
+            play_contexts?: Array<{
+              tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
+            }>;
+            playContexts?: Array<{
+              tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
+            }>;
           }
         | undefined;
       if (!data) continue;
@@ -495,7 +508,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       const lib = await this.getLib();
       const info = await lib.tracksLosslessInfo(track.id!, "lossless");
       if (!info || info.links().length === 0) return null;
-      log.info(`get-file-info ${track.id}: ${info.codec} ${info.bitrate}kbps enc=${Boolean(info.key)} urls=${info.links().length}`);
+      log.info(
+        `get-file-info ${track.id}: ${info.codec} ${info.bitrate}kbps enc=${Boolean(info.key)} urls=${info.links().length}`,
+      );
       return info;
     } catch (e) {
       log.error(`ошибка getLosslessDownload(${track.id}): ${e}`);
@@ -554,11 +569,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
 
     const artist = formatArtists(album.artists);
     const year = album.year ? String(album.year) : "";
-    const label = (album.labels && album.labels.length > 0
-      ? typeof album.labels[0] === "string"
-        ? album.labels[0]
-        : (album.labels[0]!.name ?? "")
-      : "") || "";
+    const label =
+      (album.labels && album.labels.length > 0
+        ? typeof album.labels[0] === "string"
+          ? album.labels[0]
+          : (album.labels[0]!.name ?? "")
+        : "") || "";
     const genre = album.genre || "";
     const coverUrl = normalizeCoverUrl(album.coverUri || "", "orig");
 
@@ -654,10 +670,7 @@ export function buildPlaylistAlbumData(
 }
 
 export class YandexClientFactory {
-  static async create(
-    token: string,
-    refreshCallback: RefreshCallback | null = null,
-  ): Promise<YandexClient> {
+  static async create(token: string, refreshCallback: RefreshCallback | null = null): Promise<YandexClient> {
     const service = new YandexClient(token, refreshCallback);
     await service.init(); // сразу валидируем токен (lib.init → account/status)
     return service;

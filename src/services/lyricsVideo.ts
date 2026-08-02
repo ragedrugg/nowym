@@ -21,34 +21,34 @@
 // import { fetchCover, normalizeCoverUrl } from "../yandex/media.ts";
 // import { buildCardMeta, enrichCardMetaColor, formatTrackBasics, metaNeedsWaveColor } from "../yandex/metadata.ts";
 // import type { TgUser } from "../bot/handlers/common.ts";
-// 
+//
 // const log = getLogger("services.lyricsVideo");
-// 
+//
 // const _videoInFlight = new Set<number>();
-// 
+//
 // const FPS = 60;
 // const TRANS_MS = 667; // длительность перехода между строками
 // const FFMPEG_TIMEOUT_MS = 300_000; // 5 мин — треки могут быть длинными
 // const MAX_LRC_LINES = 500;
-// 
+//
 // function easeInOut(t: number): number {
 //   return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t);
 // }
-// 
+//
 // interface FfmpegRun {
 //   proc: ChildProcessWithoutNullStreams;
 //   closed: Promise<{ code: number | null; stderr: string }>;
 // }
-// 
+//
 // function spawnFfmpeg(args: string[]): FfmpegRun {
 //   const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 //   proc.stdin.on("error", () => { /* EPIPE при раннем завершении ffmpeg — игнорируем, close сообщит об ошибке */ });
-// 
+//
 //   let stderr = "";
 //   proc.stderr.on("data", (d: Buffer) => {
 //     if (stderr.length < 4000) stderr += d.toString();
 //   });
-// 
+//
 //   const closed = new Promise<{ code: number | null; stderr: string }>((resolve) => {
 //     let settled = false;
 //     const done = (code: number | null): void => {
@@ -68,10 +68,10 @@
 //     });
 //     proc.on("close", (code) => done(code));
 //   });
-// 
+//
 //   return { proc, closed };
 // }
-// 
+//
 // /** Пишет буфер в stdin с учётом backpressure — ждёт 'drain', если внутренний
 //  * буфер потока переполнен, иначе гонка рендера с производительностью ffmpeg
 //  * бесконтрольно растит память процесса.
@@ -96,7 +96,7 @@
 //     stdin.once("error", done);
 //   });
 // }
-// 
+//
 // interface VideoRenderArgs {
 //   lrcText: string;
 //   coverBytes: Buffer | null;
@@ -115,15 +115,15 @@
 //   width: number;
 //   height: number;
 // }
-// 
+//
 // async function renderLyricsVideoBuffer(args: VideoRenderArgs): Promise<Buffer> {
 //   const allLines = parseLrc(args.lrcText);
 //   const lines = filterLrcLines(allLines).slice(0, MAX_LRC_LINES);
 //   if (lines.length === 0) throw new Error("нет строк LRC после фильтрации");
-// 
+//
 //   const textLines = lines.map((l) => l.text);
 //   const { width: W, height: H } = args;
-// 
+//
 //   const ffArgs: string[] = [
 //     "-y",
 //     "-f", "rawvideo", "-pixel_format", "rgba", "-video_size", `${W}x${H}`, "-r", String(FPS), "-i", "pipe:0",
@@ -136,14 +136,14 @@
 //   ffArgs.push("-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p");
 //   if (args.audioPath) ffArgs.push("-c:a", "aac", "-b:a", "192k", "-shortest");
 //   ffArgs.push("-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1");
-// 
+//
 //   const { proc, closed } = spawnFfmpeg(ffArgs);
 //   const outChunks: Buffer[] = [];
 //   proc.stdout.on("data", (d: Buffer) => outChunks.push(d));
-// 
+//
 //   let dead = false;
 //   void closed.then(() => { dead = true; });
-// 
+//
 //   const renderFrame = async (activeFloat: number, progressMs: number): Promise<Buffer> => {
 //     const block: LyricsBlock = {
 //       lines: textLines,
@@ -165,7 +165,7 @@
 //       rawRGBA: true,
 //     }) as Promise<Buffer>;
 //   };
-// 
+//
 //   // hold: один рендер кадра, повторяется нужное число раз на выбранном FPS —
 //   // одинаковые кадры почти ничего не стоят libx264 для кодирования.
 //   const writeHold = async (activeFloat: number, progressMs: number, durMs: number): Promise<void> => {
@@ -176,25 +176,25 @@
 //       await writeStdin(proc, buf);
 //     }
 //   };
-// 
+//
 //   // intro: без подсветки, пока не наступила первая строка (activeFloat=-1)
 //   const introMs = lines[0]!.timeMs;
 //   if (introMs > 200) await writeHold(-1, 0, introMs);
-// 
+//
 //   for (let i = 0; i < lines.length && !dead; i++) {
 //     const line = lines[i]!;
 //     const nextLine = lines[i + 1];
 //     const lineDurationMs = nextLine
 //       ? nextLine.timeMs - line.timeMs
 //       : Math.max(2000, args.durationMs > 0 ? args.durationMs - line.timeMs : 5000);
-// 
+//
 //     const isLast = i === lines.length - 1;
 //     const holdMs = isLast ? lineDurationMs : Math.max(0, lineDurationMs - TRANS_MS);
 //     const transMs = isLast ? 0 : Math.min(lineDurationMs, TRANS_MS);
 //     const transFrames = isLast ? 0 : Math.max(1, Math.round((transMs / 1000) * FPS));
-// 
+//
 //     if (holdMs > 0) await writeHold(i, line.timeMs, holdMs);
-// 
+//
 //     // переход: по кадру на каждый реальный тик FPS — максимально плавно,
 //     // без квантования в блоки и без последующей передискретизации ffmpeg'ом
 //     // (раньше concat-демуксер пересчитывал произвольные длительности кадров
@@ -207,14 +207,14 @@
 //       await writeStdin(proc, buf);
 //     }
 //   }
-// 
+//
 //   proc.stdin.end();
 //   const { code, stderr } = await closed;
 //   if (code !== 0) throw new Error(`ffmpeg завершился с ошибкой (код ${code}): ${stderr.slice(-2000)}`);
-// 
+//
 //   return Buffer.concat(outChunks);
 // }
-// 
+//
 // /** Генерирует и отправляет MP4-видеокарточку с лирикой текущего трека. */
 // export async function buildAndSendLyricsVideo(
 //   bot: Bot,
@@ -227,7 +227,7 @@
 //     return;
 //   }
 //   _videoInFlight.add(user.id);
-// 
+//
 //   let progressMsg: { message_id: number } | null = null;
 //   try {
 //     const token = await container.resolveToken(user.id);
@@ -235,7 +235,7 @@
 //       await bot.api.sendMessage({ chat_id: chatId, text: "сначала войди — /login или жми 🔐 в меню" });
 //       return;
 //     }
-// 
+//
 //     const yandex = await container.getYandexService(token, user.id);
 //     const current = await yandex.getCurrentTrack();
 //     const track = current.track;
@@ -247,25 +247,25 @@
 //       await bot.api.sendMessage({ chat_id: chatId, text: "🎵 не удалось определить трек" });
 //       return;
 //     }
-// 
+//
 //     const lrcText = await yandex.getTrackLRC(track.id);
 //     if (!lrcText) {
 //       await bot.api.sendMessage({ chat_id: chatId, text: "у этого трека нет синхронизированных текстов 🎶" });
 //       return;
 //     }
-// 
+//
 //     progressMsg = await bot.api.sendMessage({ chat_id: chatId, text: "⏳ генерирую видеокарточку..." });
-// 
+//
 //     const [artist, title] = formatTrackBasics(track, "");
 //     const senderHandle = user.username ? `@${user.username}` : user.firstName || "user";
 //     const settings = await container.getUserSettings(user.id);
 //     const meta = buildCardMeta(track);
 //     const coverUrl = normalizeCoverUrl(track.coverUri ?? "", "1000x1000");
-// 
+//
 //     // видео только 16:9 / 9:16 — другие аспекты фолбэк к 16:9
 //     const aspect = settings.card_aspect === "9:16" ? "9:16" : "16:9";
 //     const [w, h] = aspect === "9:16" ? [900, 1600] : [1600, 900];
-// 
+//
 //     if (metaNeedsWaveColor(meta)) {
 //       try {
 //         await enrichCardMetaColor(meta, yandex);
@@ -273,13 +273,13 @@
 //         /* best-effort */
 //       }
 //     }
-// 
+//
 //     const [coverBytes, senderAvatar, audioUrl] = await Promise.all([
 //       coverUrl ? fetchCover(coverUrl, container.httpClient) : Promise.resolve(null),
 //       settings.card_toggles.avatar ? fetchUserAvatar(bot, user.id, container) : Promise.resolve(null),
 //       yandex.getDownloadUrl(track, "best").catch(() => null),
 //     ]);
-// 
+//
 //     // аудио качаем сами через downloadAudio (ретраи + короткие таймауты) и
 //     // отдаём ffmpeg локальный файл — CDN Яндекса иногда виснет на прямых
 //     // ссылках, а прямая передача URL в ffmpeg вешала весь процесс на минуты.
@@ -294,7 +294,7 @@
 //         audioPath = null;
 //       }
 //     }
-// 
+//
 //     try {
 //       const videoBytes = await renderLyricsVideoBuffer({
 //         lrcText,
@@ -316,7 +316,7 @@
 //         width: w,
 //         height: h,
 //       });
-// 
+//
 //       await bot.api.sendVideo({
 //         chat_id: chatId,
 //         video: MediaUpload.buffer(videoBytes, "lyrics.mp4"),

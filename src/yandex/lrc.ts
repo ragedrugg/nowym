@@ -23,7 +23,8 @@ export function parseLrc(lrcText: string): LrcLine[] {
     const sec = parseInt(m[2]!, 10);
     const frac = m[3]!;
     // нормализуем дробь к миллисекундам (десятые → ×100, сотые → ×10, миллисекунды → ×1)
-    const fracMs = frac.length === 1 ? parseInt(frac, 10) * 100 : frac.length === 2 ? parseInt(frac, 10) * 10 : parseInt(frac, 10);
+    const fracMs =
+      frac.length === 1 ? parseInt(frac, 10) * 100 : frac.length === 2 ? parseInt(frac, 10) * 10 : parseInt(frac, 10);
     const timeMs = (min * 60 + sec) * 1000 + fracMs;
     const text = m[4]!.trim();
     out.push({ timeMs, text });

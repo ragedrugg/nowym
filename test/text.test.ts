@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { plural, pluralTracks } from "../src/infra/text.ts";
 
 test("plural — русские правила", () => {

@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { TokenBucket, UserRateLimiter } from "../src/infra/rateLimit.ts";
 
 test("bucket — расход и отказ при пустом", () => {

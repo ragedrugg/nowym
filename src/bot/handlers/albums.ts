@@ -1,10 +1,10 @@
-import { type FormattableString, bold, format } from "gramio";
 import type { Bot } from "gramio";
-import type { Container } from "../container.ts";
+import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { pluralTracks } from "../../infra/text.ts";
-import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
 import { ProgressMessage } from "../../services/albums.ts";
+import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
+import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
 
 const log = getLogger("bot.albums");
@@ -26,7 +26,10 @@ export async function startAlbumUpload(
 ): Promise<void> {
   const [allowed, retryAfter] = container.downloadLimiter.check(userId);
   if (!allowed) {
-    await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек` });
+    await bot.api.sendMessage({
+      chat_id: chatId,
+      text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`,
+    });
     return;
   }
 
@@ -38,7 +41,10 @@ export async function startAlbumUpload(
 
   // слот занимаем до await'ов — иначе два альбома подряд устроят гонку active
   if (!container.albumService.tryBegin(userId)) {
-    await bot.api.sendMessage({ chat_id: chatId, text: "у тебя уже идёт выгрузка альбома — дождись её или нажми «отмена»" });
+    await bot.api.sendMessage({
+      chat_id: chatId,
+      text: "у тебя уже идёт выгрузка альбома — дождись её или нажми «отмена»",
+    });
     return;
   }
   let handedOff = false;

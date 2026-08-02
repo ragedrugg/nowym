@@ -2,24 +2,20 @@
  *
  * Кэширует Track-объекты в LRU (повторный выбор не дёргает api заново) и готовые
  * наборы результатов в TTLCache. */
-import { format, bold, italic, InlineQueryResult, InputMessageContent } from "gramio";
+import { bold, format, InlineQueryResult, InputMessageContent, italic } from "gramio";
+import { buildTrackCaption } from "../bot/captions.ts";
+import { loadingMarkup, progressMarkup, trackMarkup } from "../bot/markup.ts";
+import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
+import { LRUMap } from "../infra/lruMap.ts";
 import type { TTLCache } from "../infra/memoryCache.ts";
 import { parseSearchQuery } from "../infra/parsers.ts";
-import { sleep } from "../infra/async.ts";
-import { LRUMap } from "../infra/lruMap.ts";
-import { formatArtists } from "../yandex/metadata.ts";
-import { normalizeCoverUrl } from "../yandex/media.ts";
-import { albumUrl } from "../yandex/urls.ts";
 import type { YandexClient } from "../yandex/client.ts";
+import { normalizeCoverUrl } from "../yandex/media.ts";
+import { formatArtists } from "../yandex/metadata.ts";
 import type { YaAlbum, YaTrack } from "../yandex/types.ts";
+import { albumUrl } from "../yandex/urls.ts";
 import type { CacheService } from "./cache.ts";
-import { buildTrackCaption } from "../bot/captions.ts";
-import {
-  loadingMarkup,
-  progressMarkup,
-  trackMarkup,
-} from "../bot/markup.ts";
 
 const log = getLogger("services.search");
 
@@ -75,7 +71,12 @@ export class SearchService {
     };
   }
 
-  async createInlineResultFromTrack(track: YaTrack, layout = "button", sendMode = "text_media", signal?: AbortSignal): Promise<InlineResult | null> {
+  async createInlineResultFromTrack(
+    track: YaTrack,
+    layout = "button",
+    sendMode = "text_media",
+    signal?: AbortSignal,
+  ): Promise<InlineResult | null> {
     this.cacheTrackObject(track);
     const meta = this.getTrackMeta(track);
     if (sendMode === "text_media") {
@@ -86,7 +87,12 @@ export class SearchService {
         const cached = await this.cacheService.cacheDb.get(String(track.id));
         if (cached && cached.is_cached) {
           return this.buildCachedAudioResult(
-            String(track.id), cached.telegram_file_id, true, layout, cached.codec, cached.bitrate_kbps,
+            String(track.id),
+            cached.telegram_file_id,
+            true,
+            layout,
+            cached.codec,
+            cached.bitrate_kbps,
           );
         }
       }
@@ -102,12 +108,17 @@ export class SearchService {
     const artist = meta.artistNames;
     const title = (track.title || "").trim() || "—";
     const head = artist ? `${artist} — ${title}` : title;
-    return InlineQueryResult.article(`tm:${trackId}`, `⬇️ ${head}`, InputMessageContent.text(format`гружу ${bold(head)}`, { link_preview_options: { is_disabled: true } }), {
-      description: "нажми — заменю текст на трек",
-      ...(meta.thumbUrl ? { thumbnail_url: meta.thumbUrl } : {}),
-      // без reply_markup tg не отдаёт inline_message_id в chosen_inline_result
-      reply_markup: progressMarkup(trackId, "качаю..."),
-    });
+    return InlineQueryResult.article(
+      `tm:${trackId}`,
+      `⬇️ ${head}`,
+      InputMessageContent.text(format`гружу ${bold(head)}`, { link_preview_options: { is_disabled: true } }),
+      {
+        description: "нажми — заменю текст на трек",
+        ...(meta.thumbUrl ? { thumbnail_url: meta.thumbUrl } : {}),
+        // без reply_markup tg не отдаёт inline_message_id в chosen_inline_result
+        reply_markup: progressMarkup(trackId, "качаю..."),
+      },
+    );
   }
 
   private async createFallbackResult(track: YaTrack, meta: TrackMeta): Promise<InlineResult> {
@@ -119,7 +130,12 @@ export class SearchService {
     });
   }
 
-  private async createCachedResult(track: YaTrack, meta: TrackMeta, layout: string, signal?: AbortSignal): Promise<InlineResult> {
+  private async createCachedResult(
+    track: YaTrack,
+    meta: TrackMeta,
+    layout: string,
+    signal?: AbortSignal,
+  ): Promise<InlineResult> {
     const trackId = String(track.id);
     const cached = await this.cacheService!.cacheDb.get(trackId);
     const isCachedNow = Boolean(cached && cached.is_cached);
@@ -147,14 +163,24 @@ export class SearchService {
   }
 
   private buildCachedAudioResult(
-    trackId: string, fileId: string, isCached: boolean, layout: string,
-    codec: string | null, bitrateKbps: number | null,
+    trackId: string,
+    fileId: string,
+    isCached: boolean,
+    layout: string,
+    codec: string | null,
+    bitrateKbps: number | null,
   ): InlineResult {
     if (isCached) {
       if (layout === "none") return InlineQueryResult.cached.audio(trackId, fileId);
-      if (layout === "text") return InlineQueryResult.cached.audio(trackId, fileId, { caption: buildTrackCaption(trackId, codec, bitrateKbps) });
+      if (layout === "text")
+        return InlineQueryResult.cached.audio(trackId, fileId, {
+          caption: buildTrackCaption(trackId, codec, bitrateKbps),
+        });
       if (layout === "both")
-        return InlineQueryResult.cached.audio(trackId, fileId, { caption: buildTrackCaption(trackId, codec, bitrateKbps), reply_markup: trackMarkup(trackId, true) });
+        return InlineQueryResult.cached.audio(trackId, fileId, {
+          caption: buildTrackCaption(trackId, codec, bitrateKbps),
+          reply_markup: trackMarkup(trackId, true),
+        });
       return InlineQueryResult.cached.audio(trackId, fileId, { reply_markup: trackMarkup(trackId, true) });
     }
     // пустышка — кнопка нужна всегда (юзер видит прогресс)
@@ -196,7 +222,14 @@ export class SearchService {
     });
   }
 
-  async searchAndCreateResults(query: string, maxResults = 5, layout = "button", sendMode = "text_media", signal?: AbortSignal, tracksOnly = false): Promise<InlineResult[]> {
+  async searchAndCreateResults(
+    query: string,
+    maxResults = 5,
+    layout = "button",
+    sendMode = "text_media",
+    signal?: AbortSignal,
+    tracksOnly = false,
+  ): Promise<InlineResult[]> {
     try {
       const cacheKey = `search:${layout}:${sendMode}:${tracksOnly ? "t:" : ""}${query}:${maxResults}`;
       const cachedRes = this.resultsCache.get(cacheKey);
@@ -216,7 +249,10 @@ export class SearchService {
         const track = await this.yandexService.getTrackById(parsed.track_id);
         if (track) {
           const r = await this.safeCreateTrack(track, layout, sendMode, signal);
-          if (r) { results.push(r); trackIdsInResult.push(parsed.track_id); }
+          if (r) {
+            results.push(r);
+            trackIdsInResult.push(parsed.track_id);
+          }
         }
       } else if (parsed.type === "album_link") {
         const album = await this.yandexService.getAlbumShort(parsed.album_id);
@@ -231,7 +267,8 @@ export class SearchService {
           this.yandexService.searchTracks(query, maxResults),
           tracksOnly ? Promise.resolve([] as YaAlbum[]) : this.yandexService.searchAlbums(query, 2),
         ]);
-        const trackResults = tracks.length > 0 ? await this.createTrackResultsParallel(tracks, layout, sendMode, signal) : [];
+        const trackResults =
+          tracks.length > 0 ? await this.createTrackResultsParallel(tracks, layout, sendMode, signal) : [];
         const albumResults = albums.map((a) => this.createAlbumResult(a)).filter((r): r is InlineResult => r !== null);
         results = [...trackResults, ...albumResults]; // альбомы вторым блоком
         trackIdsInResult = tracks.map((t) => t.id!);
@@ -332,7 +369,12 @@ export class SearchService {
     return { results, nextOffset };
   }
 
-  private async createTrackResultsParallel(tracks: YaTrack[], layout: string, sendMode: string, signal?: AbortSignal): Promise<InlineResult[]> {
+  private async createTrackResultsParallel(
+    tracks: YaTrack[],
+    layout: string,
+    sendMode: string,
+    signal?: AbortSignal,
+  ): Promise<InlineResult[]> {
     // 6с — запас на 1-2 send_audio (создание пустышек); inline window ~10с
     const out: (InlineResult | null)[] = new Array(tracks.length).fill(null);
     // локальная отмена: гонка истекла / внешний таймаут → проигравшие задачи
@@ -352,7 +394,12 @@ export class SearchService {
     return out.filter((r): r is InlineResult => r !== null);
   }
 
-  private async safeCreateTrack(track: YaTrack, layout: string, sendMode: string, signal?: AbortSignal): Promise<InlineResult | null> {
+  private async safeCreateTrack(
+    track: YaTrack,
+    layout: string,
+    sendMode: string,
+    signal?: AbortSignal,
+  ): Promise<InlineResult | null> {
     if (signal?.aborted) return null;
     try {
       const r = await this.createInlineResultFromTrack(track, layout, sendMode, signal);

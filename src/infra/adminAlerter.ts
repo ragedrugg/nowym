@@ -43,10 +43,7 @@ export class AdminAlerter {
     this.lastSentAt = now;
     const n = this.pending;
     this.pending = 0;
-    const text =
-      n > 1
-        ? `⚠️ ${n} ошибок за последнее окно, последняя:\n${this.lastMsg}`
-        : `⚠️ ошибка:\n${this.lastMsg}`;
+    const text = n > 1 ? `⚠️ ${n} ошибок за последнее окно, последняя:\n${this.lastMsg}` : `⚠️ ошибка:\n${this.lastMsg}`;
     try {
       await this.send(text);
     } catch (e) {

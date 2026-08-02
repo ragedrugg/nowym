@@ -1,22 +1,24 @@
 /** GramIO webhook через node:http(s) + кастомный роут /now-playing. Фоновые
  * задачи: stale-refresher, чистка пустышек, дочитывание упавших альбомов,
  * ws-наблюдатель Ynison владельца. */
+
+import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { readFileSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
-import { Bot, webhookHandler, AllowedUpdatesFilter } from "gramio";
 import { createDialogs } from "@gramio/dialogs";
 import { redisStorage } from "@gramio/storage-redis";
+import { AllowedUpdatesFilter, Bot, webhookHandler } from "gramio";
 import { registerCommands } from "./bot/commandsMenu.ts";
 import { Container } from "./bot/container.ts";
 import { buildMenuDialog } from "./bot/dialogs.ts";
-import { safeAnswerCb } from "./bot/safeApi.ts";
-import { resolveIconSet } from "./bot/iconSet.ts";
 import { registerHandlers } from "./bot/handlers/index.ts";
-import { getLogger } from "./infra/logging.ts";
-import { sleep } from "./infra/async.ts";
+import { resolveIconSet } from "./bot/iconSet.ts";
+import { safeAnswerCb } from "./bot/safeApi.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
+import { sleep } from "./infra/async.ts";
+import { getLogger } from "./infra/logging.ts";
+import { counterSnapshot, incCounter } from "./infra/metrics.ts";
 import { NowPlayingWatcher } from "./services/nowPlayingWatcher.ts";
 import { StaleRefresher } from "./services/stale.ts";
 import { getSettings } from "./settings.ts";
@@ -53,9 +55,7 @@ async function main(): Promise<void> {
   // payload (→ «there is no audio») без .catch — 429-флуд обрабатывает floodRetry в ChannelSender.
   // BOT_API_BASE_URL задан → self-hosted Bot API server + long-polling; пусто → облако + webhook
   const localApi = Boolean(s.BOT_API_BASE_URL);
-  const bot = localApi
-    ? new Bot(s.API_TOKEN, { api: { baseURL: s.BOT_API_BASE_URL } })
-    : new Bot(s.API_TOKEN);
+  const bot = localApi ? new Bot(s.API_TOKEN, { api: { baseURL: s.BOT_API_BASE_URL } }) : new Bot(s.API_TOKEN);
   const container = new Container();
   const webhookUrl = s.WEBHOOK_HOST.replace(/\/+$/, "") + s.WEBHOOK_PATH;
 
@@ -66,7 +66,11 @@ async function main(): Promise<void> {
   // extend ДО registerHandlers: derive ctx.dialog должен стоять раньше хендлеров команд.
   // Хранилище стека диалогов (кнопки) — Redis (localhost:6379), keyPrefix изолирует ключи.
   const { plugin: dialogsPlugin, background } = createDialogs([buildMenuDialog(bot, container)], {
-    storage: redisStorage({ keyPrefix: "nowym:dialogs:" }),
+    storage: redisStorage(
+      s.REDIS_HOST
+        ? { host: s.REDIS_HOST, port: s.REDIS_PORT, keyPrefix: "nowym:dialogs:" }
+        : { keyPrefix: "nowym:dialogs:" },
+    ),
     events: {
       // DialogEventCtx = CallbackCtx | MessageCtx: answer только на callback-ветке → каст
       onStale: (ctx) => safeAnswerCb(ctx as never, "это меню устарело — открой заново через /start"),
@@ -95,6 +99,7 @@ async function main(): Promise<void> {
   bot.onError(({ kind, error }) => {
     const msg = `${kind}: ${error?.message ?? error}`;
     log.error(`[onError] ${msg}`);
+    incCounter("errors_total");
     alerter?.report(msg);
   });
 
@@ -102,13 +107,15 @@ async function main(): Promise<void> {
   // процесс без следа. unhandledRejection логируем без exit; uncaughtException
   // оставляет процесс в неопределённом состоянии — алертим и выходим (pm2 поднимет).
   process.on("unhandledRejection", (reason) => {
-    const msg = `unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : reason}`;
+    const msg = `unhandledRejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : reason}`;
     log.error(msg);
+    incCounter("errors_total");
     alerter?.report(msg);
   });
   process.on("uncaughtException", (error) => {
     const msg = `uncaughtException: ${error?.stack ?? error?.message ?? error}`;
     log.error(msg);
+    incCounter("errors_total");
     alerter?.report(msg);
     // даём ~1с алерту долететь, затем выходим — pm2 рестартует
     setTimeout(() => process.exit(1), 1000).unref();
@@ -214,6 +221,11 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      handleMetrics(res, container, npWatcher);
+      return;
+    }
+
     res.writeHead(404).end();
   };
 
@@ -239,9 +251,7 @@ async function main(): Promise<void> {
     );
     clearInterval(stubCleaner);
     if (localApi) {
-      await Promise.race([bot.stop(), sleep(5000)]).catch((e) =>
-        log.warning(`[polling] stop на shutdown упал: ${e}`),
-      );
+      await Promise.race([bot.stop(), sleep(5000)]).catch((e) => log.warning(`[polling] stop на shutdown упал: ${e}`));
     } else {
       try {
         await Promise.race([bot.api.deleteWebhook(), sleep(5000)]);
@@ -379,6 +389,60 @@ async function handleHealth(
   };
   res.writeHead(dbOk ? 200 : 503, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+/** /metrics — Prometheus text exposition. Те же данные, что /health, плюс
+ * счётчики (errors_total, rate_limit_rejections_total, ...) из infra/metrics.ts.
+ * Без авторизации — как и /health, ничего чувствительного тут нет. */
+function handleMetrics(res: ServerResponse, container: Container, watcher: NowPlayingWatcher | null): void {
+  const lines: string[] = [];
+  const gauge = (name: string, help: string, value: number, labels = ""): void => {
+    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`, `${name}${labels} ${value}`);
+  };
+  const counter = (name: string, help: string, value: number, labels = ""): void => {
+    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} counter`, `${name}${labels} ${value}`);
+  };
+
+  gauge("nowym_uptime_seconds", "process uptime in seconds", Math.round(process.uptime()));
+  gauge("nowym_rss_bytes", "resident memory in bytes", process.memoryUsage().rss);
+
+  const usersStats = usersPool.stats();
+  const cacheStats = cachePool.stats();
+  for (const [db, stats] of [
+    ["users", usersStats],
+    ["cache", cacheStats],
+  ] as const) {
+    gauge("nowym_db_pool_total", "postgres pool: total connections", stats.total, `{db="${db}"}`);
+    gauge("nowym_db_pool_idle", "postgres pool: idle connections", stats.idle, `{db="${db}"}`);
+    gauge("nowym_db_pool_waiting", "postgres pool: waiting acquires", stats.waiting, `{db="${db}"}`);
+  }
+
+  const caches = {
+    track: container.trackCache,
+    avatar: container.avatarCache,
+    settings: container.userSettingsCache,
+    inline_owners: container.inlineOwners,
+  };
+  for (const [name, cache] of Object.entries(caches)) {
+    const stats = cache.stats();
+    gauge("nowym_cache_size", "in-memory cache entries", stats.size, `{cache="${name}"}`);
+    counter("nowym_cache_hits_total", "in-memory cache hits", stats.hits, `{cache="${name}"}`);
+    counter("nowym_cache_misses_total", "in-memory cache misses", stats.misses, `{cache="${name}"}`);
+  }
+
+  const w = watcher?.health() ?? { running: false, connected: false, lastStateAgeMs: null, hasTrack: false };
+  gauge("nowym_watcher_running", "ynison watcher: process running (1/0)", w.running ? 1 : 0);
+  gauge("nowym_watcher_connected", "ynison watcher: ws connected (1/0)", w.connected ? 1 : 0);
+  if (w.lastStateAgeMs !== null) {
+    gauge("nowym_watcher_last_state_age_ms", "ynison watcher: ms since last state frame", w.lastStateAgeMs);
+  }
+
+  for (const [name, value] of counterSnapshot()) {
+    counter(`nowym_${name}`, name, value);
+  }
+
+  res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
+  res.end(`${lines.join("\n")}\n`);
 }
 
 main().catch((e) => {

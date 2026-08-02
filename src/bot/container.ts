@@ -1,13 +1,14 @@
 /** DI-контейнер: держит все сервисы и кэши, резолвит per-user YandexClient/
  * SearchService, проактивно обновляет токен. Создаётся в main, стартует с
  * готовым GramIO-ботом. */
-import type { Bot } from "gramio";
+
 import type { DialogManager } from "@gramio/dialogs";
+import type { Bot } from "gramio";
 import { GeniusClient } from "../genius/client.ts";
+import { sleep } from "../infra/async.ts";
 import { crypto } from "../infra/crypto.ts";
 import { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
-import { sleep } from "../infra/async.ts";
 import { TTLCache } from "../infra/memoryCache.ts";
 import { DownloadConcurrency } from "../infra/queue.ts";
 import { UserRateLimiter } from "../infra/rateLimit.ts";
@@ -16,8 +17,8 @@ import { AuthService } from "../services/auth.ts";
 import { BroadcastService } from "../services/broadcast.ts";
 import { CacheService } from "../services/cache.ts";
 import { CardRenderPool } from "../services/cardRenderPool.ts";
-import { SearchService, type InlineResult } from "../services/search.ts";
 import type { NowPlayingWatcher } from "../services/nowPlayingWatcher.ts";
+import { type InlineResult, SearchService } from "../services/search.ts";
 import { getSettings } from "../settings.ts";
 import { CacheDb } from "../storage/cache.ts";
 import { KnownChatsDb } from "../storage/knownChats.ts";
@@ -25,7 +26,7 @@ import { closeAll as closeDbPools, initializeAll } from "../storage/pool.ts";
 import { SettingsDb, type UserSettings } from "../storage/settings.ts";
 import { UsersDb } from "../storage/users.ts";
 import { TaggingService } from "../tagging/service.ts";
-import { YandexClient, YandexClientFactory } from "../yandex/client.ts";
+import { type YandexClient, YandexClientFactory } from "../yandex/client.ts";
 import { ChannelSender } from "./telegramSender.ts";
 
 const log = getLogger("bot.container");

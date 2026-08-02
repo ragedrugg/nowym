@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 
 // ADMIN_USER_ID фиксируется settings.ts при первом getSettings() на весь процесс —
 // задаём ДО любого импорта, который мог бы её дёрнуть раньше. Жёсткое `=`, не

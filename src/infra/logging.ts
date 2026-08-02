@@ -25,9 +25,7 @@ function emit(level: Level, name: string, msg: string): void {
   if (ORDER[level] < ORDER[LEVEL]) return;
   const ts = new Date().toISOString();
   if (JSON_FORMAT) {
-    process.stdout.write(
-      JSON.stringify({ ts, level, logger: name, msg }) + "\n",
-    );
+    process.stdout.write(JSON.stringify({ ts, level, logger: name, msg }) + "\n");
   } else {
     const line = `${ts} ${level.padEnd(8)} [${name}] ${msg}\n`;
     if (ORDER[level] >= ORDER.ERROR) process.stderr.write(line);

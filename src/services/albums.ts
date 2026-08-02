@@ -1,31 +1,32 @@
 /** Выгрузка альбома: параллельная подготовка → пачками по 10 через sendMediaGroup. */
-import { type FormattableString, bold, code, format, join } from "gramio";
+
 import type { Bot } from "gramio";
-import { MediaInput, MediaUpload } from "gramio";
-import { cancelAlbumMarkup, albumRetryMarkup } from "../bot/markup.ts";
-import { getLogger } from "../infra/logging.ts";
+import { bold, code, type FormattableString, format, join, MediaInput, MediaUpload } from "gramio";
+import { albumRetryMarkup, cancelAlbumMarkup } from "../bot/markup.ts";
 import { sleep } from "../infra/async.ts";
 import type { HttpClient } from "../infra/http.ts";
-import { Semaphore } from "../infra/semaphore.ts";
+import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 import type { DownloadConcurrency } from "../infra/queue.ts";
+import { Semaphore } from "../infra/semaphore.ts";
 import { pluralTracks } from "../infra/text.ts";
 import { getSettings } from "../settings.ts";
 import type { CacheDb } from "../storage/cache.ts";
+import type { UserSettings } from "../storage/settings.ts";
+import type { CachedTrack, InflightAlbum } from "../storage/types.ts";
+import { makeEncrawDecrypt, type YandexClient } from "../yandex/client.ts";
 import { fetchCover } from "../yandex/media.ts";
 import {
+  type AudioQuality,
   albumEmoji,
   albumTypeRu,
   buildTrackMetadata,
   formatTrackBasics,
   LABELED_ALBUM_TYPES,
   trackIsTooLong,
-  type AudioQuality,
 } from "../yandex/metadata.ts";
-import { type YandexClient, makeEncrawDecrypt } from "../yandex/client.ts";
 import type { AlbumData, TrackMetadata, YaTrack } from "../yandex/types.ts";
-import type { UserSettings } from "../storage/settings.ts";
-import type { CacheService, CacheMetadata } from "./cache.ts";
+import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.albums");
 
@@ -233,7 +234,7 @@ export class AlbumService {
     resolveToken(userId: number): Promise<string | null>;
     getYandexClient(token: string, userId: number): Promise<YandexClient>;
   }): Promise<void> {
-    let rows;
+    let rows: InflightAlbum[];
     try {
       rows = await this.db.listInflight(6);
     } catch (e) {
@@ -264,7 +265,14 @@ export class AlbumService {
       resolveToken(userId: number): Promise<string | null>;
       getYandexClient(token: string, userId: number): Promise<YandexClient>;
     },
-    row: { id: number; user_id: number; chat_id: number; album_id: number; progress_message_id: number | null; completed_track_ids: number[] },
+    row: {
+      id: number;
+      user_id: number;
+      chat_id: number;
+      album_id: number;
+      progress_message_id: number | null;
+      completed_track_ids: number[];
+    },
   ): Promise<void> {
     const userId = row.user_id;
     const chatId = row.chat_id;
@@ -272,9 +280,7 @@ export class AlbumService {
     const doneIds = new Set(row.completed_track_ids.map(Number));
     const inflightId = row.id;
 
-    const proxy = row.progress_message_id
-      ? new ProgressMessage(this.bot, chatId, row.progress_message_id)
-      : null;
+    const proxy = row.progress_message_id ? new ProgressMessage(this.bot, chatId, row.progress_message_id) : null;
 
     // claim — синхронно, до await'ов ниже; bot.start() уже принимает апдейты
     // параллельно с resumeInflight, так что новый /start album_<id> от того же
@@ -459,7 +465,7 @@ export class AlbumService {
         return;
       }
 
-      let cached;
+      let cached: CachedTrack | null;
       try {
         cached = await this.db.get(trackId, tier);
       } catch {
@@ -467,7 +473,16 @@ export class AlbumService {
       }
 
       if (cached && cached.is_cached) {
-        prepared[idx] = { kind: "cached", track, trackId, metadata, fileId: cached.telegram_file_id, payload: null, codec: "mp3", tier };
+        prepared[idx] = {
+          kind: "cached",
+          track,
+          trackId,
+          metadata,
+          fileId: cached.telegram_file_id,
+          payload: null,
+          codec: "mp3",
+          tier,
+        };
         return;
       }
 
@@ -477,7 +492,9 @@ export class AlbumService {
           return;
         }
 
-        await this.mutateProgress(progress, (p) => { p.downloading += 1; });
+        await this.mutateProgress(progress, (p) => {
+          p.downloading += 1;
+        });
         await this.renderProgress(progressMsg, headerFull, progress, total);
 
         let codec = "mp3";
@@ -497,7 +514,14 @@ export class AlbumService {
                 const pickUrl = async (): Promise<string | null> =>
                   llUrls[Math.floor(Math.random() * llUrls.length)] ?? null;
                 const llCodec = ll.codec ?? "flac";
-                const p = await this.cache.prepareTrackPayload(trackId, pickUrl, metadata, llCodec, decrypt, "lossless");
+                const p = await this.cache.prepareTrackPayload(
+                  trackId,
+                  pickUrl,
+                  metadata,
+                  llCodec,
+                  decrypt,
+                  "lossless",
+                );
                 if (p !== null) return { codec: llCodec, payload: p, tier: "lossless" };
                 log.warning(`[album] lossless не вышел для ${trackId} → фолбэк на lossy`);
               }
@@ -524,11 +548,22 @@ export class AlbumService {
         } catch (e) {
           log.error(`ошибка скачивания трека ${trackId} (user=${userId}): ${e}`);
         } finally {
-          await this.mutateProgress(progress, (p) => { p.downloading -= 1; });
+          await this.mutateProgress(progress, (p) => {
+            p.downloading -= 1;
+          });
         }
 
         if (payload === null) {
-          prepared[idx] = { kind: "failed", track, trackId, metadata, fileId: null, payload: null, codec, tier: actualTier };
+          prepared[idx] = {
+            kind: "failed",
+            track,
+            trackId,
+            metadata,
+            fileId: null,
+            payload: null,
+            codec,
+            tier: actualTier,
+          };
         } else {
           prepared[idx] = { kind: "fresh", track, trackId, metadata, fileId: null, payload, codec, tier: actualTier };
         }
@@ -542,9 +577,7 @@ export class AlbumService {
         if (state.cancelled) break;
         const chunkEnd = Math.min(chunkStart + PREPARE_CHUNK, total);
 
-        await Promise.allSettled(
-          tracks.slice(chunkStart, chunkEnd).map((t, i) => prepare(chunkStart + i, t)),
-        );
+        await Promise.allSettled(tracks.slice(chunkStart, chunkEnd).map((t, i) => prepare(chunkStart + i, t)));
         if (state.cancelled) break;
 
         // phase 2: пачки до 10 внутри волны. failed-трек — «разрыв», флашим текущую пачку перед ним
@@ -559,7 +592,9 @@ export class AlbumService {
               if (batch.length > 0) break; // сначала отправим что собрали
               if (entry != null) {
                 const failedTrack = entry.track;
-                await this.mutateProgress(progress, (p) => { p.failed.push(failedTrack); });
+                await this.mutateProgress(progress, (p) => {
+                  p.failed.push(failedTrack);
+                });
               }
               prepared[cursor] = null;
               cursor += 1;
@@ -620,12 +655,23 @@ export class AlbumService {
     const promoted: PreparedEntry[] = [];
     for (const entry of batch) {
       if (entry.kind === "fresh") {
-        await this.mutateProgress(progress, (p) => { p.nowSending = `заливаю «${entry.track.title || "?"}»`; });
+        await this.mutateProgress(progress, (p) => {
+          p.nowSending = `заливаю «${entry.track.title || "?"}»`;
+        });
         await this.renderProgress(progressMsg, headerFull, progress, total);
         const [audioBytes, coverBytes] = entry.payload!;
-        const fileId = await this.cache.uploadToChannel(entry.trackId, audioBytes, coverBytes, entry.metadata, entry.codec, entry.tier);
+        const fileId = await this.cache.uploadToChannel(
+          entry.trackId,
+          audioBytes,
+          coverBytes,
+          entry.metadata,
+          entry.codec,
+          entry.tier,
+        );
         if (fileId === null) {
-          await this.mutateProgress(progress, (p) => { p.failed.push(entry.track); });
+          await this.mutateProgress(progress, (p) => {
+            p.failed.push(entry.track);
+          });
           continue;
         }
         promoted.push({ ...entry, kind: "cached", fileId });
@@ -635,7 +681,9 @@ export class AlbumService {
     }
 
     if (promoted.length === 0) {
-      await this.mutateProgress(progress, (p) => { p.nowSending = null; });
+      await this.mutateProgress(progress, (p) => {
+        p.nowSending = null;
+      });
       await this.renderProgress(progressMsg, headerFull, progress, total);
       return;
     }
@@ -673,12 +721,16 @@ export class AlbumService {
           for (const entry of promoted) p.failed.push(entry.track);
         });
       } else {
-        await this.mutateProgress(progress, (p) => { p.sent += promoted.length; });
+        await this.mutateProgress(progress, (p) => {
+          p.sent += promoted.length;
+        });
         for (const entry of promoted) await markDoneSafe(entry.trackId);
       }
     }
 
-    await this.mutateProgress(progress, (p) => { p.nowSending = null; });
+    await this.mutateProgress(progress, (p) => {
+      p.nowSending = null;
+    });
     await this.renderProgress(progressMsg, headerFull, progress, total);
   }
 
@@ -710,9 +762,7 @@ export class AlbumService {
       let eta = "";
       if (sent > 0 && sent < total) eta = `, осталось ~${formatEta((elapsed / sent) * (total - sent))}`;
 
-      const sendingLine = progress.nowSending
-        ? format`📨 шлю: ${progress.nowSending}`
-        : format`📨 готовлю отправку...`;
+      const sendingLine = progress.nowSending ? format`📨 шлю: ${progress.nowSending}` : format`📨 готовлю отправку...`;
       const downloadingLine = downloading ? format`⬇️ параллельно качается ${pluralTracks(downloading)}` : null;
 
       let t = format`${headerFull}\n\n${code(bar)} ${sent}/${total}${eta}\n${sendingLine}`;

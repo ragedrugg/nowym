@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { buildPlaylistAlbumData } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
@@ -13,7 +13,10 @@ test("buildPlaylistAlbumData — фильтрует недоступные, ну
 
   assert.ok(album);
   assert.equal(album!.tracks.length, 2);
-  assert.deepEqual(album!.tracks.map((t) => t.id), [1, 3]);
+  assert.deepEqual(
+    album!.tracks.map((t) => t.id),
+    [1, 3],
+  );
   assert.equal(album!.tracks[0]!._trackNumber, 1);
   assert.equal(album!.tracks[1]!._trackNumber, 2);
   assert.equal(album!.tracks[0]!._discNumber, 1);

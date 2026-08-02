@@ -2,15 +2,11 @@
  *
  * Одноразовый сценарий: на каждый вызов открывает свежий ws (redirect→state),
  * берёт первый state-фрейм, резолвит playable_id в трек и закрывается. */
-import { getLogger } from "../infra/logging.ts";
+
+import { type Client as LibClient, YnisonClient, YnisonError, type YnisonState } from "@dvxch/yandex-music";
 import { sleep } from "../infra/async.ts";
+import { getLogger } from "../infra/logging.ts";
 import type { YaTrack } from "./types.ts";
-import {
-  Client as LibClient,
-  YnisonClient,
-  YnisonError,
-  type YnisonState,
-} from "@dvxch/yandex-music";
 
 const log = getLogger("yandex.ynison");
 

@@ -2,14 +2,15 @@
  * контент по типам) всем chat_id из known_chats. Состояние на одного админа
  * (ADMIN_USER_ID один, не список), поэтому простая Map, а не полноценный
  * @gramio/dialogs FSM. */
-import { type FormattableString, bold, code as codeFmt, format } from "gramio";
+
 import type { Bot } from "gramio";
+import { bold, code as codeFmt, type FormattableString, format } from "gramio";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import { AsyncTokenGate } from "../infra/rateLimit.ts";
 import { Semaphore } from "../infra/semaphore.ts";
-import { formatEta, renderProgressBar } from "./albums.ts";
 import type { KnownChatsDb } from "../storage/knownChats.ts";
+import { formatEta, renderProgressBar } from "./albums.ts";
 
 const log = getLogger("services.broadcast");
 
@@ -161,9 +162,7 @@ export class BroadcastService {
     };
 
     await Promise.allSettled(
-      chatIds.map((chatId) =>
-        sem.run(() => (this.isCancelled(adminId) ? Promise.resolve() : sendOne(chatId))),
-      ),
+      chatIds.map((chatId) => sem.run(() => (this.isCancelled(adminId) ? Promise.resolve() : sendOne(chatId)))),
     );
 
     this.state.delete(adminId);

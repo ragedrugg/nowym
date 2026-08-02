@@ -8,7 +8,7 @@
   <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.12-2ea44f"></a>
   <img alt="stable" src="https://img.shields.io/badge/status-stable-2ea44f">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="public" src="https://img.shields.io/badge/repo-public-lightgrey">
+  <img alt="private" src="https://img.shields.io/badge/repo-private-lightgrey">
 </p>
 
 Бот для Яндекс Музыки в Telegram. Инлайн-поиск, карточка «сейчас играет»,
@@ -140,9 +140,10 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 - **Redis** — для `@gramio/dialogs`;
 - **ffmpeg** — только для аудио-эффектов (`ncore`/`speed`/`slow`, см. ниже);
   без него всё остальное работает, просто эта фича упадёт с понятной ошибкой;
-- **Docker** — опционально, для рекомендуемого self-hosted Bot API сервера
-  (см. «Быстрый старт»). Без домена/TLS через него проще всего, но можно и
-  без Docker (собрать сервер из исходников или пойти путём webhook).
+- **Docker** — опционально. Либо только для self-hosted Bot API сервера
+  (см. «Быстрый старт» — без домена/TLS через него проще всего), либо для
+  всей установки целиком через `docker-compose.yml` (см. «Через Docker»
+  ниже) — тогда Postgres/Redis тоже не нужно ставить на хост руками.
 
 Debian/Ubuntu:
 
@@ -166,6 +167,28 @@ sudo apt install postgresql redis-server ffmpeg
 npm install
 cp .env.example .env
 ```
+
+### Через Docker
+
+Альтернатива `install.sh` — `docker-compose.yml` поднимает бота вместе с
+Postgres и Redis, без ручной установки чего-либо на хост-машину кроме
+Docker:
+
+```bash
+cp .env.example .env
+# заполни .env: TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID/ADMIN_USER_ID,
+# POSTGRES_USERS_DSN/POSTGRES_CACHE_DSN (host — `postgres`, не 127.0.0.1),
+# NOWYM_USERS_PASSWORD/NOWYM_CACHE_PASSWORD (те же пароли, что в DSN),
+# REDIS_HOST=redis, TOKEN_ENCRYPTION_KEY/WEBHOOK_SECRET/NOW_PLAYING_TOKEN
+# (сгенерить: node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')
+docker compose up -d --build
+```
+
+Postgres-роли (`nowym_users_app`/`nowym_cache_app`) создаются автоматически
+при первом старте контейнера (`docs/sql/docker-init.sh`), схему таблиц
+внутри баз бот накатывает сам, как и везде. Подключение к Telegram — тот же
+выбор `BOT_API_BASE_URL`/`WEBHOOK_HOST` из «Быстрого старта» выше (self-hosted
+Bot API сервер удобнее поднять отдельным контейнером рядом, см. пример там).
 
 ### Переменные `.env`
 
@@ -218,17 +241,20 @@ sudo -u postgres psql -f docs/sql/init.sql   # свои пароли вмест�
 npm run start       # tsx src/main.ts — webhook (облако) или long-polling (self-hosted API)
 npm run dev         # то же самое, но tsx watch — авто-рестарт на изменениях
 npm run typecheck   # tsc --noEmit
-npm test            # node --import tsx --test, ~123 теста, секунд 12
+npm run lint         # biome check . (npm run lint:fix — почить автофиксом)
+npm test            # node --import tsx --test, ~154 теста, секунд 12
 ```
 
 Режим выбирается сам: задан `BOT_API_BASE_URL` → self-hosted Bot API сервер +
 long-polling; пусто → облако + webhook. В webhook-режиме поднимается один
-http(s)-сокет с тремя роутами: `WEBHOOK_PATH` (апдейты Telegram, опционально
+http(s)-сокет с роутами: `WEBHOOK_PATH` (апдейты Telegram, опционально
 проверяется `X-Telegram-Bot-Api-Secret-Token`), `GET /now-playing` (JSON о
 текущем треке владельца + недавние (`recent`, до 20 последних, из живых
 трекчейнджей вотчера, без похода в Yandex API), `Authorization: Bearer
-NOW_PLAYING_TOKEN`) и `GET /health`. TLS — если заданы
-`WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY`.
+NOW_PLAYING_TOKEN`), `GET /health` и `GET /metrics` (Prometheus text —
+статус пулов Postgres, hit/miss in-memory кэшей, статус Ynison-вотчера,
+счётчики ошибок/rate-limit-реджектов; без авторизации, как и `/health`).
+TLS — если заданы `WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY`.
 
 ### Прод (pm2)
 
@@ -276,8 +302,11 @@ sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowy
 | `src/tagging/` | тегирование аудио (TagLib/ffmpeg) |
 | `test/` | `node:test`, ~123 штуки |
 | `install.sh` | установка в одну команду (см. выше) |
-| `docs/sql/init.sql` | создание Postgres-ролей и баз |
+| `docs/sql/init.sql` | создание Postgres-ролей и баз (bare-metal) |
+| `docs/sql/docker-init.sh` | то же самое, но для первого старта postgres-контейнера |
+| `Dockerfile`, `docker-compose.yml` | альтернатива `install.sh` — бот+Postgres+Redis в контейнерах |
 | `scripts/backup.sh` | pg_dump обеих баз + ротация, крон-скрипт |
+| `biome.json` | конфиг линтера/форматтера (`npm run lint`) |
 
 ## Если что-то сломалось
 
@@ -297,6 +326,11 @@ sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowy
 5. `pm2 logs nowym-ts` и `GET /health` — если это прод. Свежий рестарт
    подхватывает `.env` и код с диска, а не то, что было закешировано
    node-процессом в памяти.
+
+## Контрибьютинг
+
+PR приветствуются — см. [CONTRIBUTING.md](CONTRIBUTING.md): как гонять
+typecheck/lint/тесты локально и чего ждать от PR.
 
 ## Лицензия
 

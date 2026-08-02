@@ -4,8 +4,10 @@
  * ВАЖНО: используем МОНОТОННЫЕ часы (performance.now), а не Date.now —
  * перевод системного времени не должен ломать refill.
  */
-import { getLogger } from "./logging.ts";
+
 import { sleep } from "./async.ts";
+import { getLogger } from "./logging.ts";
+import { incCounter } from "./metrics.ts";
 
 const log = getLogger("infra.rate_limit");
 
@@ -61,10 +63,7 @@ export class TokenBucket {
 
   consume(amount = 1.0): boolean {
     const now = monotonic();
-    this.tokens = Math.min(
-      this.maxTokens,
-      this.tokens + (now - this.lastRefill) * this.ratePerSecond,
-    );
+    this.tokens = Math.min(this.maxTokens, this.tokens + (now - this.lastRefill) * this.ratePerSecond);
     this.lastRefill = now;
     if (this.tokens >= amount) {
       this.tokens -= amount;
@@ -130,6 +129,7 @@ export class UserRateLimiter {
     }
     const allowed = bucket.consume(cost);
     const retryAfter = allowed ? 0 : bucket.secondsUntilAvailable(cost);
+    if (!allowed) incCounter("rate_limit_rejections_total");
     return [allowed, retryAfter];
   }
 

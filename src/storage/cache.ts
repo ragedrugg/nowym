@@ -96,9 +96,7 @@ export class CacheDb {
         started_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `);
-    await cachePool.query(
-      "CREATE INDEX IF NOT EXISTS idx_album_inflight_user ON album_inflight (user_id)",
-    );
+    await cachePool.query("CREATE INDEX IF NOT EXISTS idx_album_inflight_user ON album_inflight (user_id)");
   }
 
   async get(trackId: string | number, quality = "lossy"): Promise<CachedTrack | null> {
@@ -180,19 +178,18 @@ export class CacheDb {
    * рефреше, иначе выглядел бы «протухшим» вечно и монополизировал бы каждый
    * следующий батч getStaleUncached, оставляя остальные треки без шанса. */
   async touchStale(trackId: string | number): Promise<void> {
-    await cachePool.query(
-      "UPDATE telegram_cache SET updated_at = NOW() WHERE track_id = $1 AND is_cached = FALSE",
-      [Number(trackId)],
-    );
+    await cachePool.query("UPDATE telegram_cache SET updated_at = NOW() WHERE track_id = $1 AND is_cached = FALSE", [
+      Number(trackId),
+    ]);
   }
 
   /** удаляет одну строку-пустышку (после того как её канальное сообщение уже
    * снесли) — иначе следующий getOrCacheTrack() отдаст мёртвый file_id из БД. */
   async deleteStubRow(trackId: string | number, quality: string): Promise<void> {
-    await cachePool.query(
-      "DELETE FROM telegram_cache WHERE track_id = $1 AND quality = $2 AND is_cached = FALSE",
-      [Number(trackId), quality],
-    );
+    await cachePool.query("DELETE FROM telegram_cache WHERE track_id = $1 AND quality = $2 AND is_cached = FALSE", [
+      Number(trackId),
+      quality,
+    ]);
   }
 
   async deleteOldStubs(olderThanDays = 7): Promise<number> {
@@ -219,10 +216,7 @@ export class CacheDb {
     progress_message_id: number | null;
   }): Promise<number> {
     return cachePool.transaction(async (c) => {
-      await c.query("DELETE FROM album_inflight WHERE user_id = $1 AND album_id = $2", [
-        args.user_id,
-        args.album_id,
-      ]);
+      await c.query("DELETE FROM album_inflight WHERE user_id = $1 AND album_id = $2", [args.user_id, args.album_id]);
       const res = await c.query<{ id: number }>(
         "INSERT INTO album_inflight (user_id, chat_id, album_id, progress_message_id) VALUES ($1, $2, $3, $4) RETURNING id",
         [args.user_id, args.chat_id, args.album_id, args.progress_message_id],
@@ -261,17 +255,14 @@ export class CacheDb {
   }
 
   async deleteOldInflight(olderThanHours = 6): Promise<number> {
-    const res = await cachePool.query(
-      `DELETE FROM album_inflight WHERE started_at < NOW() - $1 * INTERVAL '1 hour'`,
-      [olderThanHours],
-    );
+    const res = await cachePool.query(`DELETE FROM album_inflight WHERE started_at < NOW() - $1 * INTERVAL '1 hour'`, [
+      olderThanHours,
+    ]);
     return res.rowCount ?? 0;
   }
 
   async dbSizeBytes(): Promise<number> {
-    const res = await cachePool.query<{ pg_database_size: number }>(
-      "SELECT pg_database_size(current_database())",
-    );
+    const res = await cachePool.query<{ pg_database_size: number }>("SELECT pg_database_size(current_database())");
     return res.rows[0]?.pg_database_size ?? 0;
   }
 }

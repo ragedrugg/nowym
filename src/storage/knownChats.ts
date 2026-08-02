@@ -27,9 +27,7 @@ export class KnownChatsDb {
   }
 
   async allChatIds(): Promise<number[]> {
-    const res = await usersPool.query<{ chat_id: number }>(
-      "SELECT chat_id FROM known_chats ORDER BY chat_id",
-    );
+    const res = await usersPool.query<{ chat_id: number }>("SELECT chat_id FROM known_chats ORDER BY chat_id");
     return res.rows.map((r) => r.chat_id);
   }
 
@@ -48,9 +46,7 @@ export class KnownChatsDb {
   }
 
   async count(): Promise<number> {
-    const res = await usersPool.query<{ count: string }>(
-      "SELECT COUNT(*) FROM known_chats",
-    );
+    const res = await usersPool.query<{ count: string }>("SELECT COUNT(*) FROM known_chats");
     return parseInt(res.rows[0]?.count ?? "0", 10);
   }
 }

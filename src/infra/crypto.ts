@@ -6,13 +6,7 @@
  * Префикс enc:v1: позволяет читать legacy plaintext-значения, не падая;
  * при следующей записи значение само станет зашифрованным.
  */
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHmac,
-  randomBytes,
-  timingSafeEqual,
-} from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const ENC_PREFIX = "enc:v1:";
 
@@ -84,12 +78,7 @@ class Crypto {
     const cipher = createCipheriv("aes-128-cbc", this.encryptionKey!, iv);
     const ciphertext = Buffer.concat([cipher.update(data), cipher.final()]);
 
-    const basic = Buffer.concat([
-      Buffer.from([FERNET_VERSION]),
-      timestamp,
-      iv,
-      ciphertext,
-    ]);
+    const basic = Buffer.concat([Buffer.from([FERNET_VERSION]), timestamp, iv, ciphertext]);
     const hmac = createHmac("sha256", this.signingKey!).update(basic).digest();
     return b64urlEncode(Buffer.concat([basic, hmac]));
   }

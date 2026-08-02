@@ -6,16 +6,17 @@
  *
  * Отправку в канал делегируем интерфейсу TelegramSender (ChannelSender поверх
  * GramIO; flood-control 429 обрабатывается его floodRetry). */
-import { getLogger } from "../infra/logging.ts";
+
 import { sleep, withTimeout } from "../infra/async.ts";
 import type { HttpClient } from "../infra/http.ts";
+import { getLogger } from "../infra/logging.ts";
 import { Semaphore } from "../infra/semaphore.ts";
 import type { CacheDb } from "../storage/cache.ts";
 import type { TrackCacheResult } from "../storage/types.ts";
 import { createEmptyMp3, getFilename } from "../tagging/emptyMp3.ts";
 import type { AudioTransform, TaggingService } from "../tagging/service.ts";
 import { fetchCover, origCoverUrl } from "../yandex/media.ts";
-import { estimateTrackBytes, MAX_TRACK_BYTES, HEAVY_TRACK_BYTES } from "../yandex/metadata.ts";
+import { estimateTrackBytes, HEAVY_TRACK_BYTES, MAX_TRACK_BYTES } from "../yandex/metadata.ts";
 import type { TrackMetadata } from "../yandex/types.ts";
 
 const log = getLogger("services.cache");
@@ -101,10 +102,8 @@ export class CacheService {
     quality = "lossy",
     transform?: AudioTransform,
   ): Promise<string | null> {
-    const task = this.withDedup(
-      this.downloadTasks,
-      `${trackId}:${quality}`,
-      () => this.downloadAndCacheFullTrack(trackId, getUrl, metadata, codec, decrypt, quality, transform),
+    const task = this.withDedup(this.downloadTasks, `${trackId}:${quality}`, () =>
+      this.downloadAndCacheFullTrack(trackId, getUrl, metadata, codec, decrypt, quality, transform),
     );
     try {
       // таймаут растёт с размером: крупный файл дольше качается, тегируется и льётся в канал
@@ -127,10 +126,8 @@ export class CacheService {
     decrypt?: (data: Buffer) => Buffer,
     tier = "lossy",
   ): Promise<[Buffer, Buffer | null] | null> {
-    const task = this.withDedup(
-      this.payloadTasks,
-      `${trackId}:${tier}`,
-      () => this.downloadWithMetadata(getUrl, metadata, codec, decrypt),
+    const task = this.withDedup(this.payloadTasks, `${trackId}:${tier}`, () =>
+      this.downloadWithMetadata(getUrl, metadata, codec, decrypt),
     );
     try {
       // тот же расчёт таймаута, что и в downloadAndCacheTrack — без него зависший
@@ -150,11 +147,7 @@ export class CacheService {
   /** Дедупликация параллельных запросов: если задача с таким ключом уже
    * выполняется — возвращаем ту же Promise; иначе стартуем новую и убираем
    * из map по завершении (успех или ошибка). */
-  private withDedup<T>(
-    map: Map<string, Promise<T>>,
-    key: string,
-    factory: () => Promise<T>,
-  ): Promise<T> {
+  private withDedup<T>(map: Map<string, Promise<T>>, key: string, factory: () => Promise<T>): Promise<T> {
     const existing = map.get(key);
     if (existing !== undefined) return existing;
     const task = factory();
@@ -162,9 +155,11 @@ export class CacheService {
     // .finally() возвращает НОВЫЙ promise — если task падает, эта производная
     // тоже падает и повисает необработанной (caller ждёт task, не её), выходя
     // как unhandledRejection и задваивая admin-алерт на каждую упавшую закачку.
-    task.finally(() => {
-      if (map.get(key) === task) map.delete(key);
-    }).catch(() => {});
+    task
+      .finally(() => {
+        if (map.get(key) === task) map.delete(key);
+      })
+      .catch(() => {});
     return task;
   }
 
@@ -213,9 +208,7 @@ export class CacheService {
     quality = "lossy",
   ): Promise<string | null> {
     try {
-      const sent = await this.channelSendLock.run(() =>
-        this.sendAudio(audioWithMetadata, coverData, metadata, codec),
-      );
+      const sent = await this.channelSendLock.run(() => this.sendAudio(audioWithMetadata, coverData, metadata, codec));
       await this.persistCached(trackId, sent.fileId, sent.messageId, metadata, true, quality);
       log.debug(`трек ${trackId} залит в канал`);
       return sent.fileId;
@@ -247,20 +240,26 @@ export class CacheService {
       }
     }
 
-    await this.cache.save(trackId, fileId, isCached, {
-      telegram_message_id: messageId,
-      has_metadata: isCached,
-      artist: m.artist || "",
-      title: m.title || "",
-      album: m.album || "",
-      cover_url: m.cover_url || "",
-      duration: m.duration || 0,
-      year: String(m.year || "") || null,
-      label: m.label || null,
-      genre: m.genre || null,
-      codec: m.codec || null,
-      bitrate_kbps: m.bitrate_kbps || null,
-    }, quality);
+    await this.cache.save(
+      trackId,
+      fileId,
+      isCached,
+      {
+        telegram_message_id: messageId,
+        has_metadata: isCached,
+        artist: m.artist || "",
+        title: m.title || "",
+        album: m.album || "",
+        cover_url: m.cover_url || "",
+        duration: m.duration || 0,
+        year: String(m.year || "") || null,
+        label: m.label || null,
+        genre: m.genre || null,
+        codec: m.codec || null,
+        bitrate_kbps: m.bitrate_kbps || null,
+      },
+      quality,
+    );
 
     if (oldStubMsgId !== null && crossTier) {
       // save() выше писал в другой tier — строка пустышки в stubTier'е сама себя
@@ -339,7 +338,12 @@ export class CacheService {
     }
     if (decrypt) audioData = decrypt(audioData); // encraw → расшифровка до тегов
 
-    const audioWithMetadata = await this.tagging.addMetadata(audioData, { ...metadata, cover_data: embedData }, codec, transform);
+    const audioWithMetadata = await this.tagging.addMetadata(
+      audioData,
+      { ...metadata, cover_data: embedData },
+      codec,
+      transform,
+    );
     return [audioWithMetadata, thumbData];
   }
 

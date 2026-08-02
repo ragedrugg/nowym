@@ -1,16 +1,17 @@
-import { type FormattableString, blockquote, bold, code, format, MediaUpload } from "gramio";
+import { type DialogManager, StartMode } from "@gramio/dialogs";
 import type { Bot } from "gramio";
-import { StartMode, type DialogManager } from "@gramio/dialogs";
-import type { Container } from "../container.ts";
-import { nowPlayingMarkup } from "../markup.ts";
+import { blockquote, bold, code, type FormattableString, format, MediaUpload } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
-import { buildCardImage } from "../cardBuilder.ts";
+import type { YaTrack } from "../../yandex/types.ts";
 import { senderHandleOf } from "../captions.ts";
+import { buildCardImage } from "../cardBuilder.ts";
+import type { Container } from "../container.ts";
+import { nowPlayingMarkup } from "../markup.ts";
 import { say } from "../safeApi.ts";
-import { sendTrackToChat } from "./inline.ts";
 import { startAlbumUpload } from "./albums.ts";
+import { sendTrackToChat } from "./inline.ts";
 
 /** ResetStack: дефолтный Normal пушил бы новый диалог на стек на каждый /start|/help|/settings,
  *  и кнопки прежних меню «протухали бы». */
@@ -57,7 +58,11 @@ ${code("/login")} · ${code("/logout")} — вход и выход`)}`;
 
 /** общий гейт для карточки и аудио: statusMsgId отличается у каждого вызывающего. */
 async function checkLimitAndToken(
-  bot: Bot, chatId: number, user: TgUser, container: Container, statusMsgId: number | null,
+  bot: Bot,
+  chatId: number,
+  user: TgUser,
+  container: Container,
+  statusMsgId: number | null,
 ): Promise<string | null> {
   const [allowed, retryAfter] = container.downloadLimiter.check(user.id);
   if (!allowed) {
@@ -141,7 +146,7 @@ export async function sendCurrentTrack(
   const token = await checkLimitAndToken(bot, chatId, user, container, statusMsgId);
   if (!token) return;
 
-  let track;
+  let track: YaTrack | null;
   try {
     const yandex = await container.getYandexService(token, user.id);
     const current = await yandex.getCurrentTrack();
@@ -158,8 +163,15 @@ export async function sendCurrentTrack(
   }
 
   await sendTrackToChat({
-    bot, chatId, userId: user.id, container,
-    trackId: String(track.id), trackObj: track, token, statusMsgId, checkLimit: false,
+    bot,
+    chatId,
+    userId: user.id,
+    container,
+    trackId: String(track.id),
+    trackObj: track,
+    token,
+    statusMsgId,
+    checkLimit: false,
   });
 }
 

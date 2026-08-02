@@ -1,9 +1,9 @@
-import { format } from "gramio";
 import type { Bot } from "gramio";
-import type { Container } from "../container.ts";
+import { format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { pluralTracks } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
+import type { Container } from "../container.ts";
 import { albumHeader } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
@@ -24,7 +24,10 @@ export async function startPlaylistUpload(
 ): Promise<void> {
   const [allowed, retryAfter] = container.downloadLimiter.check(userId);
   if (!allowed) {
-    await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек` });
+    await bot.api.sendMessage({
+      chat_id: chatId,
+      text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`,
+    });
     return;
   }
 

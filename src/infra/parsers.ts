@@ -1,12 +1,10 @@
 /** парсинг inline-запросов: текст, ссылка на трек или ссылка на альбом. */
 
-const TRACK_URL_RE =
-  /(?:music\.yandex(?:\.ru)?\/album\/\d+\/track|yandex\.ru\/music\/album\/\d+\/track)\/(\d+)/;
+const TRACK_URL_RE = /(?:music\.yandex(?:\.ru)?\/album\/\d+\/track|yandex\.ru\/music\/album\/\d+\/track)\/(\d+)/;
 
 // альбомный URL — без /track. (?!\d) не даёт \d+ бэктрекнуться на цифру короче
 // (иначе на .../album/123456/tracks lookahead после отката пропускал бы "12345").
-const ALBUM_URL_RE =
-  /(?:music\.yandex(?:\.ru)?\/album|yandex\.ru\/music\/album)\/(\d+)(?!\d)(?!\/track\/\d)/;
+const ALBUM_URL_RE = /(?:music\.yandex(?:\.ru)?\/album|yandex\.ru\/music\/album)\/(\d+)(?!\d)(?!\/track\/\d)/;
 
 export type ParsedQuery =
   | { type: "empty" }

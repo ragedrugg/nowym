@@ -6,12 +6,13 @@
  * с round-caps, без супер-сэмплинга.
  *
  * Стили прогресса: wavy / bar. */
-import path from "node:path";
-import fs from "node:fs";
+
 import { createHash } from "node:crypto";
-import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D, type Image, type Canvas } from "@napi-rs/canvas";
+import fs from "node:fs";
+import path from "node:path";
+import { type Canvas, createCanvas, GlobalFonts, type Image, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import { getLogger } from "../infra/logging.ts";
-import type { CardMeta, CardColors } from "../yandex/types.ts";
+import type { CardColors, CardMeta } from "../yandex/types.ts";
 
 const log = getLogger("services.card");
 
@@ -110,61 +111,98 @@ interface LayoutSpec {
   textX: number;
   textMaxW: number;
   artistMaxW: number;
-  mainTextY: number;  // Y художника (тайтл идёт под ним, см. drawArtistAndTitle)
+  mainTextY: number; // Y художника (тайтл идёт под ним, см. drawArtistAndTitle)
   artistSize: number;
   titleMaxSize: number;
   titleMinSize: number;
   metaSize: number;
   timeSize: number;
   bgGradDir: "right" | "left" | "bottom";
-  waveFixedY?: number;   // только "side": волна привязана к низу обложки
-  lyricsScale?: number;  // масштаб шрифтов лирики (default 1.0)
+  waveFixedY?: number; // только "side": волна привязана к низу обложки
+  lyricsScale?: number; // масштаб шрифтов лирики (default 1.0)
   lyricsTopGap?: number; // отступ от тайтла до области лирики (default 40)
 }
 
 function getLayoutSpec(aspect: string): LayoutSpec {
   const m = 56; // margin
-  const attrH = L.attrHeight;  // 76
+  const attrH = L.attrHeight; // 76
   const attrZoneH = attrH + 16; // 92
-  const cr = L.coverRadius;  // 44
+  const cr = L.coverRadius; // 44
 
   if (aspect === "9:16") {
-    const W = 900, H = 1600;
-    const attrY = H - m - attrH;  // 1468
-    const tw = W - 2 * m;  // 788
-    const bsz = 96, bx = W - m - bsz;  // 748
-    const csz = tw;  // 788 — полная ширина за вычетом отступов
+    const W = 900,
+      H = 1600;
+    const attrY = H - m - attrH; // 1468
+    const tw = W - 2 * m; // 788
+    const bsz = 96,
+      bx = W - m - bsz; // 748
+    const csz = tw; // 788 — полная ширина за вычетом отступов
     return {
-      mode: "stack", W, H, coverX: m, coverY: m, coverSize: csz, coverRadius: cr,
-      badgeX: bx, badgeY: m, badgeSize: 0, attrY, attrLeft: m, attrRight: W - m,
-      textX: m, textMaxW: tw, artistMaxW: tw,
-      mainTextY: m + csz + 32,  // 876
-      artistSize: 42, titleMaxSize: 84, titleMinSize: 56, metaSize: 32, timeSize: 32,
+      mode: "stack",
+      W,
+      H,
+      coverX: m,
+      coverY: m,
+      coverSize: csz,
+      coverRadius: cr,
+      badgeX: bx,
+      badgeY: m,
+      badgeSize: 0,
+      attrY,
+      attrLeft: m,
+      attrRight: W - m,
+      textX: m,
+      textMaxW: tw,
+      artistMaxW: tw,
+      mainTextY: m + csz + 32, // 876
+      artistSize: 42,
+      titleMaxSize: 84,
+      titleMinSize: 56,
+      metaSize: 32,
+      timeSize: 32,
       bgGradDir: "bottom",
-      lyricsScale: 0.85, lyricsTopGap: 20,
+      lyricsScale: 0.85,
+      lyricsTopGap: 20,
     };
   }
 
   // дефолт: 16:9
-  const W = W_DEFAULT, H = H_DEFAULT;
-  const coverSize = L.coverSize;  // 540
-  const contentBottom = H - attrZoneH;  // 808
-  const coverY = Math.round(m + (contentBottom - m - coverSize) / 2);  // 162
-  const attrY = H - m - attrH;  // 768
-  const bsz = L.badgeSize;  // 120
+  const W = W_DEFAULT,
+    H = H_DEFAULT;
+  const coverSize = L.coverSize; // 540
+  const contentBottom = H - attrZoneH; // 808
+  const coverY = Math.round(m + (contentBottom - m - coverSize) / 2); // 162
+  const attrY = H - m - attrH; // 768
+  const bsz = L.badgeSize; // 120
   const cx = m;
-  const tx = cx + coverSize + L.textPadLeft;  // 660
-  const tw = W - m - L.textPadRight - tx;     // 828
-  const bx = W - m - bsz;                     // 1424
+  const tx = cx + coverSize + L.textPadLeft; // 660
+  const tw = W - m - L.textPadRight - tx; // 828
+  const bx = W - m - bsz; // 1424
   return {
-    mode: "side", W, H, coverX: cx, coverY, coverSize, coverRadius: cr,
-    badgeX: bx, badgeY: m, badgeSize: bsz, attrY, attrLeft: m, attrRight: W - m,
-    textX: tx, textMaxW: tw, artistMaxW: bx - tx - 24,  // 740
+    mode: "side",
+    W,
+    H,
+    coverX: cx,
+    coverY,
+    coverSize,
+    coverRadius: cr,
+    badgeX: bx,
+    badgeY: m,
+    badgeSize: bsz,
+    attrY,
+    attrLeft: m,
+    attrRight: W - m,
+    textX: tx,
+    textMaxW: tw,
+    artistMaxW: bx - tx - 24, // 740
     mainTextY: coverY + 12,
-    artistSize: L.artistSize, titleMaxSize: L.titleSize, titleMinSize: L.titleSizeMin,
-    metaSize: L.metaSize, timeSize: L.timeSize,
+    artistSize: L.artistSize,
+    titleMaxSize: L.titleSize,
+    titleMinSize: L.titleSizeMin,
+    metaSize: L.metaSize,
+    timeSize: L.timeSize,
     bgGradDir: "right",
-    waveFixedY: coverY + coverSize - (L.waveHeight / 2 + 56),  // 576
+    waveFixedY: coverY + coverSize - (L.waveHeight / 2 + 56), // 576
   };
 }
 
@@ -181,7 +219,7 @@ interface CardOptions {
   style?: string;
   progress?: string; // 'wavy' | 'bar'
   toggles?: CardToggles;
-  aspect?: string;      // '16:9' | '9:16'
+  aspect?: string; // '16:9' | '9:16'
 }
 
 /** Блок лирики на карточке: все строки песни + индекс активной (подсвечиваемой).
@@ -193,7 +231,7 @@ export interface LyricsBlock {
   lines: string[];
   activeIndex: number;
   activeFloat?: number;
-  countdownText?: string;  // "3" | "2" | "1"
+  countdownText?: string; // "3" | "2" | "1"
   countdownAlpha?: number; // 0..1
 }
 
@@ -251,7 +289,9 @@ function parseHex(value: string | null | undefined): RGB | null {
 
 /** RGB(0-255) → HSV, все компоненты в диапазоне 0-255 (не 0-360/100). */
 function rgbToHsv255(r: number, g: number, b: number): [number, number, number] {
-  const rr = r / 255, gg = g / 255, bb = b / 255;
+  const rr = r / 255,
+    gg = g / 255,
+    bb = b / 255;
   const max = Math.max(rr, gg, bb);
   const min = Math.min(rr, gg, bb);
   const d = max - min;
@@ -277,14 +317,28 @@ function hsv255ToRgb(h: number, s: number, v: number): RGB {
   const p = vv * (1 - ss);
   const q = vv * (1 - ss * f);
   const t = vv * (1 - ss * (1 - f));
-  let r = 0, g = 0, b = 0;
+  let r = 0,
+    g = 0,
+    b = 0;
   switch (i) {
-    case 0: [r, g, b] = [vv, t, p]; break;
-    case 1: [r, g, b] = [q, vv, p]; break;
-    case 2: [r, g, b] = [p, vv, t]; break;
-    case 3: [r, g, b] = [p, q, vv]; break;
-    case 4: [r, g, b] = [t, p, vv]; break;
-    default: [r, g, b] = [vv, p, q]; break;
+    case 0:
+      [r, g, b] = [vv, t, p];
+      break;
+    case 1:
+      [r, g, b] = [q, vv, p];
+      break;
+    case 2:
+      [r, g, b] = [p, vv, t];
+      break;
+    case 3:
+      [r, g, b] = [p, q, vv];
+      break;
+    case 4:
+      [r, g, b] = [t, p, vv];
+      break;
+    default:
+      [r, g, b] = [vv, p, q];
+      break;
   }
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
@@ -319,12 +373,26 @@ function extractAccent(cover: Image, colors: CardColors | undefined): RGB {
   const cx = c.getContext("2d");
   cx.drawImage(cover, 0, 0, 16, 16);
   const data = cx.getImageData(0, 0, 16, 16).data;
-  let sumH = 0, sumS = 0, sumV = 0, n = 0;
-  let aH = 0, aS = 0, aV = 0, aN = 0;
+  let sumH = 0,
+    sumS = 0,
+    sumV = 0,
+    n = 0;
+  let aH = 0,
+    aS = 0,
+    aV = 0,
+    aN = 0;
   for (let i = 0; i < data.length; i += 4) {
     const [ph, ps, pv] = rgbToHsv255(data[i]!, data[i + 1]!, data[i + 2]!);
-    aH += ph; aS += ps; aV += pv; aN++;
-    if (ps > 60) { sumH += ph; sumS += ps; sumV += pv; n++; }
+    aH += ph;
+    aS += ps;
+    aV += pv;
+    aN++;
+    if (ps > 60) {
+      sumH += ph;
+      sumS += ps;
+      sumV += pv;
+      n++;
+    }
   }
   if (n > 0) return boostHsv(Math.round(sumH / n), Math.round(sumS / n), Math.round(sumV / n));
 
@@ -353,7 +421,8 @@ function measure(ctx: SKRSContext2D, text: string, family: string, size: number)
 function ellipsize(ctx: SKRSContext2D, text: string, family: string, size: number, maxW: number): string {
   if (measure(ctx, text, family, size) <= maxW) return text;
   const ell = "…";
-  let lo = 0, hi = text.length;
+  let lo = 0,
+    hi = text.length;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     if (measure(ctx, text.slice(0, mid) + ell, family, size) <= maxW) lo = mid;
@@ -363,7 +432,13 @@ function ellipsize(ctx: SKRSContext2D, text: string, family: string, size: numbe
 }
 
 /** максимальный шрифт чтобы тайтл влез в строку, шаг 4px. → [size, text]. */
-function fitTitleToLine(ctx: SKRSContext2D, text: string, maxSize: number, minSize: number, maxW: number): [number, string] {
+function fitTitleToLine(
+  ctx: SKRSContext2D,
+  text: string,
+  maxSize: number,
+  minSize: number,
+  maxW: number,
+): [number, string] {
   for (let size = maxSize; size >= minSize; size -= 4) {
     if (measure(ctx, text, F_TITLE, size) <= maxW) return [size, text];
   }
@@ -376,7 +451,13 @@ export function fmtMmss(ms: number): string {
 }
 
 /** «альбом «Foo», 2024, 3 из 12» по настройкам toggles. */
-function buildMetaLine(ctx: SKRSContext2D, meta: Partial<CardMeta>, toggles: CardToggles, maxW: number, metaSize: number = L.metaSize): string {
+function buildMetaLine(
+  ctx: SKRSContext2D,
+  meta: Partial<CardMeta>,
+  toggles: CardToggles,
+  maxW: number,
+  metaSize: number = L.metaSize,
+): string {
   const parts: string[] = [];
   let albumIdx: number | null = null;
   const isSingle = Boolean(meta.is_single);
@@ -384,9 +465,14 @@ function buildMetaLine(ctx: SKRSContext2D, meta: Partial<CardMeta>, toggles: Car
   const typeRu = toggles.type && meta.type_ru ? meta.type_ru : "";
   const album = toggles.album && !isSingle ? (meta.album || "").trim() : "";
 
-  if (typeRu && album) { albumIdx = parts.length; parts.push(`${typeRu} «${album}»`); }
-  else if (typeRu) parts.push(typeRu);
-  else if (album) { albumIdx = parts.length; parts.push(`«${album}»`); }
+  if (typeRu && album) {
+    albumIdx = parts.length;
+    parts.push(`${typeRu} «${album}»`);
+  } else if (typeRu) parts.push(typeRu);
+  else if (album) {
+    albumIdx = parts.length;
+    parts.push(`«${album}»`);
+  }
 
   if (toggles.year && meta.year) parts.push(String(meta.year));
   if (toggles.label && meta.labels?.length) parts.push(meta.labels.join(", "));
@@ -422,7 +508,14 @@ function roundRectPath(ctx: SKRSContext2D, x: number, y: number, w: number, h: n
 }
 
 /** square-crop обложки в скруглённый прямоугольник с мягкой тенью. */
-function drawCoverWithShadow(ctx: SKRSContext2D, cover: Image, x: number, y: number, size: number, radius: number): void {
+function drawCoverWithShadow(
+  ctx: SKRSContext2D,
+  cover: Image,
+  x: number,
+  y: number,
+  size: number,
+  radius: number,
+): void {
   // 1) тень — отдельным проходом (clip убил бы её)
   ctx.save();
   ctx.shadowColor = "rgba(0, 0, 0, 0.30)";
@@ -445,12 +538,23 @@ function drawCoverWithShadow(ctx: SKRSContext2D, cover: Image, x: number, y: num
 }
 
 /** размытая cover-fit обложка фоном + затемнение + направленный градиент. */
-function drawBackground(ctx: SKRSContext2D, cover: Image, W: number, H: number, gradDir: "right" | "left" | "bottom"): void {
+function drawBackground(
+  ctx: SKRSContext2D,
+  cover: Image,
+  W: number,
+  H: number,
+  gradDir: "right" | "left" | "bottom",
+): void {
   const srcRatio = cover.width / cover.height;
   const dstRatio = W / H;
   let dw: number, dh: number;
-  if (srcRatio > dstRatio) { dh = H; dw = H * srcRatio; }
-  else { dw = W; dh = W / srcRatio; }
+  if (srcRatio > dstRatio) {
+    dh = H;
+    dw = H * srcRatio;
+  } else {
+    dw = W;
+    dh = W / srcRatio;
+  }
   const dx = (W - dw) / 2;
   const dy = (H - dh) / 2;
 
@@ -510,8 +614,14 @@ function computePlayX(x0: number, x1: number, progressMs: number, durationMs: nu
 
 /** Material 3 wavy progress: активная волна const-амплитуды → playhead → inactive прямая. */
 function drawWavyProgress(
-  ctx: SKRSContext2D, x0: number, x1: number, yc: number,
-  progressMs: number, durationMs: number, accent: RGB, paused: boolean,
+  ctx: SKRSContext2D,
+  x0: number,
+  x1: number,
+  yc: number,
+  progressMs: number,
+  durationMs: number,
+  accent: RGB,
+  paused: boolean,
 ): void {
   const playX = computePlayX(x0, x1, progressMs, durationMs);
 
@@ -560,8 +670,14 @@ function drawWavyProgress(
 
 /** прямая полоска: inactive слабая, active accent, playhead-кружок. */
 function drawBarProgress(
-  ctx: SKRSContext2D, x0: number, x1: number, yc: number,
-  progressMs: number, durationMs: number, accent: RGB, paused: boolean,
+  ctx: SKRSContext2D,
+  x0: number,
+  x1: number,
+  yc: number,
+  progressMs: number,
+  durationMs: number,
+  accent: RGB,
+  paused: boolean,
 ): void {
   const playX = computePlayX(x0, x1, progressMs, durationMs);
   let activeStroke: number = L.waveStroke;
@@ -594,7 +710,12 @@ function drawBarProgress(
  * Длинное (за maxLines) сворачивается в последнюю строку с эллипсисом; одиночное
  * слово шире maxW оставляем как есть (редкость). */
 function wrapText(
-  ctx: SKRSContext2D, text: string, family: string, size: number, maxW: number, maxLines = 2,
+  ctx: SKRSContext2D,
+  text: string,
+  family: string,
+  size: number,
+  maxW: number,
+  maxLines = 2,
 ): string[] {
   ctx.font = fontStr(family, size);
   if (ctx.measureText(text).width <= maxW) return [text];
@@ -623,8 +744,16 @@ function wrapText(
  * визуальный прыжок при смене activeI. activeF < 0 → режим «до лирики»: строки
  * видны димли, ни одна не подсвечена. */
 function drawLyricsAnimFrame(
-  ctx: SKRSContext2D, x: number, maxW: number, areaTop: number, areaBottom: number,
-  anchorY: number, lines: string[], activeF: number, accent: RGB, scale: number,
+  ctx: SKRSContext2D,
+  x: number,
+  maxW: number,
+  areaTop: number,
+  areaBottom: number,
+  anchorY: number,
+  lines: string[],
+  activeF: number,
+  accent: RGB,
+  scale: number,
 ): void {
   if (lines.length === 0) return;
 
@@ -672,12 +801,36 @@ function drawLyricsAnimFrame(
   // Камера: плавно движется от центра activeI к центру nextI
   const camY = lerp(activeH / 2, nextRelPos + nextH / 2, t);
 
-  interface AEntry { idx: number; sz: number; fam: string; wrapped: string[]; h: number; relPos: number; alpha: number }
+  interface AEntry {
+    idx: number;
+    sz: number;
+    fam: string;
+    wrapped: string[];
+    h: number;
+    relPos: number;
+    alpha: number;
+  }
   const entries: AEntry[] = [];
 
-  entries.push({ idx: activeI, sz: activeSz, fam: famOf(activeI), wrapped: activeW, h: activeH, relPos: 0, alpha: alphaOf(activeI) });
+  entries.push({
+    idx: activeI,
+    sz: activeSz,
+    fam: famOf(activeI),
+    wrapped: activeW,
+    h: activeH,
+    relPos: 0,
+    alpha: alphaOf(activeI),
+  });
   if (nextI !== activeI) {
-    entries.push({ idx: nextI, sz: nextSz, fam: famOf(nextI), wrapped: nextW, h: nextH, relPos: nextRelPos, alpha: alphaOf(nextI) });
+    entries.push({
+      idx: nextI,
+      sz: nextSz,
+      fam: famOf(nextI),
+      wrapped: nextW,
+      h: nextH,
+      relPos: nextRelPos,
+      alpha: alphaOf(nextI),
+    });
   }
 
   // Расширяем вниз от nextI+1
@@ -732,8 +885,15 @@ function drawLyricsAnimFrame(
  * строк), а не режутся. Активная центрируется по вертикали области. Таймкоды
  * не рисуем — тайминг выражен тем, какая строка подсвечена. */
 function drawLyrics(
-  ctx: SKRSContext2D, x: number, maxW: number, areaTop: number, areaBottom: number,
-  anchorY: number, block: LyricsBlock, accent: RGB, scale = 1,
+  ctx: SKRSContext2D,
+  x: number,
+  maxW: number,
+  areaTop: number,
+  areaBottom: number,
+  anchorY: number,
+  block: LyricsBlock,
+  accent: RGB,
+  scale = 1,
 ): void {
   const lines = block.lines;
   if (lines.length === 0) return;
@@ -762,7 +922,14 @@ function drawLyrics(
   if (start + WINDOW > lines.length) start = lines.length - WINDOW;
   const end = start + WINDOW;
 
-  interface Entry { dist: number; size: number; family: string; lh: number; wrapped: string[]; height: number }
+  interface Entry {
+    dist: number;
+    size: number;
+    family: string;
+    lh: number;
+    wrapped: string[];
+    height: number;
+  }
   const entries: Entry[] = [];
   for (let i = start; i < end; i++) {
     const dist = Math.abs(i - active);
@@ -777,7 +944,10 @@ function drawLyrics(
   // стопка: высота блока + постоянный GAP между блоками.
   const tops: number[] = [];
   let total = 0;
-  for (const e of entries) { tops.push(total); total += e.height + GAP; }
+  for (const e of entries) {
+    tops.push(total);
+    total += e.height + GAP;
+  }
   const aPos = active - start;
   const lastIdx = entries.length - 1;
 
@@ -812,7 +982,13 @@ function drawLyrics(
 }
 
 /** круглый аватар из байт. */
-async function drawRoundAvatar(ctx: SKRSContext2D, avatarBytes: Buffer, x: number, y: number, size: number): Promise<void> {
+async function drawRoundAvatar(
+  ctx: SKRSContext2D,
+  avatarBytes: Buffer,
+  x: number,
+  y: number,
+  size: number,
+): Promise<void> {
   const img = await loadImage(avatarBytes);
   const s = Math.min(img.width, img.height);
   const sx = (img.width - s) / 2;
@@ -827,8 +1003,13 @@ async function drawRoundAvatar(ctx: SKRSContext2D, avatarBytes: Buffer, x: numbe
 
 /** нижняя полоса: «@юзер / от» слева, «@bot / через» справа. */
 async function drawAttribution(
-  ctx: SKRSContext2D, y: number, xLeft: number, xRight: number,
-  senderHandle: string | null, senderAvatar: Buffer | null, botUsername: string | null,
+  ctx: SKRSContext2D,
+  y: number,
+  xLeft: number,
+  xRight: number,
+  senderHandle: string | null,
+  senderAvatar: Buffer | null,
+  botUsername: string | null,
 ): Promise<void> {
   const handleSize = L.attrHandleSize;
   const labelSize = L.attrLabelSize;
@@ -873,15 +1054,28 @@ async function drawAttribution(
 /** артист + тайтл (+explicit-бейдж), каскадом от artistY (тайтл — под артистом).
  * Возвращает titleSize — нужен вызывающему для вёрстки meta/лирики под тайтлом. */
 function drawArtistAndTitle(
-  ctx: SKRSContext2D, lay: LayoutSpec, artist: string, displayTitle: string,
-  badgeW: number, explicit: boolean, artistY: number, titleY: number, artistMaxW: number,
+  ctx: SKRSContext2D,
+  lay: LayoutSpec,
+  artist: string,
+  displayTitle: string,
+  badgeW: number,
+  explicit: boolean,
+  artistY: number,
+  titleY: number,
+  artistMaxW: number,
 ): number {
   const artistText = ellipsize(ctx, artist, F_MEDIUM, lay.artistSize, artistMaxW);
   ctx.fillStyle = "rgba(255, 255, 255, 0.784)";
   ctx.font = fontStr(F_MEDIUM, lay.artistSize);
   ctx.fillText(artistText, lay.textX, artistY);
 
-  const [titleSize, titleText] = fitTitleToLine(ctx, displayTitle, lay.titleMaxSize, lay.titleMinSize, Math.max(0, lay.textMaxW - badgeW));
+  const [titleSize, titleText] = fitTitleToLine(
+    ctx,
+    displayTitle,
+    lay.titleMaxSize,
+    lay.titleMinSize,
+    Math.max(0, lay.textMaxW - badgeW),
+  );
   ctx.fillStyle = "rgba(255, 255, 255, 0.961)";
   ctx.font = fontStr(F_TITLE, titleSize);
   ctx.fillText(titleText, lay.textX, titleY);
@@ -1020,7 +1214,17 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   };
 
   const titleY = lay.mainTextY + lay.artistSize + 18;
-  const titleSize = drawArtistAndTitle(ctx, lay, artist, displayTitle, badgeW, explicit, lay.mainTextY, titleY, lay.artistMaxW);
+  const titleSize = drawArtistAndTitle(
+    ctx,
+    lay,
+    artist,
+    displayTitle,
+    badgeW,
+    explicit,
+    lay.mainTextY,
+    titleY,
+    lay.artistMaxW,
+  );
   const isSide = lay.mode === "side";
 
   if (lyrics && lyrics.lines.length > 0) {
@@ -1048,8 +1252,13 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   }
 
   await drawAttribution(
-    ctx, lay.attrY, lay.attrLeft, lay.attrRight,
-    args.senderHandle ?? null, args.senderAvatar ?? null, args.botUsername ?? null,
+    ctx,
+    lay.attrY,
+    lay.attrLeft,
+    lay.attrRight,
+    args.senderHandle ?? null,
+    args.senderAvatar ?? null,
+    args.botUsername ?? null,
   );
 
   if (args.rawRGBA) return canvas.data();

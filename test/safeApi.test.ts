@@ -2,25 +2,21 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Bot } from "gramio";
-import {
-  editOrSend,
-  safeAnswerCb,
-  safeEditApi,
-  safeEditMedia,
-  say,
-} from "../src/bot/safeApi.ts";
+import { editOrSend, safeAnswerCb, safeEditApi, safeEditMedia, say } from "../src/bot/safeApi.ts";
 
 type Call = { method: string; params: unknown };
 
 /** мини-стаб бота: пишет вызовы api в массив, опционально бросает заданную ошибку. */
 function stubBot(throwers: Record<string, Error> = {}): { bot: Bot; calls: Call[] } {
   const calls: Call[] = [];
-  const make = (name: string) => async (params: unknown): Promise<unknown> => {
-    calls.push({ method: name, params });
-    const err = throwers[name];
-    if (err) throw err;
-    return {};
-  };
+  const make =
+    (name: string) =>
+    async (params: unknown): Promise<unknown> => {
+      calls.push({ method: name, params });
+      const err = throwers[name];
+      if (err) throw err;
+      return {};
+    };
   const bot = {
     api: {
       editMessageText: make("editMessageText"),
@@ -47,7 +43,10 @@ test("safeEditApi: не бросает и на прочих ошибках (best
 test("editOrSend: при провале edit шлёт новое сообщение", async () => {
   const { bot, calls } = stubBot({ editMessageText: new Error("message to edit not found") });
   await editOrSend(bot, { chatId: 1, messageId: 2 }, "hi");
-  assert.deepEqual(calls.map((c) => c.method), ["editMessageText", "sendMessage"]);
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["editMessageText", "sendMessage"],
+  );
 });
 
 test("safeEditMedia: глотает 'not modified'", async () => {
@@ -76,7 +75,10 @@ test("say: без статуса шлёт новое сообщение", async 
 test("say: при провале edit фолбэчит на sendMessage", async () => {
   const { bot, calls } = stubBot({ editMessageText: new Error("nope") });
   await say(bot, 1, 5, "txt");
-  assert.deepEqual(calls.map((c) => c.method), ["editMessageText", "sendMessage"]);
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["editMessageText", "sendMessage"],
+  );
 });
 
 test("safeAnswerCb: глотает throw на протухшем query", async () => {

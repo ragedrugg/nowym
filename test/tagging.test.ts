@@ -1,8 +1,8 @@
 /** Tagging — пустышки байт-в-байт с Python + round-trip тегов через ffmpeg/ffprobe. */
 import { strict as assert } from "node:assert";
-import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { writeFile, readFile, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,9 +18,17 @@ async function genSilence(ext: string, extra: string[] = []): Promise<Buffer> {
   const path = join(tmpdir(), `nowym-gen-${randomUUID()}.${ext}`);
   await new Promise<void>((resolve, reject) => {
     const proc = spawn("ffmpeg", [
-      "-loglevel", "error", "-y",
-      "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-      ...extra, path,
+      "-loglevel",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=44100:cl=stereo",
+      "-t",
+      "0.3",
+      ...extra,
+      path,
     ]);
     proc.on("error", reject);
     proc.on("close", (c) => (c === 0 ? resolve() : reject(new Error(`gen ${ext} ${c}`))));
@@ -38,9 +46,7 @@ async function ffprobe(buf: Buffer, ext: string): Promise<any> {
   await writeFile(path, buf);
   try {
     const out = await new Promise<string>((resolve, reject) => {
-      const proc = spawn("ffprobe", [
-        "-loglevel", "error", "-show_format", "-show_streams", "-of", "json", path,
-      ]);
+      const proc = spawn("ffprobe", ["-loglevel", "error", "-show_format", "-show_streams", "-of", "json", path]);
       let stdout = "";
       proc.stdout.on("data", (d) => (stdout += d));
       proc.on("error", reject);
@@ -145,12 +151,9 @@ test("TaggingService.addMetadata — битый ввод отдаёт исход
 
 test("TaggingService.addMetadata — transform (эффект) идёт через ffmpeg, не TagLib", async () => {
   const src = await genSilence("mp3");
-  const tagged = await new TaggingService().addMetadata(
-    src,
-    { ...META, cover_data: JPEG_1x1 },
-    "mp3",
-    { filter: "atempo=1.2" },
-  );
+  const tagged = await new TaggingService().addMetadata(src, { ...META, cover_data: JPEG_1x1 }, "mp3", {
+    filter: "atempo=1.2",
+  });
   assert.notEqual(sha(tagged), sha(src));
 
   const info = await ffprobe(tagged, "mp3");

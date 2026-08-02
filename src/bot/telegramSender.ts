@@ -4,8 +4,8 @@
  * на себя локальный floodRetry (см. ниже). */
 import type { Bot } from "gramio";
 import { MediaUpload } from "gramio";
-import { getLogger } from "../infra/logging.ts";
 import { floodRetry } from "../infra/floodRetry.ts";
+import { getLogger } from "../infra/logging.ts";
 import type { SendAudioOpts, SentAudio, TelegramSender } from "../services/cache.ts";
 
 const log = getLogger("bot.telegram_sender");
@@ -17,8 +17,7 @@ const FLOOD_ATTEMPTS = 3;
 const flood = <T>(build: () => Promise<T>): Promise<T> =>
   floodRetry(build, {
     attempts: FLOOD_ATTEMPTS,
-    onWait: (ra, attempt) =>
-      log.warning(`flood 429: ждём ${ra}s (попытка ${attempt}/${FLOOD_ATTEMPTS})`),
+    onWait: (ra, attempt) => log.warning(`flood 429: ждём ${ra}s (попытка ${attempt}/${FLOOD_ATTEMPTS})`),
   });
 
 export class ChannelSender implements TelegramSender {

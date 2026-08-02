@@ -49,9 +49,19 @@ export async function safeEditApi(bot: Bot, target: EditTarget, text: Text, mark
 /** как safeEditApi, но при неудачном edit шлёт НОВОЕ сообщение. Для отложенных
  * колбэков (device-flow): anchor может быть удалён за минуты ожидания, и тогда
  * edit молча терялся бы — юзер не узнал бы результат. */
-export async function editOrSend(bot: Bot, anchor: { chatId: number; messageId: number }, text: Text, markup?: Markup): Promise<void> {
+export async function editOrSend(
+  bot: Bot,
+  anchor: { chatId: number; messageId: number },
+  text: Text,
+  markup?: Markup,
+): Promise<void> {
   try {
-    await bot.api.editMessageText({ chat_id: anchor.chatId, message_id: anchor.messageId, text, ...markupParam(markup) } as never);
+    await bot.api.editMessageText({
+      chat_id: anchor.chatId,
+      message_id: anchor.messageId,
+      text,
+      ...markupParam(markup),
+    } as never);
   } catch {
     try {
       await bot.api.sendMessage({ chat_id: anchor.chatId, text, ...markupParam(markup) } as never);

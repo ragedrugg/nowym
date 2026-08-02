@@ -1,17 +1,17 @@
-import { type FormattableString, format, InlineQueryResult, InputMessageContent, link, MediaUpload } from "gramio";
 import type { Bot } from "gramio";
-import type { Container } from "../container.ts";
-import { nowPlayingMarkup, progressMarkup } from "../markup.ts";
+import { type FormattableString, format, InlineQueryResult, InputMessageContent, link, MediaUpload } from "gramio";
+import { floodRetry } from "../../infra/floodRetry.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
+import type { LyricsBlock } from "../../services/card.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { bestLyricsLineIndex, buildCardMeta, formatTrackBasics, splitLyricsLines } from "../../yandex/metadata.ts";
-import { buildCardImage } from "../cardBuilder.ts";
-import { senderHandleOf } from "../captions.ts";
-import { floodRetry } from "../../infra/floodRetry.ts";
-import type { LyricsBlock } from "../../services/card.ts";
-import { trackUrl } from "../../yandex/urls.ts";
 import type { CardMeta, YaTrack } from "../../yandex/types.ts";
+import { trackUrl } from "../../yandex/urls.ts";
+import { senderHandleOf } from "../captions.ts";
+import { buildCardImage } from "../cardBuilder.ts";
+import type { Container } from "../container.ts";
+import { nowPlayingMarkup, progressMarkup } from "../markup.ts";
 
 const log = getLogger("bot.inline_card");
 
@@ -56,7 +56,8 @@ export function trackCardBasics(
 ): { artist: string; title: string; coverUrl: string; thumb: string; senderHandle: string } {
   const [artist, title] = formatTrackBasics(track, "");
   return {
-    artist, title,
+    artist,
+    title,
     coverUrl: normalizeCoverUrl(track.coverUri ?? "", "1000x1000"),
     thumb: normalizeCoverUrl(track.coverUri ?? "", "100x100"),
     senderHandle: senderHandleOf(user),
@@ -121,8 +122,13 @@ export function buildNowPlayingCardResult(
       : nowPlayingMarkup(track.id!, container.botUsername);
 
   return buildCardArticle({
-    resultId, label: "оформить карточкой", placeholderText: "готовлю карточку...",
-    artist, title, thumb, markup: initialMarkup,
+    resultId,
+    label: "оформить карточкой",
+    placeholderText: "готовлю карточку...",
+    artist,
+    title,
+    thumb,
+    markup: initialMarkup,
   });
 }
 
@@ -154,8 +160,13 @@ export function buildLyricsCardResult(
   });
 
   return buildCardArticle({
-    resultId, label: "🪪 карточка с текстом", placeholderText: "готовлю карточку с текстом...",
-    artist, title, thumb, markup: nowPlayingMarkup(track.id!, container.botUsername),
+    resultId,
+    label: "🪪 карточка с текстом",
+    placeholderText: "готовлю карточку с текстом...",
+    artist,
+    title,
+    thumb,
+    markup: nowPlayingMarkup(track.id!, container.botUsername),
   });
 }
 
@@ -314,9 +325,7 @@ export async function renderAndSwapCard(
       // finally, а не после await — иначе упавший editMessageMedia (протухший
       // inline_message_id, 429 сверх ретраев) оставлял бы фото в канале навсегда.
       // file_id ссылается на файл в хранилище tg, не на сообщение — валиден и после удаления.
-      void bot.api
-        .deleteMessage({ chat_id: container.channelId, message_id: msg.message_id })
-        .catch(() => undefined);
+      void bot.api.deleteMessage({ chat_id: container.channelId, message_id: msg.message_id }).catch(() => undefined);
     }
   } catch (e) {
     log.error(`[chosen] карточка ${resultId}: ${e}`);

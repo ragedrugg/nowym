@@ -1,6 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseLrc, filterLrcLines, isLrc } from "../src/yandex/lrc.ts";
+import { describe, it } from "node:test";
+import { filterLrcLines, isLrc, parseLrc } from "../src/yandex/lrc.ts";
 
 describe("parseLrc", () => {
   it("стандартный формат [MM:SS.cc]", () => {

@@ -1,5 +1,5 @@
+import { type DialogManager, StartMode } from "@gramio/dialogs";
 import type { Bot } from "gramio";
-import { StartMode, type DialogManager } from "@gramio/dialogs";
 import type { Container } from "../container.ts";
 import { startLogin, startLogout } from "../dialogs.ts";
 

@@ -1,8 +1,9 @@
 /** Genius: поиск песни по строке лирики + скрейп текста. Клиент на node-wreq
  * (Rust-ядро, browser-impersonation) вместо undici-based клиентов — undici
  * конфликтует по версиям под tsx. */
-import { fetch } from "node-wreq";
+
 import { parse, TextNode } from "node-html-parser";
+import { fetch } from "node-wreq";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 
@@ -137,8 +138,12 @@ export class GeniusClient {
       const containers = root.querySelectorAll("[data-lyrics-container='true']");
       const parts = containers.map((c) => {
         // выкидываем UI-хром (счётчик контрибьюторов, заголовок, переводы)
-        c.querySelectorAll("[data-exclude-from-selection='true']").forEach((n) => n.remove());
-        c.querySelectorAll("br").forEach((br) => br.replaceWith(new TextNode("\n")));
+        c.querySelectorAll("[data-exclude-from-selection='true']").forEach((n) => {
+          n.remove();
+        });
+        c.querySelectorAll("br").forEach((br) => {
+          br.replaceWith(new TextNode("\n"));
+        });
         return c.text;
       });
       const joined = parts.join("\n").trim();

@@ -1,12 +1,12 @@
-import { type FormattableString, bold, format } from "gramio";
 import type { Bot } from "gramio";
-import type { Container } from "../container.ts";
+import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { formatLatency, measureLatency } from "../../infra/ping.ts";
-import { getSettings } from "../../settings.ts";
-import { cachePool, usersPool } from "../../storage/pool.ts";
 import { ProgressMessage } from "../../services/albums.ts";
 import { broadcastProgressText } from "../../services/broadcast.ts";
+import { getSettings } from "../../settings.ts";
+import { cachePool, usersPool } from "../../storage/pool.ts";
+import type { Container } from "../container.ts";
 import { broadcastConfirmMarkup, broadcastSendingMarkup } from "../markup.ts";
 
 const log = getLogger("bot.admin");
@@ -61,9 +61,10 @@ export function registerAdmin(bot: Bot, container: Container): void {
     const w = container.npWatcher?.health() ?? null;
     const wAge = w?.lastStateAgeMs ?? null;
     const wOk = Boolean(w?.running && w?.connected);
-    const wLine = w === null
-      ? format`${flag(false)} ynison-watcher: не запущен (OWNER_ID=0)`
-      : format`${flag(wOk)} ynison-watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : Math.round(wAge / 1000) + "с назад"}`;
+    const wLine =
+      w === null
+        ? format`${flag(false)} ynison-watcher: не запущен (OWNER_ID=0)`
+        : format`${flag(wOk)} ynison-watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : Math.round(wAge / 1000) + "с назад"}`;
 
     const up = usersPool.stats();
     const cp = cachePool.stats();
@@ -135,18 +136,23 @@ ${bold("кэши (in-memory)")}
     await ctx.answer("рассылка начата...");
 
     const chatId = ctx.message ? ctx.message.chat.id : adminId;
-    const progress = ctx.message
-      ? new ProgressMessage(bot, chatId, ctx.message.id)
-      : null;
-    if (progress) await progress.edit(broadcastProgressText({ total: 0, sent: 0, failed: 0, blocked: 0 }, 0), broadcastSendingMarkup());
+    const progress = ctx.message ? new ProgressMessage(bot, chatId, ctx.message.id) : null;
+    if (progress)
+      await progress.edit(
+        broadcastProgressText({ total: 0, sent: 0, failed: 0, blocked: 0 }, 0),
+        broadcastSendingMarkup(),
+      );
 
     const startedAt = performance.now();
     const result = await container.broadcastService.run(adminId, pending.fromChatId, pending.messageId, async (r) => {
-      if (progress) await progress.edit(broadcastProgressText(r, (performance.now() - startedAt) / 1000), broadcastSendingMarkup());
+      if (progress)
+        await progress.edit(broadcastProgressText(r, (performance.now() - startedAt) / 1000), broadcastSendingMarkup());
     });
 
     if (progress) await progress.edit(broadcastProgressText(result, (performance.now() - startedAt) / 1000));
-    log.info(`[broadcast] admin=${adminId}: ${result.sent}/${result.total} доставлено, ${result.failed} ошибок, ${result.blocked} заблокировали`);
+    log.info(
+      `[broadcast] admin=${adminId}: ${result.sent}/${result.total} доставлено, ${result.failed} ошибок, ${result.blocked} заблокировали`,
+    );
   });
 
   bot.callbackQuery("broadcast_stop", async (ctx) => {

@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { crypto, ENC_PREFIX } from "../src/infra/crypto.ts";
 
 // Ключ и токен сгенерированы реальной cryptography.Fernet (Python) —
