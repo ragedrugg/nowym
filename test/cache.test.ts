@@ -24,7 +24,12 @@ function mkService(downloadAudio: FakeDownload): CacheService {
 }
 
 type Privates = {
-  racingDownload(getUrl: UrlGetter, maxAttempts?: number, staggerMs?: number): Promise<Buffer | null>;
+  racingDownload(
+    getUrl: UrlGetter,
+    maxAttempts?: number,
+    staggerMs?: number,
+    overallTimeoutMs?: number,
+  ): Promise<Buffer | null>;
   withDedup<T>(map: Map<string, Promise<T>>, key: string, factory: () => Promise<T>): Promise<T>;
 };
 const priv = (svc: CacheService): Privates => svc as unknown as Privates;
@@ -67,6 +72,28 @@ test("racingDownload: все попытки упали → null (тот же fin
 
   assert.equal(data, null, "тотальный провал должен приходить как null, не throw");
   assert.equal(calls, 3, "ровно maxAttempts попыток, дальше finish() по failedCount");
+});
+
+test("racingDownload: все попытки зависли (не отвечают до таймаута) — общий таймаут отдаёт null, а не висит вечно", async () => {
+  const signals: AbortSignal[] = [];
+  const svc = mkService(
+    (_u, _retries, signal) =>
+      // висит до abort, как «зависший узел CDN» в тесте выше — в реальности
+      // downloadAudio так и делает (undici реджектится на abort сигнала).
+      new Promise<Buffer>((_res, rej) => {
+        signals.push(signal!);
+        signal!.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+      }),
+  );
+
+  const data = await priv(svc).racingDownload(url, 3, 5, 20);
+
+  assert.equal(data, null, "внутренний таймаут должен завершиться как тотальный провал");
+  assert.equal(signals.length, 3, "все попытки успели стартовать до таймаута");
+  assert.ok(
+    signals.every((s) => s.aborted),
+    "после таймаута зависшие попытки должны быть отменены (уборка controllers)",
+  );
 });
 
 test("withDedup: параллельные вызовы делят одну задачу, её падение не даёт unhandledRejection", async () => {
