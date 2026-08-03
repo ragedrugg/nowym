@@ -304,6 +304,21 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     return ok;
   }
 
+  /** best-effort репорт "трек играет" в саму Яндекс.Музыку — без этого прослушивания
+   * через бота не попадают в историю аккаунта и не двигают "Мою волну". Без withRetry
+   * и без выброса наружу намеренно: это телеметрия, не критичная операция — неудача
+   * просто теряется, платить за неё бэкоффом/повторами незачем. */
+  async reportPlayback(track: YaTrack): Promise<void> {
+    const albumId = track.albums?.[0]?.id;
+    if (albumId === undefined) return; // playAudio требует albumId — без него нечего репортить
+    try {
+      const lib = await this.getLib();
+      await lib.playAudio({ trackId: bareTrackId(track.id), albumId, from: "Мойва" });
+    } catch (e) {
+      log.debug(`playAudio: ${e}`);
+    }
+  }
+
   /** недавно слушанные треки из личной истории (/music-history), плоско + дедуп.
    * Фолбэк на лендинг (play-contexts), если история пуста/недоступна. */
   async getRecentTracks(limit = 12): Promise<YaTrack[]> {

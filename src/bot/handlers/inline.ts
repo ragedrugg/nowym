@@ -433,6 +433,7 @@ export async function sendTrackToChat(args: {
       audio: res.fileId,
       ...(res.degraded ? { caption: format`⚠️ превосходное недоступно — отдаю оптимальное` } : {}),
     });
+    if (trackObj) void yandex.reportPlayback(trackObj);
     if (statusMsgId !== null) {
       try {
         await bot.api.deleteMessage({ chat_id: chatId, message_id: statusMsgId });
