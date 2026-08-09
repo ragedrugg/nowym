@@ -3,15 +3,15 @@ import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { pluralTracks } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
-import type { YandexClient } from "../../yandex/client.ts";
-import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
-import type { AlbumData } from "../../yandex/types.ts";
+import type { MusicClient } from "../../music/client.ts";
+import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../music/metadata.ts";
+import type { AlbumData } from "../../music/types.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
 
 const log = getLogger("bot.albums");
 
-const ALBUM_URL_RE = /music\.yandex(?:\.ru)?\/album\/(\d+)/;
+const ALBUM_URL_RE = /open\.spotify\.com\/(?:intl-[a-z]+\/)?album\/([A-Za-z0-9]{22})/;
 
 function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormattableString {
   const head = format`${albumEmoji(albumType)} ${bold(`${artist} — ${title}`)}`;
@@ -29,7 +29,7 @@ export async function startUpload(
   /** им. падеж, он же вин.: «альбом» / «плейлист» — для «⏳ ищу …». */
   noun: string,
   notFoundText: FormattableString,
-  fetch: (yandex: YandexClient) => Promise<AlbumData | null>,
+  fetch: (music: MusicClient) => Promise<AlbumData | null>,
 ): Promise<void> {
   const [allowed, retryAfter] = container.downloadLimiter.check(userId);
   if (!allowed) {
@@ -59,8 +59,8 @@ export async function startUpload(
     const progress = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу ${noun}...` });
     const progressMsg = new ProgressMessage(bot, chatId, progress.message_id);
 
-    const yandex = await container.getYandexService(token, userId);
-    const album = await fetch(yandex);
+    const music = await container.getMusicService(token, userId);
+    const album = await fetch(music);
 
     if (!album) {
       await progressMsg.edit(notFoundText);
@@ -90,7 +90,7 @@ export async function startUpload(
       userId,
       albumData: album,
       progressMsg,
-      yandex,
+      music,
       coverBytes,
     });
   } finally {
@@ -103,11 +103,11 @@ export async function startAlbumUpload(
   bot: Bot,
   chatId: number,
   userId: number,
-  albumId: number,
+  albumId: string,
   container: Container,
 ): Promise<void> {
-  await startUpload(bot, chatId, userId, container, "альбом", format`❌ альбом не найден или недоступен`, (yandex) =>
-    yandex.getAlbum(albumId),
+  await startUpload(bot, chatId, userId, container, "альбом", format`❌ альбом не найден или недоступен`, (music) =>
+    music.getAlbum(albumId),
   );
 }
 
@@ -116,7 +116,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
     if (ctx.chat?.type !== "private") return;
     const m = ALBUM_URL_RE.exec(ctx.text ?? "");
     if (!m) return;
-    await startAlbumUpload(bot, ctx.chat.id, ctx.from!.id, Number(m[1]), container);
+    await startAlbumUpload(bot, ctx.chat.id, ctx.from!.id, m[1]!, container);
   });
 
   bot.callbackQuery("cancel_album", async (ctx) => {
@@ -165,7 +165,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
       tracks: buf.tracks,
       albumData: buf.albumData,
       progressMsg,
-      yandex: buf.yandex,
+      music: buf.music,
     });
     await ctx.answer(started ? "повторяю..." : { text: "у тебя уже идёт выгрузка", show_alert: true });
   });

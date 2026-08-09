@@ -1,28 +1,23 @@
-/** парсинг inline-запросов: текст, ссылка на трек или ссылка на альбом. */
+/** парсинг inline-запросов: текст, ссылка на трек, альбом или плейлист Spotify. */
 
-const TRACK_URL_RE = /(?:music\.yandex(?:\.ru)?\/album\/\d+\/track|yandex\.ru\/music\/album\/\d+\/track)\/(\d+)/;
-
-// альбомный URL — без /track. (?!\d) не даёт \d+ бэктрекнуться на цифру короче
-// (иначе на .../album/123456/tracks lookahead после отката пропускал бы "12345").
-const ALBUM_URL_RE = /(?:music\.yandex(?:\.ru)?\/album|yandex\.ru\/music\/album)\/(\d+)(?!\d)(?!\/track\/\d)/;
-
-// owner — логин/uid Яндекса, реальный чарсет [A-Za-z0-9._-]; более широкий
-// класс ([^/\s]+) пропускал бы ?/#/пробелоподобное внутрь URL, который
-// собирается конкатенацией в lib.usersPlaylists() (client.ts.getPlaylist).
-export const PLAYLIST_URL_RE = /music\.yandex(?:\.ru)?\/users\/([\w.-]+)\/playlists\/(\d+)/;
+// Spotify id — 22 base62-символа. Принимаем как open.spotify.com/track/<id>, так
+// и spotify:track:<id> (schemeless URI).
+const TRACK_URL_RE = /(?:open\.spotify\.com\/(?:intl-[a-z]+\/)?track\/|spotify:track:)([A-Za-z0-9]{22})/;
+const ALBUM_URL_RE = /(?:open\.spotify\.com\/(?:intl-[a-z]+\/)?album\/|spotify:album:)([A-Za-z0-9]{22})/;
+/** плейлист: open.spotify.com/playlist/<id> — owner в URL нет (Spotify перенёс
+ *  его в API), но интерфейс parsedQuery остаётся с owner для совместимости. */
+export const PLAYLIST_URL_RE = /(?:open\.spotify\.com\/(?:intl-[a-z]+\/)?playlist\/|spotify:playlist:)([A-Za-z0-9]{22})/;
 
 export type ParsedQuery =
   | { type: "empty" }
-  | { type: "track_link"; track_id: number }
-  | { type: "album_link"; album_id: number }
-  | { type: "playlist_link"; owner: string; kind: number }
+  | { type: "track_link"; track_id: string }
+  | { type: "album_link"; album_id: string }
+  | { type: "playlist_link"; owner: string; kind: string }
   | { type: "search"; content: string };
 
-function extractId(query: string, re: RegExp): number | null {
+function extractId(query: string, re: RegExp): string | null {
   const m = re.exec(query);
-  if (!m || m[1] === undefined) return null;
-  const id = parseInt(m[1], 10);
-  return Number.isFinite(id) && id > 0 ? id : null;
+  return m?.[1] ?? null;
 }
 
 export function parseSearchQuery(query: string): ParsedQuery {
@@ -36,10 +31,7 @@ export function parseSearchQuery(query: string): ParsedQuery {
   if (albumId) return { type: "album_link", album_id: albumId };
 
   const pl = PLAYLIST_URL_RE.exec(q);
-  if (pl) {
-    const kind = parseInt(pl[2]!, 10);
-    if (Number.isFinite(kind) && kind > 0) return { type: "playlist_link", owner: pl[1]!, kind };
-  }
+  if (pl) return { type: "playlist_link", owner: "", kind: pl[1]! };
 
   return { type: "search", content: q };
 }

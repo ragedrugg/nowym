@@ -8,7 +8,7 @@ const TRACK_SEND_MODES = new Set(["stub", "text_media"]);
 const DEFAULT_TRACK_SEND_MODE = "text_media";
 
 // качество звука: best — макс. битрейт, economy — ≤192 (меньше вес, влезает в 50МБ).
-export const TRACK_QUALITIES = new Set(["best", "economy", "lossless"]);
+export const TRACK_QUALITIES = new Set(["best", "economy"]);
 const DEFAULT_TRACK_QUALITY = "best";
 
 const CARD_LAYOUTS = new Set(["button", "text", "both", "none"]);

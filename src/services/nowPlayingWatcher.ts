@@ -1,45 +1,33 @@
-/** Постоянный «сейчас играет» владельца → синхронный снимок для /now-playing и
- * inline fast-path.
+/** Постоянный «сейчас играет» владельца через polling Spotify Web API.
  *
- * Тонкий адаптер над RealtimeClient из @dvxch/yandex-music: реконнект, backoff,
- * go-away, стабильный deviceId, stale-детект и pull-снимок живут в либе. Здесь —
- * только специфика бота: токен владельца из БД (на смену токена пересоздаём
- * клиент) и резолв playable_id → Track. */
+ * Заменяет прошлый Ynison-вотчер (Yandex давал ws-плеер, Spotify — нет).
+ * Опрашивает /me/player/currently-playing раз в SPOTIFY_NP_POLL_MS пока
+ * играет; в паузе/тишине интервал плавно растёт (до 30с). Прогресс между
+ * запросами интерполируется по времени. */
+
 import { EventEmitter } from "node:events";
-import {
-  ANDROID_DEVICE_INFO,
-  type DeviceInfoOverride,
-  generateDeviceId,
-  Client as LibClient,
-  type Track as LibTrack,
-  RealtimeClient,
-} from "@dvxch/yandex-music";
-import { createInterruptibleSleep, withTimeout } from "../infra/async.ts";
+import { createInterruptibleSleep } from "../infra/async.ts";
+import { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
+import { normalizeCoverUrl } from "../music/media.ts";
+import { formatArtists } from "../music/metadata.ts";
+import type { Track } from "../music/types.ts";
+import { trackUrl } from "../music/urls.ts";
+import type { CurrentTrack } from "../music/watcher.ts";
+import { getSettings } from "../settings.ts";
 import type { UsersDb } from "../storage/users.ts";
-import { normalizeCoverUrl } from "../yandex/media.ts";
-import { formatArtists } from "../yandex/metadata.ts";
-import type { YaTrack } from "../yandex/types.ts";
-import { trackUrl } from "../yandex/urls.ts";
-import type { CurrentTrack } from "../yandex/ynison.ts";
 
 const log = getLogger("services.now_playing");
 
-// Android-идентитет наблюдателя (сервер раскрывает больше полей известному app_name).
-const WATCHER_DEVICE_INFO: DeviceInfoOverride = { ...ANDROID_DEVICE_INFO, title: "Мойва" };
-
 const NO_TOKEN_RETRY_MS = 60_000;
-const TOKEN_POLL_MS = 30_000;
-const TRACKS_LOOKUP_TIMEOUT_MS = 15_000;
-const TRACK_CACHE_LIMIT = 200;
-// ws жива, но фреймы молчат дольше порога → форс-реконнект (broken pipe без RST).
-const STALE_WS_MS = 120_000;
+const IDLE_MIN_MS = 5_000;
+const IDLE_MAX_MS = 30_000;
 const RECENT_HISTORY_MAX = 20;
+const HTTP_TIMEOUT_MS = 5_000;
 
-/** JSON-safe снимок трека для /now-playing (текущий и история). */
 interface NowPlayingTrack {
-  id: number | string | null;
+  id: string | null;
   artist: string;
   title: string;
   album: string | null;
@@ -50,32 +38,77 @@ interface NowPlayingTrack {
   cover: string;
 }
 
-/** эмитит "change" при каждой смене this.current (для SSE /now-playing/stream). */
-export class NowPlayingWatcher extends EventEmitter {
-  // публичный — inline fast-path сверяет watcher.ownerId === user.id.
-  readonly ownerId: number;
-  // JSON-safe snapshot для /now-playing.
-  current: NowPlayingTrack | null = null;
-  // последние сыгранные треки (новый в начале), из живых trackChange-событий —
-  // без похода за Yandex-историей, ограничено памятью процесса.
-  private recentHistory: NowPlayingTrack[] = [];
+interface SpotifyImage {
+  url: string;
+  width?: number;
+  height?: number;
+}
+interface RawTrack {
+  id: string;
+  name: string;
+  duration_ms: number;
+  explicit: boolean;
+  artists: Array<{ id: string; name: string }>;
+  album?: { id: string; name: string; release_date?: string; images?: SpotifyImage[] };
+  external_ids?: { isrc?: string };
+}
+interface RawCurrent {
+  is_playing?: boolean;
+  progress_ms?: number;
+  timestamp?: number;
+  item?: RawTrack | null;
+  context?: { uri?: string; type?: string };
+}
 
-  private readonly usersDb: UsersDb;
+function pickCover(images: SpotifyImage[] | undefined): string {
+  if (!images || images.length === 0) return "";
+  const mid = images.find((i) => (i.width ?? 0) >= 300 && (i.width ?? 0) <= 640);
+  return normalizeCoverUrl(mid?.url || images[0]!.url);
+}
+
+function mapRaw(item: RawTrack): Track {
+  return {
+    id: item.id,
+    title: item.name,
+    durationMs: item.duration_ms,
+    explicit: item.explicit,
+    artists: item.artists.map((a) => ({ id: a.id, name: a.name })),
+    albums: item.album
+      ? [
+          {
+            id: item.album.id,
+            title: item.album.name,
+            year: item.album.release_date ? item.album.release_date.slice(0, 4) : "",
+            coverUri: pickCover(item.album.images),
+          },
+        ]
+      : [],
+    coverUri: pickCover(item.album?.images),
+    isrc: item.external_ids?.isrc ?? null,
+  };
+}
+
+export class NowPlayingWatcher extends EventEmitter {
+  readonly ownerId: number;
+  current: NowPlayingTrack | null = null;
+  private recentHistory: NowPlayingTrack[] = [];
+  // последний снимок для inline fast-path.
+  private lastSnapshot: {
+    track: Track;
+    paused: boolean;
+    duration_ms: number;
+    progress_ms: number;
+    fetchedAt: number;
+  } | null = null;
+  private connected = false;
   private running = false;
   private stopRequested = false;
   private runPromise: Promise<void> | null = null;
   private readonly sleeper = createInterruptibleSleep();
-
-  private rt: RealtimeClient | null = null;
-  private lib: LibClient | null = null;
-  private libToken: string | null = null;
-  // true с первого state-фрейма сессии (событие open), false на реконнект/stale.
-  private connected = false;
-  // lookup-кэш lib-Track по playable_id.
-  private trackCache = new LRUMap<string, LibTrack>(TRACK_CACHE_LIMIT);
-  // СТАБИЛЬНЫЙ id на весь процесс: переживает и реконнекты (внутри RealtimeClient),
-  // и пересоздание клиента при смене токена — иначе Ynison дедуплицирует наблюдателя.
-  private readonly deviceId = generateDeviceId();
+  private readonly usersDb: UsersDb;
+  private readonly http = new HttpClient();
+  private trackCache = new LRUMap<string, Track>(200);
+  private lastPollAt = 0;
 
   constructor(usersDb: UsersDb, ownerId: number) {
     super();
@@ -83,26 +116,20 @@ export class NowPlayingWatcher extends EventEmitter {
     this.ownerId = ownerId;
   }
 
-  /** для inline-handler: {track, paused, duration_ms, progress_ms}.
-   * progress_ms уже live-интерполирован RealtimeClient.nowPlaying. */
   getCurrentSnapshot(): Pick<CurrentTrack, "track" | "paused" | "duration_ms" | "progress_ms"> | null {
-    const np = this.rt?.nowPlaying;
-    if (!np || np.track === null) return null;
-    return {
-      track: np.track as unknown as YaTrack,
-      paused: np.paused,
-      duration_ms: np.durationMs,
-      progress_ms: np.progressMs,
-    };
+    if (!this.lastSnapshot) return null;
+    const { track, paused, duration_ms, progress_ms, fetchedAt } = this.lastSnapshot;
+    const elapsed = paused ? 0 : Date.now() - fetchedAt;
+    const live = Math.max(0, Math.min(progress_ms + elapsed, duration_ms || progress_ms + elapsed));
+    return { track, paused, duration_ms, progress_ms: live };
   }
 
-  /** компактный статус для /health. */
   health(): { running: boolean; connected: boolean; lastStateAgeMs: number | null; hasTrack: boolean } {
     return {
       running: this.running,
       connected: this.connected,
-      lastStateAgeMs: this.rt?.lastStateAgeMs ?? null,
-      hasTrack: (this.rt?.nowPlaying?.track ?? null) !== null,
+      lastStateAgeMs: this.lastPollAt ? Date.now() - this.lastPollAt : null,
+      hasTrack: (this.lastSnapshot?.track ?? null) !== null,
     };
   }
 
@@ -116,7 +143,6 @@ export class NowPlayingWatcher extends EventEmitter {
   async stop(): Promise<void> {
     this.stopRequested = true;
     this.sleeper.wake();
-    this.rt?.stop();
     if (this.runPromise) {
       try {
         await this.runPromise;
@@ -126,68 +152,9 @@ export class NowPlayingWatcher extends EventEmitter {
     }
     this.runPromise = null;
     this.running = false;
+    await this.http.close().catch(() => {});
   }
 
-  /** ленивый lib-клиент под текущий токен; пересоздаём при смене токена. */
-  private ensureLib(token: string): LibClient {
-    if (this.lib !== null && this.libToken === token) return this.lib;
-    this.lib = new LibClient({ token });
-    this.libToken = token;
-    this.trackCache = new LRUMap<string, LibTrack>(TRACK_CACHE_LIMIT);
-    return this.lib;
-  }
-
-  private async resolveTrack(playableId: string): Promise<LibTrack | null> {
-    const cached = this.trackCache.get(playableId);
-    if (cached !== undefined) return cached;
-    if (this.lib === null) return null;
-    let tracks: LibTrack[];
-    try {
-      tracks = await withTimeout(this.lib.tracks([playableId]), TRACKS_LOOKUP_TIMEOUT_MS, `tracks(${playableId})`);
-    } catch (e) {
-      log.warning(`[np] tracks(${playableId}) упал: ${e}`);
-      return null;
-    }
-    if (tracks.length === 0) return null;
-    const track = tracks[0]!;
-    this.trackCache.set(playableId, track);
-    return track;
-  }
-
-  /** обновляет JSON-safe current из сменившегося трека; предыдущий трек (если
-   * реально другой, не повторный трекчейндж на тот же id) уходит в историю. */
-  private updateCurrent(track: LibTrack | null): void {
-    if (track === null) {
-      this.current = null;
-      this.emit("change");
-      return;
-    }
-    const t = track as unknown as YaTrack;
-    const album = t.albums && t.albums.length > 0 ? t.albums[0]! : null;
-    const next: NowPlayingTrack = {
-      id: t.id ?? null,
-      artist: formatArtists(t.artists),
-      title: t.title ?? "",
-      album: album?.title ?? null,
-      year: album?.year ?? null,
-      genre: album?.genre ?? t.metaData?.genre ?? null,
-      explicit: Boolean(t.explicit),
-      url: trackUrl(t.id ?? ""),
-      cover: t.coverUri ? normalizeCoverUrl(t.coverUri, "orig") : "",
-    };
-    if (this.current && this.current.id !== next.id) {
-      // realtime иногда флапает trackChange туда-обратно между теми же двумя
-      // id (заметно на паузе/резюме) — без дедупа тот же id всплывает в
-      // истории несколько раз, а дублирующиеся id ломают keyed-рендер на сайте.
-      this.recentHistory = this.recentHistory.filter((t) => t.id !== this.current!.id);
-      this.recentHistory.unshift(this.current);
-      if (this.recentHistory.length > RECENT_HISTORY_MAX) this.recentHistory.length = RECENT_HISTORY_MAX;
-    }
-    this.current = next;
-    this.emit("change");
-  }
-
-  /** последние сыгранные треки, новый первым, без текущего. */
   getRecent(limit = 10): NowPlayingTrack[] {
     return this.recentHistory.slice(0, Math.max(0, limit));
   }
@@ -201,36 +168,113 @@ export class NowPlayingWatcher extends EventEmitter {
     }
   }
 
-  /** ждёт смены токена владельца в БД (logout/login) либо stopRequested.
-   * Promise.race в run() не отменяет проигравшего — если rt.start() решит
-   * гонку первым, вызывающая сторона обязана дёрнуть cancel(), иначе этот
-   * цикл осиротеет и продолжит опрашивать БД раз в TOKEN_POLL_MS вечно, а
-   * каждая следующая итерация run() будет плодить ещё один такой же. */
-  private watchToken(token: string): { promise: Promise<void>; cancel: () => void } {
-    const { sleep: interruptibleSleep, wake } = createInterruptibleSleep();
-    let cancelled = false;
-    const promise = (async () => {
-      while (!this.stopRequested && !cancelled) {
-        await interruptibleSleep(TOKEN_POLL_MS);
-        if (this.stopRequested || cancelled) return;
-        const fresh = await this.readToken();
-        if (fresh && fresh !== token) {
-          log.info("[np] токен владельца сменился — пересоздаю realtime-клиент");
-          return;
-        }
+  private updateCurrent(track: Track | null): void {
+    if (track === null) {
+      if (this.current !== null) {
+        this.current = null;
+        this.emit("change");
       }
-    })();
-    return {
-      promise,
-      cancel: () => {
-        cancelled = true;
-        wake();
-      },
+      return;
+    }
+    const album = track.albums && track.albums.length > 0 ? track.albums[0]! : null;
+    const next: NowPlayingTrack = {
+      id: track.id ?? null,
+      artist: formatArtists(track.artists),
+      title: track.title ?? "",
+      album: album?.title ?? null,
+      year: album?.year ?? null,
+      genre: album?.genre ?? null,
+      explicit: Boolean(track.explicit),
+      url: track.id ? trackUrl(track.id) : "",
+      cover: track.coverUri ?? "",
     };
+    if (this.current && this.current.id === next.id) {
+      // тот же трек — прогресс сменился, но карточка та же. Не эмитим change,
+      // т.к. SSE подписчикам достаточно heartbeat'а.
+      this.current = next;
+      return;
+    }
+    if (this.current) {
+      this.recentHistory = this.recentHistory.filter((t) => t.id !== this.current!.id);
+      this.recentHistory.unshift(this.current);
+      if (this.recentHistory.length > RECENT_HISTORY_MAX) this.recentHistory.length = RECENT_HISTORY_MAX;
+    }
+    this.current = next;
+    this.emit("change");
   }
 
-  /** главный цикл: токен → realtime-клиент (он сам реконнектится) → пересоздание
-   * при смене токена. Цикл крутится, пока не stop(). */
+  /** Один POLL /me/player/currently-playing. Возвращает интервал до следующего. */
+  private async pollOnce(token: string): Promise<number> {
+    const s = getSettings();
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    let res;
+    try {
+      res = await this.http.request("https://api.spotify.com/v1/me/player/currently-playing", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (e) {
+      clearTimeout(t);
+      log.warning(`[np] polling: ${e}`);
+      this.connected = false;
+      return IDLE_MAX_MS;
+    }
+    clearTimeout(t);
+
+    if (res.status === 401) {
+      await res.body.dump();
+      this.connected = false;
+      log.info("[np] 401 — токен протух, ждём обновления в БД");
+      return NO_TOKEN_RETRY_MS;
+    }
+    if (res.status === 429) {
+      const retry = parseInt(String(res.headers["retry-after"] ?? "5"), 10);
+      await res.body.dump();
+      return Math.max(retry, 1) * 1000;
+    }
+    if (res.status === 204) {
+      // пустое тело — Spotify: «плеер бездействует».
+      await res.body.dump();
+      this.connected = true;
+      this.lastPollAt = Date.now();
+      this.updateCurrent(null);
+      this.lastSnapshot = null;
+      return IDLE_MAX_MS;
+    }
+    if (res.status !== 200) {
+      const text = await res.body.text().catch(() => "");
+      log.warning(`[np] HTTP ${res.status}: ${text.slice(0, 200)}`);
+      return IDLE_MAX_MS;
+    }
+    const raw = (await res.body.json()) as RawCurrent | null;
+    this.connected = true;
+    this.lastPollAt = Date.now();
+
+    if (!raw || !raw.item) {
+      this.updateCurrent(null);
+      this.lastSnapshot = null;
+      return IDLE_MAX_MS;
+    }
+    const track = this.getCachedOrMap(raw.item);
+    this.updateCurrent(track);
+    this.lastSnapshot = {
+      track,
+      paused: !raw.is_playing,
+      duration_ms: raw.item.duration_ms,
+      progress_ms: raw.progress_ms ?? 0,
+      fetchedAt: Date.now(),
+    };
+    return raw.is_playing ? s.SPOTIFY_NP_POLL_MS : IDLE_MIN_MS;
+  }
+
+  private getCachedOrMap(raw: RawTrack): Track {
+    const cached = this.trackCache.get(raw.id);
+    if (cached) return cached;
+    const t = mapRaw(raw);
+    this.trackCache.set(raw.id, t);
+    return t;
+  }
+
   private async run(): Promise<void> {
     while (!this.stopRequested) {
       const token = await this.readToken();
@@ -239,50 +283,13 @@ export class NowPlayingWatcher extends EventEmitter {
           `[np] нет токена для owner_id=${this.ownerId}, retry через ${(NO_TOKEN_RETRY_MS / 1000).toFixed(0)}s`,
         );
         this.current = null;
+        this.lastSnapshot = null;
         await this.sleeper.sleep(NO_TOKEN_RETRY_MS);
         continue;
       }
-
-      this.ensureLib(token);
-      const rt = new RealtimeClient({
-        token,
-        deviceId: this.deviceId,
-        deviceInfo: WATCHER_DEVICE_INFO,
-        staleTimeoutMs: STALE_WS_MS,
-        resolveTrack: (playableId) => this.resolveTrack(playableId),
-      });
-      rt.on("open", () => {
-        this.connected = true;
-      });
-      rt.on("reconnect", () => {
-        this.connected = false;
-      });
-      rt.on("stale", (idleMs) => {
-        this.connected = false;
-        log.info(`[np] ws молчит ${(idleMs / 1000).toFixed(0)}s — переподключаюсь`);
-      });
-      rt.on("trackChange", ({ track }) => this.updateCurrent(track));
-      rt.on("error", (e) => log.warning(`[np] realtime: ${e.message}`));
-      this.rt = rt;
-
-      log.info("[np] подключение к Ynison");
-      const watcher = this.watchToken(token);
-      try {
-        // rt.start() реконнектится бесконечно; гонка с watchToken рвёт его на смене токена.
-        await Promise.race([rt.start(), watcher.promise]);
-      } catch (e) {
-        log.error(`[np] неожиданная ошибка realtime-цикла: ${e}`);
-      } finally {
-        // если гонку решил rt.start() — watcher.promise иначе остался бы висеть
-        // и опрашивать БД вечно (см. комментарий watchToken); если решил сам
-        // watchToken — cancel() на уже завершённом цикле безвреден.
-        watcher.cancel();
-        rt.stop();
-        this.rt = null;
-        this.connected = false;
-        this.current = null;
-        this.emit("change");
-      }
+      const wait = await this.pollOnce(token);
+      if (this.stopRequested) break;
+      await this.sleeper.sleep(wait);
     }
   }
 }

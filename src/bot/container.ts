@@ -1,4 +1,4 @@
-/** DI-контейнер: держит все сервисы и кэши, резолвит per-user YandexClient/
+/** DI-контейнер: держит все сервисы и кэши, резолвит per-user MusicClient/
  * SearchService, проактивно обновляет токен. Создаётся в main, стартует с
  * готовым GramIO-ботом. */
 
@@ -26,7 +26,7 @@ import { closeAll as closeDbPools, initializeAll } from "../storage/pool.ts";
 import { SettingsDb, type UserSettings } from "../storage/settings.ts";
 import { UsersDb } from "../storage/users.ts";
 import { TaggingService } from "../tagging/service.ts";
-import { type YandexClient, YandexClientFactory } from "../yandex/client.ts";
+import { type MusicClient, MusicClientFactory } from "../music/client.ts";
 import { ChannelSender } from "./telegramSender.ts";
 
 const log = getLogger("bot.container");
@@ -66,13 +66,13 @@ export class Container {
 
   private bot!: Bot;
   // TTL, не голый Map: без него оба кэша росли бы весь lifetime процесса —
-  // на 5000+ лайфтайм-юзерах это гигабайты закэшированных YaTrack/http-клиентов.
+  // на 5000+ лайфтайм-юзерах это гигабайты закэшированных Track/http-клиентов.
   // Клиенты дешёвые в пересборке, час простоя не жалко.
-  private yandexClients!: TTLCache<YandexClient>;
+  private musicClients!: TTLCache<MusicClient>;
   private searchServices!: TTLCache<SearchService>;
   // дедуп конкурентных refreshToken на одного юзера — иначе resolveToken()
   // (проактивный путь) и makeRefreshCallback (реактивный, на 401 внутри
-  // YandexClient) могли одновременно слать один и тот же refresh_token,
+  // MusicClient) могли одновременно слать один и тот же refresh_token,
   // и параллельные usersDb.save() гонялись бы за тем, чья пара токенов останется.
   private refreshInFlight = new Map<number, Promise<string | null>>();
 
@@ -113,8 +113,8 @@ export class Container {
     // владельцы инлайнов: живут сутки (инлайн-сообщение могут переоткрыть позже)
     this.inlineOwners = new TTLCache<number>(10000, 24 * 3600, 3600);
     this.inlineEffects = new TTLCache<string>(10000, 24 * 3600, 3600);
-    // per-user YandexClient/SearchService — час простоя, пересборка дешёвая
-    this.yandexClients = new TTLCache<YandexClient>(1000, 3600, 600);
+    // per-user MusicClient/SearchService — час простоя, пересборка дешёвая
+    this.musicClients = new TTLCache<MusicClient>(1000, 3600, 600);
     this.searchServices = new TTLCache<SearchService>(1000, 3600, 600);
 
     await initializeAll();
@@ -166,37 +166,37 @@ export class Container {
     await this.inlineOwners?.close();
     await this.inlineEffects?.close();
     await this.userSettingsCache?.close();
-    await this.yandexClients?.close();
+    await this.musicClients?.close();
     await this.searchServices?.close();
     await this.httpClient?.close();
     await closeDbPools();
     log.info("контейнер остановлен");
   }
 
-  async getYandexService(token: string, userId?: number): Promise<YandexClient> {
-    if (userId === undefined) return YandexClientFactory.create(token);
+  async getMusicService(token: string, userId?: number): Promise<MusicClient> {
+    if (userId === undefined) return MusicClientFactory.create(token);
 
     const key = String(userId);
-    const cached = this.yandexClients.get(key);
+    const cached = this.musicClients.get(key);
     if (cached !== null) return cached;
 
     const cb = this.makeRefreshCallback(userId);
-    const client = await YandexClientFactory.create(token, cb);
-    this.yandexClients.set(key, client);
+    const client = await MusicClientFactory.create(token, cb);
+    this.musicClients.set(key, client);
     return client;
   }
 
   async getTrackService(token: string, userId?: number): Promise<SearchService> {
     if (userId === undefined) {
-      const yandex = await this.getYandexService(token);
-      return new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername, null);
+      const music = await this.getMusicService(token);
+      return new SearchService(music, this.trackCache, this.cacheService, this.botUsername, null);
     }
     const key = String(userId);
     const cached = this.searchServices.get(key);
     if (cached !== null) return cached;
 
-    const yandex = await this.getYandexService(token, userId);
-    const svc = new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername, userId);
+    const music = await this.getMusicService(token, userId);
+    const svc = new SearchService(music, this.trackCache, this.cacheService, this.botUsername, userId);
     this.searchServices.set(key, svc);
     return svc;
   }
@@ -231,7 +231,7 @@ export class Container {
     if (soonExpired && creds.refresh_token) {
       const newToken = await this.refreshTokenDeduped(userId, creds.refresh_token);
       if (newToken) {
-        // сбрасываем кэш: закэшированный YandexClient держит старый token
+        // сбрасываем кэш: закэшированный MusicClient держит старый token
         this.invalidateTokenCacheForUser(userId);
         return newToken;
       }
@@ -241,7 +241,7 @@ export class Container {
   }
 
   invalidateTokenCacheForUser(userId: number): void {
-    this.yandexClients.delete(String(userId));
+    this.musicClients.delete(String(userId));
     this.searchServices.delete(String(userId));
   }
 

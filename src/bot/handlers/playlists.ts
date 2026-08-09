@@ -7,13 +7,14 @@ import { startUpload } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
 
-/** зовут и из /start playlist_<owner>_<kind>, и из ссылки в личке. */
+/** зовут и из /start playlist_<id>, и из ссылки в личке. У Spotify owner в
+ *  URL нет — оставлен как пустая строка для совместимости сигнатуры. */
 export async function startPlaylistUpload(
   bot: Bot,
   chatId: number,
   userId: number,
-  owner: string,
-  kind: number,
+  _owner: string,
+  kind: string,
   container: Container,
 ): Promise<void> {
   await startUpload(
@@ -23,7 +24,7 @@ export async function startPlaylistUpload(
     container,
     "плейлист",
     format`❌ плейлист не найден, недоступен или пуст`,
-    (yandex) => yandex.getPlaylist(owner, kind),
+    (music) => music.getPlaylist("", kind),
   );
 }
 
@@ -32,7 +33,7 @@ export function registerPlaylists(bot: Bot, container: Container): void {
     if (ctx.chat?.type !== "private") return;
     const m = PLAYLIST_URL_RE.exec(ctx.text ?? "");
     if (!m) return;
-    await startPlaylistUpload(bot, ctx.chat.id, ctx.from!.id, m[1]!, Number(m[2]), container);
+    await startPlaylistUpload(bot, ctx.chat.id, ctx.from!.id, "", m[1]!, container);
   });
 
   log.debug("playlist-хендлеры зарегистрированы");

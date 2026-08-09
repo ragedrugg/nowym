@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# установка nowym-ts (gramio edition) в одну команду.
+# установка nowspot (форк nowym под Spotify + yt-dlp) в одну команду.
 #
 # делает: проверяет node, ставит зависимости, готовит .env (секреты и
 # постгресовые пароли генерит сам, при подтверждении сразу накатывает
@@ -100,6 +100,8 @@ if [ "$ENV_IS_NEW" -eq 1 ]; then
   [ -n "$CHANNEL_ID" ] && set_env "TELEGRAM_CHANNEL_ID" "$CHANNEL_ID"
   ADMIN_ID="$(ask "твой telegram id (напиши @userinfobot)")"
   [ -n "$ADMIN_ID" ] && set_env "ADMIN_USER_ID" "$ADMIN_ID"
+  SPOTIFY_ID="$(ask "Spotify Client ID (developer.spotify.com/dashboard → Create app)")"
+  [ -n "$SPOTIFY_ID" ] && set_env "SPOTIFY_CLIENT_ID" "$SPOTIFY_ID"
 fi
 
 step "postgres"
@@ -115,7 +117,7 @@ fi
 
 DB_READY_IN_ENV=0
 if [ "$PG_READY" -eq 1 ] && [ "$ENV_IS_NEW" -eq 1 ]; then
-  echo "  накатить роли/базы (nowym_users, nowym_cache) прямо сейчас? Пароли сгенерю"
+  echo "  накатить роли/базы (nowspot_users, nowspot_cache) прямо сейчас? Пароли сгенерю"
   echo "  сам и сразу пропишу в .env — синхронизировать руками ничего не придётся."
   if confirm "накатить postgres-роли автоматически"; then
     PW_USERS="$(gen_pw)"; PW_CACHE="$(gen_pw)"
@@ -126,13 +128,13 @@ if [ "$PG_READY" -eq 1 ] && [ "$ENV_IS_NEW" -eq 1 ]; then
       -e "s/CHANGE_ME_USERS/${PW_USERS}/" \
       -e "s/CHANGE_ME_CACHE/${PW_CACHE}/" \
       docs/sql/init.sql)"
-    if sudo -u postgres psql -v ON_ERROR_STOP=1 >/tmp/nowym-install-psql.log 2>&1 <<< "$SQL_FILLED"; then
-      set_env "POSTGRES_USERS_DSN" "postgresql://nowym_users_app:${PW_USERS}@127.0.0.1:5432/nowym_users"
-      set_env "POSTGRES_CACHE_DSN" "postgresql://nowym_cache_app:${PW_CACHE}@127.0.0.1:5432/nowym_cache"
+    if sudo -u postgres psql -v ON_ERROR_STOP=1 >/tmp/nowspot-install-psql.log 2>&1 <<< "$SQL_FILLED"; then
+      set_env "POSTGRES_USERS_DSN" "postgresql://nowspot_users_app:${PW_USERS}@127.0.0.1:5432/nowspot_users"
+      set_env "POSTGRES_CACHE_DSN" "postgresql://nowspot_cache_app:${PW_CACHE}@127.0.0.1:5432/nowspot_cache"
       DB_READY_IN_ENV=1
       ok "роли и базы созданы, DSN прописаны в .env"
     else
-      err "psql упал — лог в /tmp/nowym-install-psql.log (частая причина: роли уже существуют — тогда"
+      err "psql упал — лог в /tmp/nowspot-install-psql.log (частая причина: роли уже существуют — тогда"
       err "просто пропиши POSTGRES_*_DSN в .env вручную с уже имеющимися паролями)."
     fi
   fi
@@ -151,12 +153,21 @@ else
   warn "sudo apt install redis-server && sudo systemctl enable --now redis-server"
 fi
 
+step "yt-dlp"
+if command -v yt-dlp >/dev/null 2>&1; then
+  ok "yt-dlp найден ($(yt-dlp --version 2>/dev/null || echo '?'))"
+else
+  warn "yt-dlp не найден — без него скачивание не работает вообще (Spotify API аудио"
+  warn "не отдаёт, всё качается через yt-dlp с YouTube/SoundCloud). apt install yt-dlp"
+  warn "или pipx install yt-dlp (свежее)."
+fi
+
 step "ffmpeg"
 if command -v ffmpeg >/dev/null 2>&1; then
   ok "ffmpeg найден"
 else
-  warn "ffmpeg не найден — нужен только для аудио-эффектов (ncore/speed/slow),"
-  warn "остальной бот заработает и без него. apt install ffmpeg / brew install ffmpeg."
+  warn "ffmpeg не найден — нужен для тегирования аудио и аудио-эффектов"
+  warn "(ncore/speed/slow). apt install ffmpeg / brew install ffmpeg."
 fi
 
 step "подключение к Telegram"
@@ -194,4 +205,4 @@ echo "  2. добить .env, если что-то осталось пустым
 echo "  3. решить, как бот будет получать апдейты — BOT_API_BASE_URL или WEBHOOK_HOST (см. README)"
 echo "  4. npm run start   — или pm2 start ecosystem.config.cjs для прода"
 echo "  5. бэкапы БД (не обязательно, но советую) — раз в crontab -e:"
-echo "     0 4 * * * $SCRIPT_DIR/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1"
+echo "     0 4 * * * $SCRIPT_DIR/scripts/backup.sh >> /var/log/nowspot-backup.log 2>&1"

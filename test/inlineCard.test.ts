@@ -10,10 +10,15 @@ import {
   isCardResultId,
   trackCardBasics,
 } from "../src/bot/handlers/inlineCard.ts";
-import type { YaTrack } from "../src/yandex/types.ts";
+import type { Track } from "../src/music/types.ts";
 
-function mkTrack(id: number | string = 1): YaTrack {
-  return { id, title: "Song", artists: [{ name: "Artist" }], coverUri: "avatars.yandex.net/get/%%" };
+function mkTrack(id: string = "1"): Track {
+  return {
+    id,
+    title: "Song",
+    artists: [{ name: "Artist" }],
+    coverUri: "https://i.scdn.co/image/ab67616d0000b273abc",
+  };
 }
 
 function mkContainer(botUsername: string | null = "nowymbot"): Container {
@@ -98,13 +103,15 @@ test("trackCardBasics — собирает artist/title/обложки/handle", 
   assert.equal(b.artist, "Artist");
   assert.equal(b.title, "Song");
   assert.equal(b.senderHandle, "@vasya");
-  assert.ok(b.coverUrl.includes("1000x1000"));
-  assert.ok(b.thumb.includes("100x100"));
+  // У Spotify обложка приходит уже с полным URL — normalizeCoverUrl её только
+  // нормализует до https://, размер уже вшит в путь.
+  assert.ok(b.coverUrl.startsWith("https://"));
+  assert.ok(b.thumb.startsWith("https://"));
 });
 
 test("buildNowPlayingCardResult — resultId содержит userId (изоляция между пользователями)", () => {
   const container = mkContainer();
-  const track = mkTrack(777);
+  const track = mkTrack("777");
   const r1 = buildNowPlayingCardResult(container, track, { progress_ms: 5000 }, { id: 1 });
   const r2 = buildNowPlayingCardResult(container, track, { progress_ms: 5000 }, { id: 2 });
   assert.ok(r1 && r2);
@@ -118,7 +125,7 @@ test("buildNowPlayingCardResult — resultId содержит userId (изоля
 
 test("buildLyricsCardResult — resultId тоже содержит userId, разные фразы расходятся", () => {
   const container = mkContainer();
-  const track = mkTrack(777);
+  const track = mkTrack("777");
   const r1 = buildLyricsCardResult(container, track, "phrase one", { id: 1 });
   const r2 = buildLyricsCardResult(container, track, "phrase one", { id: 2 });
   const r3 = buildLyricsCardResult(container, track, "phrase two", { id: 1 });

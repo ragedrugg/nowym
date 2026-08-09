@@ -2,10 +2,10 @@ import { type DialogManager, StartMode } from "@gramio/dialogs";
 import type { Bot } from "gramio";
 import { blockquote, bold, code, type FormattableString, format, MediaUpload } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
-import { normalizeCoverUrl } from "../../yandex/media.ts";
-import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
-import type { YaTrack } from "../../yandex/types.ts";
-import type { CurrentTrack } from "../../yandex/ynison.ts";
+import { normalizeCoverUrl } from "../../music/media.ts";
+import { buildCardMeta, formatTrackBasics } from "../../music/metadata.ts";
+import type { Track } from "../../music/types.ts";
+import type { CurrentTrack } from "../../music/watcher.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
@@ -23,12 +23,12 @@ async function startMenu(ctx: unknown, state: string): Promise<void> {
 
 const log = getLogger("bot.common");
 
-const START_ALBUM_RE = /^album_(\d+)$/;
-const START_TRACK_RE = /^track_(\d+)$/;
+const START_ALBUM_RE = /^album_([A-Za-z0-9]{22})$/;
+const START_TRACK_RE = /^track_([A-Za-z0-9]{22})$/;
 // owner сам может содержать '_', поэтому kind — хвостовой _\d+ (жадный owner
 // отдаёт ровно последнюю группу цифр). Точка в owner в payload не пролезает —
 // телеграм разрешает только [A-Za-z0-9_-] (см. createPlaylistResult).
-export const START_PLAYLIST_RE = /^playlist_([\w-]+)_(\d+)$/;
+export const START_PLAYLIST_RE = /^playlist_([A-Za-z0-9]{22})$/;
 
 export interface TgUser {
   id: number;
@@ -92,8 +92,8 @@ async function currentTrackOf(
 ): Promise<Pick<CurrentTrack, "track" | "paused" | "duration_ms" | "progress_ms"> | null> {
   const watcher = container.npWatcher;
   if (watcher !== null && watcher.ownerId === user.id) return watcher.getCurrentSnapshot();
-  const yandex = await container.getYandexService(token, user.id);
-  return yandex.getCurrentTrack();
+  const music = await container.getMusicService(token, user.id);
+  return music.getCurrentTrack();
 }
 
 /** лимит — общий с /np. */
@@ -164,7 +164,7 @@ export async function sendCurrentTrack(
   const token = await checkLimitAndToken(bot, chatId, user, container, statusMsgId);
   if (!token) return;
 
-  let track: YaTrack | null | undefined;
+  let track: Track | null | undefined;
   try {
     track = (await currentTrackOf(container, user, token))?.track;
   } catch (e) {
@@ -204,7 +204,7 @@ export function registerCommon(bot: Bot, container: Container): void {
     if (args) {
       const ma = START_ALBUM_RE.exec(args);
       if (ma) {
-        await startAlbumUpload(bot, ctx.chat.id, user.id, Number(ma[1]), container);
+        await startAlbumUpload(bot, ctx.chat.id, user.id, ma[1]!, container);
         return;
       }
       const mt = START_TRACK_RE.exec(args);
@@ -214,7 +214,7 @@ export function registerCommon(bot: Bot, container: Container): void {
       }
       const mp = START_PLAYLIST_RE.exec(args);
       if (mp) {
-        await startPlaylistUpload(bot, ctx.chat.id, user.id, mp[1]!, Number(mp[2]), container);
+        await startPlaylistUpload(bot, ctx.chat.id, user.id, "", mp[1]!, container);
         return;
       }
     }

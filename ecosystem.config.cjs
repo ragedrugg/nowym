@@ -1,5 +1,5 @@
 /**
- * pm2-конфиг автозапуска nowym-ts.
+ * pm2-конфиг автозапуска nowspot.
  *
  * Полностью портативный — ничего не хардкожено под конкретную машину,
  * ничего не нужно патчить после клонирования:
@@ -34,7 +34,7 @@ const path = require("node:path");
 module.exports = {
   apps: [
     {
-      name: "nowym-ts",
+      name: "nowspot",
       script: "src/main.ts",
       cwd: __dirname,
       interpreter: process.execPath,

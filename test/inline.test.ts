@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildChosenEditPayload, parseTrackResultId } from "../src/bot/handlers/inline.ts";
 
-test("parseTrackResultId", () => {
-  assert.equal(parseTrackResultId("123456"), "123456");
-  assert.equal(parseTrackResultId("tm:123456"), "123456");
+test("parseTrackResultId — валидный Spotify id (22 base62)", () => {
+  const id = "4iV5W9uYEdYUVa79Axb7Rh";
+  assert.equal(parseTrackResultId(id), id);
+  assert.equal(parseTrackResultId(`tm:${id}`), id);
   assert.equal(parseTrackResultId("tm:abc"), null);
   assert.equal(parseTrackResultId("album:1"), null);
+  assert.equal(parseTrackResultId("123456"), null); // короткий id — не Spotify
   assert.equal(parseTrackResultId(""), null);
 });
 

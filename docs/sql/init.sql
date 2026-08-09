@@ -1,12 +1,12 @@
--- Создание двух изолированных БД для nowym.
+-- Создание двух изолированных БД для nowspot.
 -- ПЕРЕД ЗАПУСКОМ: подставь свои пароли вместо CHANGE_ME_USERS / CHANGE_ME_CACHE.
 -- Запуск: sudo -u postgres psql -f docs/sql/init.sql
 
-CREATE USER nowym_users_app WITH PASSWORD 'CHANGE_ME_USERS';
-CREATE USER nowym_cache_app WITH PASSWORD 'CHANGE_ME_CACHE';
+CREATE USER nowspot_users_app WITH PASSWORD 'CHANGE_ME_USERS';
+CREATE USER nowspot_cache_app WITH PASSWORD 'CHANGE_ME_CACHE';
 
-CREATE DATABASE nowym_users OWNER nowym_users_app;
-CREATE DATABASE nowym_cache OWNER nowym_cache_app;
+CREATE DATABASE nowspot_users OWNER nowspot_users_app;
+CREATE DATABASE nowspot_cache OWNER nowspot_cache_app;
 
 -- Схема таблиц создаётся автоматически при первом старте бота
 -- (см. src/storage/users.ts::initSchema и src/storage/cache.ts::initSchema).

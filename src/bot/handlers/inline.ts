@@ -6,7 +6,7 @@ import { parseSearchQuery } from "../../infra/parsers.ts";
 import type { InlineResult, SearchService } from "../../services/search.ts";
 import { getSettings } from "../../settings.ts";
 import type { CachedTrack } from "../../storage/types.ts";
-import { makeEncrawDecrypt, type YandexClient } from "../../yandex/client.ts";
+import type { MusicClient } from "../../music/client.ts";
 import {
   type AudioQuality,
   buildTrackMetadata,
@@ -15,8 +15,8 @@ import {
   formatDurationHuman,
   formatTrackBasics,
   trackIsTooLong,
-} from "../../yandex/metadata.ts";
-import type { YaTrack } from "../../yandex/types.ts";
+} from "../../music/metadata.ts";
+import type { Track } from "../../music/types.ts";
 import { buildLyricsQuote, buildTrackCaption } from "../captions.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
@@ -68,22 +68,22 @@ function stripParen(s: string): string {
   return s.replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
 
-type ResolveResult = { cached: CachedTrack | null; trackObj: YaTrack | null; yandex: YandexClient };
+type ResolveResult = { cached: CachedTrack | null; trackObj: Track | null; music: MusicClient };
 
-/** lossless — отдельный тир кэша; переданный lossy-`cached` для него не годится. */
+/** У Spotify нет lossless-варианта — переданный cached годится для любой quality. */
 async function resolveCacheEntry(
-  container: Container,
-  trackId: string,
-  quality: AudioQuality,
+  _container: Container,
+  _trackId: string,
+  _quality: AudioQuality,
   cached: CachedTrack | null,
 ): Promise<CachedTrack | null> {
-  return quality === "lossless" ? await container.cacheDb.get(trackId, "lossless") : cached;
+  return cached;
 }
 
-/** null, если result_id не сводится к числовому trackId. */
+/** null, если result_id не сводится к валидному Spotify track id (22 base62). */
 export function parseTrackResultId(resultId: string): string | null {
   const id = resultId.startsWith("tm:") ? resultId.slice(3) : resultId;
-  return /^\d+$/.test(id) ? id : null;
+  return /^[A-Za-z0-9]{22}$/.test(id) ? id : null;
 }
 
 /** InputMediaAudio для editMessageMedia + reply_markup под выбранный layout. */
@@ -124,110 +124,70 @@ async function resolveTrack(
   token: string,
   userId: number,
   trackId: string,
-  trackObj: YaTrack | null = null,
+  trackObj: Track | null = null,
 ): Promise<ResolveResult> {
   const trackService = await container.getTrackService(token, userId);
-  const yandex = await container.getYandexService(token, userId);
+  const music = await container.getMusicService(token, userId);
 
   let obj = trackObj ?? trackService.getTrackObject(trackId);
   let cached: CachedTrack | null;
   if (obj !== null) {
     cached = await container.cacheDb.get(trackId);
   } else {
-    [cached, obj] = await Promise.all([container.cacheDb.get(trackId), yandex.getTrackById(Number(trackId))]);
+    [cached, obj] = await Promise.all([container.cacheDb.get(trackId), music.getTrackById(trackId)]);
     if (obj) trackService.cacheTrackObject(obj);
   }
-  return { cached, trackObj: obj, yandex };
-}
-
-/** lossless: urls зашифрованы, требуют AES-CTR-расшифровку; кэш под своим тиром. */
-async function downloadFreshTrackLossless(
-  container: Container,
-  trackObj: YaTrack,
-  yandex: YandexClient,
-  trackId: string,
-): Promise<[boolean, string | null, string | null, number | null]> {
-  const [metadata, info] = await Promise.all([
-    enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, yandex),
-    yandex.getLosslessDownload(trackObj),
-  ]);
-  if (info === null) return [false, null, null, null];
-  const meta = { ...metadata, codec: info.codec, bitrate_kbps: info.bitrate };
-  // каждая racing-попытка берёт случайный url из списка — естественный спред по CDN.
-  const urls = info.links();
-  const pickUrl = async (): Promise<string | null> => urls[Math.floor(Math.random() * urls.length)] ?? null;
-  const decrypt = makeEncrawDecrypt(info.key);
-  const fileId = await container.cacheService.downloadAndCacheTrack(
-    trackId,
-    pickUrl,
-    meta,
-    info.codec,
-    decrypt,
-    "lossless",
-  );
-  return [true, fileId, info.codec ?? null, info.bitrate ?? null];
+  return { cached, trackObj: obj, music };
 }
 
 /** возвращает [infoFound, fileId, codec, bitrateKbps]. */
 async function downloadFreshTrackBest(
   container: Container,
-  trackObj: YaTrack,
-  yandex: YandexClient,
+  trackObj: Track,
+  music: MusicClient,
   trackId: string,
   quality: AudioQuality,
 ): Promise<[boolean, string | null, string | null, number | null]> {
   const [metadata, info] = await Promise.all([
-    enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, yandex),
-    yandex.getBestDownloadInfo(trackObj, quality),
+    enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, music),
+    music.getBestDownloadInfo(trackObj, quality),
   ]);
   if (info === null) return [false, null, null, null];
   const meta = { ...metadata, codec: info.codec, bitrate_kbps: info.bitrateInKbps };
   const fileId = await container.cacheService.downloadAndCacheTrack(
     trackId,
-    () => yandex.directLinkFromInfo(info),
+    () => music.directLinkFromInfo(info),
     meta,
     info.codec,
   );
   return [true, fileId, info.codec, info.bitrateInKbps];
 }
 
-/** degraded=true — запрошен lossless, но он не отдался, молча отдали lossy. */
+/** degraded зарезервировано для будущих downgrade-путей — сейчас всегда false. */
 async function downloadFreshTrack(
   container: Container,
-  trackObj: YaTrack,
-  yandex: YandexClient,
+  trackObj: Track,
+  music: MusicClient,
   trackId: string,
   quality: AudioQuality = "best",
 ): Promise<[boolean, string | null, string | null, number | null, boolean]> {
-  if (quality === "lossless") {
-    try {
-      const r = await downloadFreshTrackLossless(container, trackObj, yandex, trackId);
-      if (r[1]) return [r[0], r[1], r[2], r[3], false];
-      log.warning(`[lossless] недоступен track=${trackId} → фолбэк на mp3`);
-    } catch (e) {
-      log.warning(`[lossless] сбой track=${trackId}: ${e} → фолбэк на mp3`);
-    }
-    // degraded только если фолбэк реально удался
-    const fb = await downloadFreshTrackBest(container, trackObj, yandex, trackId, "best");
-    return [fb[0], fb[1], fb[2], fb[3], fb[1] !== null];
-  }
-  const r = await downloadFreshTrackBest(container, trackObj, yandex, trackId, quality);
+  const r = await downloadFreshTrackBest(container, trackObj, music, trackId, quality);
   return [r[0], r[1], r[2], r[3], false];
 }
 
 /** качаем lossy-исходник, перекодируем ffmpeg-фильтром, кэш — свой тир per-эффект. */
 async function buildEffectTrack(
   container: Container,
-  trackObj: YaTrack,
-  yandex: YandexClient,
+  trackObj: Track,
+  music: MusicClient,
   trackId: string,
   effect: AudioEffect,
   tier: string,
 ): Promise<string | null> {
   // кэш этого тира проверил ensureFileId — сюда доходим только на промахе
   const [metadata, info] = await Promise.all([
-    enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, yandex),
-    yandex.getBestDownloadInfo(trackObj, "best"),
+    enrichMetadataFromAlbum(buildTrackMetadata(trackObj), trackObj, music),
+    music.getBestDownloadInfo(trackObj, "best"),
   ]);
   if (info === null) return null;
 
@@ -240,7 +200,7 @@ async function buildEffectTrack(
   };
   return container.cacheService.downloadAndCacheTrack(
     trackId,
-    () => yandex.directLinkFromInfo(info),
+    () => music.directLinkFromInfo(info),
     meta,
     info.codec,
     undefined,
@@ -260,8 +220,8 @@ export type EnsureResult =
 export async function ensureFileId(
   container: Container,
   cached: CachedTrack | null,
-  trackObj: YaTrack | null,
-  yandex: YandexClient,
+  trackObj: Track | null,
+  music: MusicClient,
   trackId: string,
   opts: { quality?: AudioQuality; tier?: string | null; onDownloadStart?: () => Promise<void> } = {},
 ): Promise<EnsureResult> {
@@ -283,7 +243,7 @@ export async function ensureFileId(
   if (onDownloadStart) await onDownloadStart();
 
   if (effect) {
-    const fileId = await buildEffectTrack(container, trackObj, yandex, trackId, effect, tier!);
+    const fileId = await buildEffectTrack(container, trackObj, music, trackId, effect, tier!);
     return fileId
       ? { ok: true, fileId, codec: "mp3", bitrateKbps: EFFECT_BITRATE, degraded: false }
       : { ok: false, kind: "failed" };
@@ -292,7 +252,7 @@ export async function ensureFileId(
   const [infoFound, fileId, codec, bitrateKbps, degraded] = await downloadFreshTrack(
     container,
     trackObj,
-    yandex,
+    music,
     trackId,
     quality,
   );
@@ -308,7 +268,7 @@ async function buildEmptyResults(
   opts: { layout: string; cardLayout: string; sendMode: string },
   signal?: AbortSignal,
 ): Promise<{ results: unknown[]; nextOffset: string }> {
-  let current: { track?: YaTrack | null; progress_ms?: number; duration_ms?: number; paused?: boolean } | null = null;
+  let current: { track?: Track | null; progress_ms?: number; duration_ms?: number; paused?: boolean } | null = null;
   const watcher = container.npWatcher;
   if (watcher !== null && watcher.ownerId === user.id) {
     const snap = watcher.getCurrentSnapshot();
@@ -318,7 +278,7 @@ async function buildEmptyResults(
     if (snap?.track) trackService.cacheTrackObject(snap.track);
   } else {
     try {
-      current = await trackService.yandexService.getCurrentTrack();
+      current = await trackService.musicService.getCurrentTrack();
     } catch (e) {
       log.warning(`[inline] не получил текущий трек: ${e}`);
       return { results: [], nextOffset: "" };
@@ -363,7 +323,7 @@ export async function sendTrackToChat(args: {
   userId: number;
   container: Container;
   trackId: string;
-  trackObj?: YaTrack | null;
+  trackObj?: Track | null;
   token?: string | null;
   statusMsgId?: number | null;
   checkLimit?: boolean;
@@ -397,10 +357,10 @@ export async function sendTrackToChat(args: {
   }
 
   try {
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId, args.trackObj ?? null);
+    const { cached, trackObj, music } = await resolveTrack(container, token, userId, trackId, args.trackObj ?? null);
     const quality = (await container.getUserSettings(userId)).track_quality as AudioQuality;
 
-    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
+    const res = await ensureFileId(container, cached, trackObj, music, trackId, {
       quality,
       onDownloadStart: async () => {
         if (statusMsgId === null) return;
@@ -433,7 +393,7 @@ export async function sendTrackToChat(args: {
       audio: res.fileId,
       ...(res.degraded ? { caption: format`⚠️ превосходное недоступно — отдаю оптимальное` } : {}),
     });
-    if (trackObj) void yandex.reportPlayback(trackObj);
+    if (trackObj) void music.reportPlayback(trackObj);
     if (statusMsgId !== null) {
       try {
         await bot.api.deleteMessage({ chat_id: chatId, message_id: statusMsgId });
@@ -479,9 +439,9 @@ async function fetchLyricsForQuery(
   if (!raw) {
     try {
       const svc = await container.getTrackService(token, userId);
-      raw = await withTimeout(svc.yandexService.getTrackLyrics(trackId), 6000);
+      raw = await withTimeout(svc.musicService.getTrackLyrics(trackId), 6000);
     } catch (e) {
-      log.warning(`[lyrics/yandex] track=${trackId}: ${e}`);
+      log.warning(`[lyrics/music] track=${trackId}: ${e}`);
     }
   }
 
@@ -587,7 +547,7 @@ async function applySuggestCorrection(
   },
   current: { results: unknown[]; nextOffset: string },
 ): Promise<{ results: unknown[]; nextOffset: string }> {
-  const corrected = await trackService.yandexService.suggestCorrection(opts.searchText).catch(() => null);
+  const corrected = await trackService.musicService.suggestCorrection(opts.searchText).catch(() => null);
   if (!corrected || corrected.toLowerCase() === opts.searchText.toLowerCase()) return current;
   log.info(`[inline/suggest] ${JSON.stringify(opts.searchText)} → ${JSON.stringify(corrected)}`);
 
@@ -736,7 +696,7 @@ async function onInlineQuery(
       log.warning(`[inline] яндекс-клиент не создан user=${userId}: ${e}`);
       await ctx.answer([], {
         cache_time: 3,
-        button: { text: "⏳ Яндекс не отвечает, попробуй ещё раз", start_parameter: "start" },
+        button: { text: "⏳ Spotify не отвечает, попробуй ещё раз", start_parameter: "start" },
       });
       return;
     }
@@ -904,7 +864,7 @@ async function onChosenResult(
       searchPhrase = queryText.replace(/^["«]+/, "").trim();
     }
 
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const { cached, trackObj, music } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
 
@@ -936,17 +896,16 @@ async function onChosenResult(
     let res: EnsureResult;
     if (searchPhrase) {
       const [ensure, lq] = await Promise.all([
-        ensureFileId(container, cached, trackObj, yandex, trackId, ensureOpts),
+        ensureFileId(container, cached, trackObj, music, trackId, ensureOpts),
         fetchLyricsForQuery(container, token, userId, trackId, searchPhrase, artist, title),
       ]);
       res = ensure;
       lyricsQuote = lq;
     } else {
-      res = await ensureFileId(container, cached, trackObj, yandex, trackId, ensureOpts);
+      res = await ensureFileId(container, cached, trackObj, music, trackId, ensureOpts);
     }
 
-    // для lossless mp3-кэш не считается «уже на месте» — нужен своп на FLAC
-    if (quality !== "lossless" && !effect && cached && cached.is_cached && !isTextMedia && !lyricsQuote) {
+    if (!effect && cached && cached.is_cached && !isTextMedia && !lyricsQuote) {
       log.info(`[chosen] трек ${trackId} уже в кэше user=${userId}`);
       // реальное аудио уже в сообщении (не текст-плейсхолдер) — просто чиним
       // кнопку, если тикер успел подменить её на «качаю...»/«отправляю...»
@@ -1029,13 +988,13 @@ async function onLoadCallback(
   }
 
   try {
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const { cached, trackObj, music } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
     // эффект берём из запроса, запомненного на chosen_result: в callback_data его нет,
     // а «качаю...»/«загрузить снова» обязаны отдать тот же вариант, что просили.
     const tier = container.inlineEffects.get(inlineMsgId);
-    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, { quality, tier });
+    const res = await ensureFileId(container, cached, trackObj, music, trackId, { quality, tier });
     if (!res.ok) {
       const text =
         res.kind === "not_found"
@@ -1088,9 +1047,9 @@ async function onLikeCallback(
   }
 
   try {
-    const yandex = await container.getYandexService(token, userId);
-    const liked = await yandex.isTrackLiked(trackId);
-    const ok = await yandex.setTrackLiked(trackId, !liked);
+    const music = await container.getMusicService(token, userId);
+    const liked = await music.isTrackLiked(trackId);
+    const ok = await music.setTrackLiked(trackId, !liked);
     if (!ok) {
       await safeAnswerCb(ctx, { text: "не вышло, попробуй ещё раз", show_alert: true });
       return;

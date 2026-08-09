@@ -12,7 +12,7 @@ import {
 
 test("norm: валидное значение проходит как есть", () => {
   assert.equal(norm("text", TRACK_LAYOUTS, DEFAULT_TRACK_LAYOUT), "text");
-  assert.equal(norm("lossless", TRACK_QUALITIES, "best"), "lossless");
+  assert.equal(norm("economy", TRACK_QUALITIES, "best"), "economy");
 });
 
 test("norm: невалидное/null/undefined → дефолт", () => {

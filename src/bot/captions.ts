@@ -1,6 +1,6 @@
 /** Подписи под аудио для inline-результатов. */
 import { blockquote, bold, type FormattableString, format, italic, link } from "gramio";
-import { trackUrl } from "../yandex/urls.ts";
+import { trackUrl } from "../music/urls.ts";
 
 export function senderHandleOf(user: { username?: string | null; firstName?: string | null }): string {
   return user.username ? `@${user.username}` : user.firstName || "user";

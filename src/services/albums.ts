@@ -14,8 +14,8 @@ import { getSettings } from "../settings.ts";
 import type { CacheDb } from "../storage/cache.ts";
 import type { UserSettings } from "../storage/settings.ts";
 import type { CachedTrack, InflightAlbum } from "../storage/types.ts";
-import { makeEncrawDecrypt, type YandexClient } from "../yandex/client.ts";
-import { fetchCover } from "../yandex/media.ts";
+import type { MusicClient } from "../music/client.ts";
+import { fetchCover } from "../music/media.ts";
 import {
   type AudioQuality,
   albumEmoji,
@@ -24,8 +24,8 @@ import {
   formatTrackBasics,
   LABELED_ALBUM_TYPES,
   trackIsTooLong,
-} from "../yandex/metadata.ts";
-import type { AlbumData, TrackMetadata, YaTrack } from "../yandex/types.ts";
+} from "../music/metadata.ts";
+import type { AlbumData, TrackMetadata, Track } from "../music/types.ts";
 import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.albums");
@@ -92,15 +92,15 @@ export class ProgressMessage {
 interface RetryBuf {
   chatId: number;
   userId: number;
-  tracks: YaTrack[];
+  tracks: Track[];
   albumData: AlbumData;
-  yandex: YandexClient;
+  music: MusicClient;
 }
 
 type PrepareKind = "cached" | "fresh" | "failed";
 interface PreparedEntry {
   kind: PrepareKind;
-  track: YaTrack;
+  track: Track;
   trackId: string;
   metadata: CacheMetadata;
   // cached → fileId; fresh → [audio, cover]; failed → null
@@ -114,7 +114,7 @@ interface PreparedEntry {
 interface ProgressState {
   sent: number;
   downloading: number;
-  failed: YaTrack[];
+  failed: Track[];
   lock: Semaphore;
   startedAt: number;
   lastRender: number;
@@ -126,7 +126,7 @@ interface SendArgs {
   userId: number;
   albumData: AlbumData;
   progressMsg: ProgressMessage | null;
-  yandex: YandexClient;
+  music: MusicClient;
   coverBytes?: Buffer | null;
 }
 
@@ -197,7 +197,7 @@ export class AlbumService {
       tracks: args.albumData.tracks,
       albumData: args.albumData,
       progressMsg: args.progressMsg,
-      yandex: args.yandex,
+      music: args.music,
       coverBytes: args.coverBytes ?? null,
       persistInflight: true,
     });
@@ -208,10 +208,10 @@ export class AlbumService {
   async retryFailed(args: {
     chatId: number;
     userId: number;
-    tracks: YaTrack[];
+    tracks: Track[];
     albumData: AlbumData;
     progressMsg: ProgressMessage | null;
-    yandex: YandexClient;
+    music: MusicClient;
   }): Promise<boolean> {
     // claim — первым же синхронным действием, до всех await'ов вызывающей стороны
     if (!this.tryBegin(args.userId)) return false;
@@ -222,7 +222,7 @@ export class AlbumService {
       tracks: args.tracks,
       albumData: args.albumData,
       progressMsg: args.progressMsg,
-      yandex: args.yandex,
+      music: args.music,
       coverBytes: null,
       persistInflight: false,
     });
@@ -232,7 +232,7 @@ export class AlbumService {
   /** на старте бота дочитывает альбомы, упавшие на середине. */
   async resumeInflight(deps: {
     resolveToken(userId: number): Promise<string | null>;
-    getYandexClient(token: string, userId: number): Promise<YandexClient>;
+    getMusicClient(token: string, userId: number): Promise<MusicClient>;
   }): Promise<void> {
     let rows: InflightAlbum[];
     try {
@@ -263,21 +263,21 @@ export class AlbumService {
   private async resumeOne(
     deps: {
       resolveToken(userId: number): Promise<string | null>;
-      getYandexClient(token: string, userId: number): Promise<YandexClient>;
+      getMusicClient(token: string, userId: number): Promise<MusicClient>;
     },
     row: {
       id: number;
       user_id: number;
       chat_id: number;
-      album_id: number;
+      album_id: string;
       progress_message_id: number | null;
-      completed_track_ids: number[];
+      completed_track_ids: string[];
     },
   ): Promise<void> {
     const userId = row.user_id;
     const chatId = row.chat_id;
     const albumId = row.album_id;
-    const doneIds = new Set(row.completed_track_ids.map(Number));
+    const doneIds = new Set(row.completed_track_ids.map(String));
     const inflightId = row.id;
 
     const proxy = row.progress_message_id ? new ProgressMessage(this.bot, chatId, row.progress_message_id) : null;
@@ -298,10 +298,10 @@ export class AlbumService {
       return;
     }
 
-    const yandex = await deps.getYandexClient(token, userId);
+    const music = await deps.getMusicClient(token, userId);
     let album: AlbumData | null;
     try {
-      album = await yandex.getAlbum(albumId);
+      album = await music.getAlbum(albumId);
     } catch (e) {
       log.warning(`[resume] альбом ${albumId} user=${userId}: ${e}`);
       album = null;
@@ -314,7 +314,7 @@ export class AlbumService {
       return;
     }
 
-    const remaining = album.tracks.filter((t) => !doneIds.has(Number(t.id)));
+    const remaining = album.tracks.filter((t) => !doneIds.has(String(t.id)));
     const totalOrig = album.tracks.length;
 
     if (remaining.length === 0) {
@@ -337,7 +337,7 @@ export class AlbumService {
       tracks: remaining,
       albumData: album,
       progressMsg: proxy,
-      yandex,
+      music,
       coverBytes: null,
       persistInflight: true,
       inflightId,
@@ -364,23 +364,21 @@ export class AlbumService {
   private async sendAlbumTracks(args: {
     chatId: number;
     userId: number;
-    tracks: YaTrack[];
+    tracks: Track[];
     albumData: AlbumData;
     progressMsg: ProgressMessage | null;
-    yandex: YandexClient;
+    music: MusicClient;
     coverBytes: Buffer | null;
     persistInflight: boolean;
     inflightId?: number | null;
   }): Promise<void> {
-    const { chatId, userId, tracks, albumData, progressMsg, yandex, coverBytes } = args;
+    const { chatId, userId, tracks, albumData, progressMsg, music, coverBytes } = args;
     const total = tracks.length;
     if (total === 0) return;
 
-    // режим качества юзера: lossless → весь альбом во FLAC (отдельный тир кэша),
-    // с пофайловым фолбэком на lossy, если у трека нет lossless.
+    // режим качества юзера — «best» или «economy» (у Spotify+yt-dlp lossless нет).
     const quality = (await this.getUserSettings(userId)).track_quality as AudioQuality;
-    const losslessMode = quality === "lossless";
-    const tier = losslessMode ? "lossless" : "lossy";
+    const tier = "lossy";
 
     let inflightId = args.inflightId ?? null;
     if (args.persistInflight && inflightId === null) {
@@ -388,7 +386,7 @@ export class AlbumService {
         inflightId = await this.db.insertInflightAlbum({
           user_id: userId,
           chat_id: chatId,
-          album_id: albumData.id || 0,
+          album_id: albumData.id || "",
           progress_message_id: progressMsg?.messageId ?? null,
         });
       } catch (e) {
@@ -410,7 +408,7 @@ export class AlbumService {
     const metaLine = metaParts.join(", ");
     const headerFull = metaLine ? format`${headerShort}\n${metaLine}` : headerShort;
 
-    const buildMeta = (track: YaTrack, i: number): CacheMetadata => {
+    const buildMeta = (track: Track, i: number): CacheMetadata => {
       const trackNumber = track._trackNumber ?? i;
       const discNumber = multiDisc ? (track._discNumber ?? 1) : null;
       const meta: CacheMetadata = buildTrackMetadata(track, {
@@ -447,7 +445,7 @@ export class AlbumService {
     const markDoneSafe = async (tid: string): Promise<void> => {
       if (inflightId === null) return;
       try {
-        await this.db.markInflightTrackDone(inflightId, Number(tid));
+        await this.db.markInflightTrackDone(inflightId, tid);
       } catch (e) {
         log.debug(`[inflight] mark_done track=${tid}: ${e}`);
       }
@@ -455,7 +453,7 @@ export class AlbumService {
 
     const prepared: (PreparedEntry | null)[] = new Array(total).fill(null);
 
-    const prepare = async (idx: number, track: YaTrack): Promise<void> => {
+    const prepare = async (idx: number, track: Track): Promise<void> => {
       const trackId = String(track.id);
       const metadata = buildMeta(track, idx + 1);
 
@@ -502,38 +500,13 @@ export class AlbumService {
         let actualTier = "lossy";
         try {
           const result = await this.downloadQueue.enqueue(async () => {
-            // lossless-режим: тянем FLAC через get-file-info с дешифровкой encraw.
-            if (losslessMode) {
-              const ll = await yandex.getLosslessDownload(track);
-              if (ll !== null) {
-                metadata.codec = ll.codec;
-                metadata.bitrate_kbps = ll.bitrate;
-                const decrypt = makeEncrawDecrypt(ll.key);
-                // каждая racing-попытка берёт случайный url — естественный спред по CDN.
-                const llUrls = ll.links();
-                const pickUrl = async (): Promise<string | null> =>
-                  llUrls[Math.floor(Math.random() * llUrls.length)] ?? null;
-                const llCodec = ll.codec ?? "flac";
-                const p = await this.cache.prepareTrackPayload(
-                  trackId,
-                  pickUrl,
-                  metadata,
-                  llCodec,
-                  decrypt,
-                  "lossless",
-                );
-                if (p !== null) return { codec: llCodec, payload: p, tier: "lossless" };
-                log.warning(`[album] lossless не вышел для ${trackId} → фолбэк на lossy`);
-              }
-              // фолбэк: трек без lossless или сбой — качаем lossy ниже.
-            }
-            const info = await yandex.getBestDownloadInfo(track);
+            const info = await music.getBestDownloadInfo(track, quality);
             if (info === null) return null;
             metadata.codec = info.codec;
             metadata.bitrate_kbps = info.bitrateInKbps;
             const p = await this.cache.prepareTrackPayload(
               trackId,
-              () => yandex.directLinkFromInfo(info),
+              () => music.directLinkFromInfo(info),
               metadata,
               info.codec,
             );
@@ -625,7 +598,7 @@ export class AlbumService {
         albumData,
         userId,
         chatId,
-        yandex,
+        music,
         elapsed: performance.now() / 1000 - progress.startedAt,
       });
     } finally {
@@ -790,14 +763,14 @@ export class AlbumService {
     msg: ProgressMessage | null;
     headerShort: FormattableString;
     total: number;
-    failed: YaTrack[];
+    failed: Track[];
     albumData: AlbumData;
     userId: number;
     chatId: number;
-    yandex: YandexClient;
+    music: MusicClient;
     elapsed: number;
   }): Promise<void> {
-    const { msg, headerShort, total, failed, albumData, userId, chatId, yandex, elapsed } = args;
+    const { msg, headerShort, total, failed, albumData, userId, chatId, music, elapsed } = args;
     if (msg === null) return;
     const bar = renderProgressBar(total, total);
     const elapsedStr = formatEta(elapsed);
@@ -805,7 +778,7 @@ export class AlbumService {
     if (failed.length > 0) {
       const failedList = join(failed, (t) => format`- ${t.title}`, "\n");
       const text = format`${headerShort}\n${code(bar)} ${total - failed.length}/${total}, за ${elapsedStr}\n\n❌ не вышло:\n${failedList}`;
-      this.putRetry(msg.messageId, { chatId, userId, tracks: failed, albumData, yandex });
+      this.putRetry(msg.messageId, { chatId, userId, tracks: failed, albumData, music });
       await msg.edit(text, albumRetryMarkup(msg.messageId, pluralTracks(failed.length)));
     } else {
       const text = format`${headerShort}\n${code(bar)} ${total}/${total}, за ${elapsedStr}\n✅ готово 🎶`;

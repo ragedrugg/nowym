@@ -4,8 +4,8 @@ import { TTLCache } from "../src/infra/memoryCache.ts";
 import type { CacheService } from "../src/services/cache.ts";
 import type { InlineResult } from "../src/services/search.ts";
 import { SearchService } from "../src/services/search.ts";
-import type { YandexClient } from "../src/yandex/client.ts";
-import type { YaTrack } from "../src/yandex/types.ts";
+import type { MusicClient } from "../src/music/client.ts";
+import type { Track } from "../src/music/types.ts";
 
 // всегда "уже закэшировано" → allAlreadyCached()=true → resultsCache реально
 // пишется (без этого cacheService=null в mkService по умолчанию — тест
@@ -14,25 +14,25 @@ const fakeCacheService = {
   cacheDb: { get: async () => ({ is_cached: true }) },
 } as unknown as CacheService;
 
-function mkTrack(id: number): YaTrack {
+function mkTrack(id: string): Track {
   return { id, title: `track ${id}` };
 }
 
 /** SearchService без сети: cacheService=null → createInlineResultFromTrack идёт
  * по text_media-пути (только строит InlineQueryResult.article, без I/O). */
 function mkService(
-  fake: Partial<YandexClient>,
+  fake: Partial<MusicClient>,
   userId: number | null = null,
   resultsCache: TTLCache<InlineResult[]> = new TTLCache<InlineResult[]>(100, 300, 60),
   cacheService: CacheService | null = null,
 ): SearchService {
-  return new SearchService(fake as unknown as YandexClient, resultsCache, cacheService, "nowymbot", userId);
+  return new SearchService(fake as unknown as MusicClient, resultsCache, cacheService, "nowymbot", userId);
 }
 
 test("recentResultsPaged — листает пул страницами, nextOffset двигается", async () => {
-  const pool = Array.from({ length: 7 }, (_, i) => mkTrack(i));
+  const pool = Array.from({ length: 7 }, (_, i) => mkTrack(String(i)));
   let calls = 0;
-  const fake: Partial<YandexClient> = {
+  const fake: Partial<MusicClient> = {
     getRecentTracks: async () => {
       calls += 1;
       return pool;
@@ -57,8 +57,8 @@ test("recentResultsPaged — листает пул страницами, nextOff
 });
 
 test("recentResultsPaged — offset за пределами пула отдаёт пусто без nextOffset", async () => {
-  const pool = Array.from({ length: 4 }, (_, i) => mkTrack(i));
-  const fake: Partial<YandexClient> = { getRecentTracks: async () => pool };
+  const pool = Array.from({ length: 4 }, (_, i) => mkTrack(String(i)));
+  const fake: Partial<MusicClient> = { getRecentTracks: async () => pool };
   const service = mkService(fake);
 
   const r = await service.recentResultsPaged("100", 3, "button", "text_media");
@@ -69,12 +69,12 @@ test("searchTracksPaged — переход внутри страницы, зат
   // страница 0: 5 треков (id 0-4), всего 12, perPage=5
   // страница 1: 5 треков (id 5-9)
   // страница 2: 2 трека (id 10-11) — последняя
-  const pages: Record<number, YaTrack[]> = {
-    0: Array.from({ length: 5 }, (_, i) => mkTrack(i)),
-    1: Array.from({ length: 5 }, (_, i) => mkTrack(5 + i)),
-    2: Array.from({ length: 2 }, (_, i) => mkTrack(10 + i)),
+  const pages: Record<number, Track[]> = {
+    0: Array.from({ length: 5 }, (_, i) => mkTrack(String(i))),
+    1: Array.from({ length: 5 }, (_, i) => mkTrack(String(5 + i))),
+    2: Array.from({ length: 2 }, (_, i) => mkTrack(String(10 + i))),
   };
-  const fake: Partial<YandexClient> = {
+  const fake: Partial<MusicClient> = {
     searchTracksPage: async (_query: string, page = 0) => ({
       tracks: pages[page] ?? [],
       total: 12,
@@ -113,8 +113,8 @@ test("recentResultsPaged — resultsCache общий на всех (как conta
   // container.trackCache для ЛЮБОГО SearchService, независимо от userId.
   const sharedCache = new TTLCache<InlineResult[]>(100, 300, 60);
 
-  const poolA = [mkTrack(100), mkTrack(101), mkTrack(102)];
-  const poolB = [mkTrack(200), mkTrack(201), mkTrack(202)];
+  const poolA = [mkTrack("100"), mkTrack("101"), mkTrack("102")];
+  const poolB = [mkTrack("200"), mkTrack("201"), mkTrack("202")];
   const serviceA = mkService({ getRecentTracks: async () => poolA }, 1, sharedCache, fakeCacheService);
   const serviceB = mkService({ getRecentTracks: async () => poolB }, 2, sharedCache, fakeCacheService);
 

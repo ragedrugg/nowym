@@ -35,7 +35,6 @@ const TRACK_SEND_MODE_LABELS: Record<string, string> = { stub: "пустышка
 const TRACK_QUALITY_LABELS: Record<string, string> = {
   best: "оптимальное",
   economy: "экономичное",
-  lossless: "превосходное",
 };
 const CARD_PROGRESS_LABELS: Record<string, string> = { wavy: "волна", bar: "полоска" };
 const CARD_FIELD_LABELS: Record<string, string> = {
@@ -201,7 +200,7 @@ export async function startLogin(dialog: DialogManager, bot: Bot, container: Con
 
 export async function startLogout(dialog: DialogManager, container: Container, userId: number): Promise<void> {
   const deleted = await container.usersDb.delete(userId);
-  // иначе закэшированный YandexClient/SearchService переживает logout — держит
+  // иначе закэшированный MusicClient/SearchService переживает logout — держит
   // расшифрованный токен и историю юзера в памяти до истечения TTL кэша
   container.invalidateTokenCacheForUser(userId);
   await dialog.switchTo("logout_done", {
@@ -400,7 +399,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       [
         radioSelect({
           id: "track_quality",
-          values: ["best", "economy", "lossless"],
+          values: ["best", "economy"],
           label: trackQualityLabel,
           current: (s) => s.track_quality,
           save: (u, v) => container.settingsDb.setTrackQuality(u, v),
@@ -501,7 +500,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       [
         Url({
           ...chrome("➡️", "▸", "продолжить", "success"),
-          url: (rc) => ld(rc.data).login?.verificationUrl ?? "https://music.yandex",
+          url: (rc) => ld(rc.data).login?.verificationUrl ?? "https://open.spotify.com",
         }),
         actBtn("❌", "✕", "отмена", "cancel_login", onCancelLogin, "danger"),
       ],

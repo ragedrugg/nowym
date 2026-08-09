@@ -7,8 +7,8 @@ import { createInterruptibleSleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { CacheDb } from "../storage/cache.ts";
 import type { UsersDb } from "../storage/users.ts";
-import type { YandexClient } from "../yandex/client.ts";
-import { buildTrackMetadata, enrichMetadataFromAlbum, trackIsTooLong } from "../yandex/metadata.ts";
+import type { MusicClient } from "../music/client.ts";
+import { buildTrackMetadata, enrichMetadataFromAlbum, trackIsTooLong } from "../music/metadata.ts";
 import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.stale");
@@ -19,8 +19,8 @@ export interface StaleDeps {
   cacheService: CacheService;
   /** расшифровать/обновить токен юзера. */
   resolveToken: (userId: number) => Promise<string | null>;
-  /** получить YandexClient под токеном. */
-  getYandexClient: (token: string, userId: number) => Promise<YandexClient>;
+  /** получить MusicClient под токеном. */
+  getMusicClient: (token: string, userId: number) => Promise<MusicClient>;
 }
 
 export class StaleRefresher {
@@ -77,14 +77,14 @@ export class StaleRefresher {
       return;
     }
 
-    const yandex = await this.deps.getYandexClient(token, userId);
+    const music = await this.deps.getMusicClient(token, userId);
     let refreshed = 0;
 
     for (const entry of stale) {
       if (this.stopped) break; // shutdown — не начинаем ещё один тяжёлый докачивание
       const trackId = entry.track_id;
       try {
-        const track = await yandex.getTrackById(Number(trackId));
+        const track = await music.getTrackById(Number(trackId));
         if (!track) {
           await this.deps.cacheDb.touchStale(trackId);
           continue;
@@ -95,8 +95,8 @@ export class StaleRefresher {
           continue;
         }
         let metadata: CacheMetadata = buildTrackMetadata(track);
-        metadata = (await enrichMetadataFromAlbum(metadata, track, yandex)) as CacheMetadata;
-        const info = await yandex.getBestDownloadInfo(track);
+        metadata = (await enrichMetadataFromAlbum(metadata, track, music)) as CacheMetadata;
+        const info = await music.getBestDownloadInfo(track);
         if (info === null) {
           await this.deps.cacheDb.touchStale(trackId);
           continue;
@@ -108,7 +108,7 @@ export class StaleRefresher {
         // за download-info на один трек вместо одного (см. albums.ts — там уже так).
         const fileId = await this.deps.cacheService.downloadAndCacheTrack(
           trackId,
-          () => yandex.directLinkFromInfo(info),
+          () => music.directLinkFromInfo(info),
           metadata,
           info.codec,
         );

@@ -17,9 +17,9 @@
 // import { fetchUserAvatar } from "../bot/cardBuilder.ts";
 // import { getLogger } from "../infra/logging.ts";
 // import { renderNowPlayingCard, type CardOptions, type LyricsBlock } from "./card.ts";
-// import { parseLrc, filterLrcLines } from "../yandex/lrc.ts";
-// import { fetchCover, normalizeCoverUrl } from "../yandex/media.ts";
-// import { buildCardMeta, enrichCardMetaColor, formatTrackBasics, metaNeedsWaveColor } from "../yandex/metadata.ts";
+// import { parseLrc, filterLrcLines } from "../music/lrc.ts";
+// import { fetchCover, normalizeCoverUrl } from "../music/media.ts";
+// import { buildCardMeta, enrichCardMetaColor, formatTrackBasics, metaNeedsWaveColor } from "../music/metadata.ts";
 // import type { TgUser } from "../bot/handlers/common.ts";
 //
 // const log = getLogger("services.lyricsVideo");
@@ -107,7 +107,7 @@
 //   senderHandle: string | null;
 //   senderAvatar: Buffer | null;
 //   botUsername: string | null;
-//   meta: Partial<import("../yandex/types.ts").CardMeta>;
+//   meta: Partial<import("../music/types.ts").CardMeta>;
 //   cardOptions: CardOptions;
 //   /** локальный путь к уже скачанному аудио — ffmpeg сам сеть не трогает, чтобы
 //    * не зависнуть на нестабильном CDN Яндекса (см. infra/http.ts downloadAudio). */
@@ -236,8 +236,8 @@
 //       return;
 //     }
 //
-//     const yandex = await container.getYandexService(token, user.id);
-//     const current = await yandex.getCurrentTrack();
+//     const music = await container.getMusicService(token, user.id);
+//     const current = await music.getCurrentTrack();
 //     const track = current.track;
 //     if (!track) {
 //       await bot.api.sendMessage({ chat_id: chatId, text: "🎵 сейчас ничего не играет" });
@@ -248,7 +248,7 @@
 //       return;
 //     }
 //
-//     const lrcText = await yandex.getTrackLRC(track.id);
+//     const lrcText = await music.getTrackLRC(track.id);
 //     if (!lrcText) {
 //       await bot.api.sendMessage({ chat_id: chatId, text: "у этого трека нет синхронизированных текстов 🎶" });
 //       return;
@@ -268,7 +268,7 @@
 //
 //     if (metaNeedsWaveColor(meta)) {
 //       try {
-//         await enrichCardMetaColor(meta, yandex);
+//         await enrichCardMetaColor(meta, music);
 //       } catch {
 //         /* best-effort */
 //       }
@@ -277,7 +277,7 @@
 //     const [coverBytes, senderAvatar, audioUrl] = await Promise.all([
 //       coverUrl ? fetchCover(coverUrl, container.httpClient) : Promise.resolve(null),
 //       settings.card_toggles.avatar ? fetchUserAvatar(bot, user.id, container) : Promise.resolve(null),
-//       yandex.getDownloadUrl(track, "best").catch(() => null),
+//       music.getDownloadUrl(track, "best").catch(() => null),
 //     ]);
 //
 //     // аудио качаем сами через downloadAudio (ретраи + короткие таймауты) и

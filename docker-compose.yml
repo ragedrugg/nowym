@@ -25,8 +25,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
-      NOWYM_USERS_PASSWORD: ${NOWYM_USERS_PASSWORD:?задай в .env — см. .env.example}
-      NOWYM_CACHE_PASSWORD: ${NOWYM_CACHE_PASSWORD:?задай в .env — см. .env.example}
+      NOWSPOT_USERS_PASSWORD: ${NOWSPOT_USERS_PASSWORD:?задай в .env — см. .env.example}
+      NOWSPOT_CACHE_PASSWORD: ${NOWSPOT_CACHE_PASSWORD:?задай в .env — см. .env.example}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docs/sql/docker-init.sh:/docker-entrypoint-initdb.d/init.sh:ro

@@ -12,7 +12,7 @@
  *  • инлайн-кнопки (трек/карточка) — глиф + иконка вместе: глиф виден всегда,
  *    кастом-иконка подхватится при наличии Fragment-username. */
 import { InlineKeyboard } from "gramio";
-import { trackUrl } from "../yandex/urls.ts";
+import { trackUrl } from "../music/urls.ts";
 import { iconFor } from "./iconSet.ts";
 
 type BtnStyle = "danger" | "primary" | "success";

@@ -12,7 +12,7 @@ import { broadcastConfirmMarkup, broadcastSendingMarkup } from "../markup.ts";
 const log = getLogger("bot.admin");
 
 const TG_API = "https://api.telegram.org/";
-const YM_API = "https://api.music.yandex.net/";
+const YM_API = "https://api.music.music.net/";
 
 export function isAdmin(userId: number): boolean {
   const adminId = getSettings().ADMIN_USER_ID;
@@ -63,8 +63,8 @@ export function registerAdmin(bot: Bot, container: Container): void {
     const wOk = Boolean(w?.running && w?.connected);
     const wLine =
       w === null
-        ? format`${flag(false)} ynison-watcher: не запущен (OWNER_ID=0)`
-        : format`${flag(wOk)} ynison-watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : Math.round(wAge / 1000) + "с назад"}`;
+        ? format`${flag(false)} now-playing watcher: не запущен (OWNER_ID=0)`
+        : format`${flag(wOk)} now-playing watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : Math.round(wAge / 1000) + "с назад"}`;
 
     const up = usersPool.stats();
     const cp = cachePool.stats();

@@ -10,11 +10,11 @@ import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 import type { TTLCache } from "../infra/memoryCache.ts";
 import { parseSearchQuery } from "../infra/parsers.ts";
-import type { YandexClient } from "../yandex/client.ts";
-import { normalizeCoverUrl } from "../yandex/media.ts";
-import { formatArtists } from "../yandex/metadata.ts";
-import type { YaAlbum, YaTrack } from "../yandex/types.ts";
-import { albumUrl, playlistUrl } from "../yandex/urls.ts";
+import type { MusicClient } from "../music/client.ts";
+import { normalizeCoverUrl } from "../music/media.ts";
+import { formatArtists } from "../music/metadata.ts";
+import type { Album, Track } from "../music/types.ts";
+import { albumUrl, playlistUrl } from "../music/urls.ts";
 import type { CacheService } from "./cache.ts";
 
 const log = getLogger("services.search");
@@ -37,12 +37,12 @@ interface TrackMeta {
 }
 
 export class SearchService {
-  private trackObjects = new LRUMap<string, YaTrack>(TRACK_LRU_MAX);
+  private trackObjects = new LRUMap<string, Track>(TRACK_LRU_MAX);
   // короткоживущий кэш пула истории — чтобы листание inline-«недавнего» не дёргало API.
-  private recentPool: { tracks: YaTrack[]; at: number } | null = null;
+  private recentPool: { tracks: Track[]; at: number } | null = null;
 
   constructor(
-    public yandexService: YandexClient,
+    public musicService: MusicClient,
     private resultsCache: TTLCache<InlineResult[]>,
     private cacheService: CacheService | null,
     private botUsername: string | null,
@@ -52,15 +52,15 @@ export class SearchService {
     private userId: number | null = null,
   ) {}
 
-  cacheTrackObject(track: YaTrack): void {
+  cacheTrackObject(track: Track): void {
     this.trackObjects.set(String(track.id), track);
   }
 
-  getTrackObject(trackId: string): YaTrack | null {
+  getTrackObject(trackId: string): Track | null {
     return this.trackObjects.get(trackId) ?? null;
   }
 
-  private getTrackMeta(track: YaTrack): TrackMeta {
+  private getTrackMeta(track: Track): TrackMeta {
     const duration = track.durationMs ? Math.floor(track.durationMs / 1000) : 0;
     const album = track.albums && track.albums.length > 0 ? track.albums[0]! : null;
     return {
@@ -72,7 +72,7 @@ export class SearchService {
   }
 
   async createInlineResultFromTrack(
-    track: YaTrack,
+    track: Track,
     layout = "button",
     sendMode = "text_media",
     signal?: AbortSignal,
@@ -103,7 +103,7 @@ export class SearchService {
   }
 
   /** Article «гружу X — Y», на choose заменяется на аудио через editMessageMedia. */
-  private createTextMediaResult(track: YaTrack, meta: TrackMeta): InlineResult {
+  private createTextMediaResult(track: Track, meta: TrackMeta): InlineResult {
     const trackId = String(track.id);
     const artist = meta.artistNames;
     const title = (track.title || "").trim() || "—";
@@ -121,8 +121,8 @@ export class SearchService {
     );
   }
 
-  private async createFallbackResult(track: YaTrack, meta: TrackMeta): Promise<InlineResult> {
-    const audioUrl = await this.yandexService.getDownloadUrl(track);
+  private async createFallbackResult(track: Track, meta: TrackMeta): Promise<InlineResult> {
+    const audioUrl = await this.musicService.getDownloadUrl(track);
     if (!audioUrl) throw new Error("нет вариантов скачивания для трека");
     return InlineQueryResult.audio(String(track.id), audioUrl, track.title || "—", {
       performer: meta.artistNames,
@@ -131,7 +131,7 @@ export class SearchService {
   }
 
   private async createCachedResult(
-    track: YaTrack,
+    track: Track,
     meta: TrackMeta,
     layout: string,
     signal?: AbortSignal,
@@ -193,7 +193,7 @@ export class SearchService {
     return rows.every((r) => r?.is_cached === true);
   }
 
-  private createAlbumResult(album: YaAlbum): InlineResult | null {
+  private createAlbumResult(album: Album): InlineResult | null {
     if (!this.botUsername) return null;
     const albumId = album.id;
     if (albumId === undefined || albumId === null) return null;
@@ -222,29 +222,25 @@ export class SearchService {
     });
   }
 
-  /** плейлист — статья с кнопкой deep-link'а, как у альбома. */
+  /** плейлист — статья с кнопкой deep-link'а, как у альбома.
+   *  У Spotify owner в URL нет — оставлен для совместимости сигнатуры (пусто). */
   private createPlaylistResult(
-    owner: string,
-    kind: number,
+    _owner: string,
+    kind: string,
     pl: { title: string; coverUri: string; trackCount: number },
   ): InlineResult | null {
     if (!this.botUsername) return null;
-    // payload deep-link'а телеграм принимает только из [A-Za-z0-9_-], а owner
-    // бывает с точкой — такому плейлисту кнопку просто не показываем.
-    // ponytail: если точечные логины окажутся частыми — кодировать owner в payload.
-    if (!/^[\w-]+$/.test(owner)) return null;
 
     const title = pl.title || "Без названия";
     const suffix = pl.trackCount ? `${pl.trackCount} треков` : "";
-    const link = playlistUrl(owner, kind);
+    const link = playlistUrl("", kind);
     const text = suffix
       ? format`🎵 ${bold(title)}\n${italic(suffix)}\n\n${link}`
       : format`🎵 ${bold(title)}\n\n${link}`;
     const thumbUrl = normalizeCoverUrl(pl.coverUri, "200x200");
 
-    // owner может содержать '_', поэтому kind якорится хвостовым _\d+$ (см. START_PLAYLIST_RE)
-    const deepLink = `https://t.me/${this.botUsername}?start=playlist_${owner}_${kind}`;
-    return InlineQueryResult.article(`playlist:${owner}:${kind}`, `🎵 ${title}`, InputMessageContent.text(text), {
+    const deepLink = `https://t.me/${this.botUsername}?start=playlist_${kind}`;
+    return InlineQueryResult.article(`playlist:${kind}`, `🎵 ${title}`, InputMessageContent.text(text), {
       description: suffix || "плейлист",
       ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
       reply_markup: { inline_keyboard: [[{ text: "выгрузить плейлист мне в личку", url: deepLink }]] },
@@ -277,7 +273,7 @@ export class SearchService {
       let trackIdsInResult: (string | number)[] = [];
 
       if (parsed.type === "track_link") {
-        const track = await this.yandexService.getTrackById(parsed.track_id);
+        const track = await this.musicService.getTrackById(parsed.track_id);
         if (track) {
           const r = await this.safeCreateTrack(track, layout, sendMode, signal);
           if (r) {
@@ -286,13 +282,13 @@ export class SearchService {
           }
         }
       } else if (parsed.type === "album_link") {
-        const album = await this.yandexService.getAlbumShort(parsed.album_id);
+        const album = await this.musicService.getAlbumShort(parsed.album_id);
         if (album) {
           const r = this.createAlbumResult(album);
           if (r) results.push(r);
         }
       } else if (parsed.type === "playlist_link") {
-        const pl = await this.yandexService.getPlaylistShort(parsed.owner, parsed.kind);
+        const pl = await this.musicService.getPlaylistShort(parsed.owner, parsed.kind);
         if (pl) {
           const r = this.createPlaylistResult(parsed.owner, parsed.kind, pl);
           if (r) results.push(r);
@@ -301,8 +297,8 @@ export class SearchService {
         // tracksOnly — для поиска по строке лирики (" ...): нужен только трек,
         // альбомы тут шум.
         const [tracks, albums] = await Promise.all([
-          this.yandexService.searchTracks(query, maxResults),
-          tracksOnly ? Promise.resolve([] as YaAlbum[]) : this.yandexService.searchAlbums(query, 2),
+          this.musicService.searchTracks(query, maxResults),
+          tracksOnly ? Promise.resolve([] as Album[]) : this.musicService.searchAlbums(query, 2),
         ]);
         const trackResults =
           tracks.length > 0 ? await this.createTrackResultsParallel(tracks, layout, sendMode, signal) : [];
@@ -310,7 +306,7 @@ export class SearchService {
         results = [...trackResults, ...albumResults]; // альбомы вторым блоком
         trackIdsInResult = tracks.map((t) => t.id!);
       } else if (parsed.type === "empty") {
-        const current = await this.yandexService.getCurrentTrack();
+        const current = await this.musicService.getCurrentTrack();
         if (current.track) {
           const r = await this.safeCreateTrack(current.track, layout, sendMode, signal);
           if (r) results.push(r);
@@ -346,7 +342,7 @@ export class SearchService {
     const ypage = Math.max(0, parseInt(ypageStr || "0", 10) || 0);
     const within = Math.max(0, parseInt(withinStr || "0", 10) || 0);
 
-    const { tracks, total, perPage } = await this.yandexService.searchTracksPage(query, ypage);
+    const { tracks, total, perPage } = await this.musicService.searchTracksPage(query, ypage);
     const slice = tracks.slice(within, within + pageSize);
 
     const cacheKey = `paged:${layout}:${sendMode}:${query}:${ypage}:${within}:${pageSize}`;
@@ -370,10 +366,10 @@ export class SearchService {
   }
 
   /** пул недавнего (история) с коротким кэшем — листание не дёргает API каждую страницу. */
-  private async getRecentPool(): Promise<YaTrack[]> {
+  private async getRecentPool(): Promise<Track[]> {
     const now = Date.now();
     if (this.recentPool && now - this.recentPool.at < RECENT_POOL_TTL_MS) return this.recentPool.tracks;
-    const tracks = await this.yandexService.getRecentTracks(RECENT_POOL_SIZE);
+    const tracks = await this.musicService.getRecentTracks(RECENT_POOL_SIZE);
     this.recentPool = { tracks, at: now };
     return tracks;
   }
@@ -407,7 +403,7 @@ export class SearchService {
   }
 
   private async createTrackResultsParallel(
-    tracks: YaTrack[],
+    tracks: Track[],
     layout: string,
     sendMode: string,
     signal?: AbortSignal,
@@ -432,7 +428,7 @@ export class SearchService {
   }
 
   private async safeCreateTrack(
-    track: YaTrack,
+    track: Track,
     layout: string,
     sendMode: string,
     signal?: AbortSignal,

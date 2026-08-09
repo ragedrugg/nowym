@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AudioFile, TagLib } from "taglib-wasm";
 import { getLogger } from "../infra/logging.ts";
-import type { TrackMetadata } from "../yandex/types.ts";
+import type { TrackMetadata } from "../music/types.ts";
 
 const log = getLogger("tagging");
 

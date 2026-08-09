@@ -130,7 +130,7 @@ async function main(): Promise<void> {
     usersDb: container.usersDb,
     cacheService: container.cacheService,
     resolveToken: (uid) => container.resolveToken(uid),
-    getYandexClient: (token, uid) => container.getYandexService(token, uid),
+    getMusicClient: (token, uid) => container.getMusicService(token, uid),
   });
   staleRefresher.start();
 
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
   void container.albumService
     .resumeInflight({
       resolveToken: (uid) => container.resolveToken(uid),
-      getYandexClient: (token, uid) => container.getYandexService(token, uid),
+      getMusicClient: (token, uid) => container.getMusicService(token, uid),
     })
     .catch((e) => log.error(`[album_resume] ${e}`));
 
@@ -216,6 +216,13 @@ async function main(): Promise<void> {
 
     if (req.method === "GET" && url.pathname === "/now-playing/stream") {
       handleNowPlayingStream(req, res, npWatcher, s.NOW_PLAYING_TOKEN);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/spotify/callback") {
+      void handleSpotifyCallback(req, res, url, container).catch((e) =>
+        log.error(`[spotify/callback] ошибка: ${e}`),
+      );
       return;
     }
 
@@ -437,10 +444,10 @@ function handleMetrics(res: ServerResponse, container: Container, watcher: NowPl
   }
 
   const w = watcher?.health() ?? { running: false, connected: false, lastStateAgeMs: null, hasTrack: false };
-  gauge("nowym_watcher_running", "ynison watcher: process running (1/0)", w.running ? 1 : 0);
-  gauge("nowym_watcher_connected", "ynison watcher: ws connected (1/0)", w.connected ? 1 : 0);
+  gauge("nowym_watcher_running", "now-playing watcher: process running (1/0)", w.running ? 1 : 0);
+  gauge("nowym_watcher_connected", "now-playing watcher: reachable (1/0)", w.connected ? 1 : 0);
   if (w.lastStateAgeMs !== null) {
-    gauge("nowym_watcher_last_state_age_ms", "ynison watcher: ms since last state frame", w.lastStateAgeMs);
+    gauge("nowym_watcher_last_state_age_ms", "now-playing watcher: ms since last poll", w.lastStateAgeMs);
   }
 
   for (const [name, value] of counterSnapshot()) {
@@ -449,6 +456,48 @@ function handleMetrics(res: ServerResponse, container: Container, watcher: NowPl
 
   res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
   res.end(`${lines.join("\n")}\n`);
+}
+
+/** Spotify OAuth-callback: /spotify/callback?code=...&state=...
+ *  Ищем активный auth-флоу по state, обмениваем code на токен, отвечаем HTML-
+ *  страницей "готово, возвращайся в Telegram". Юзер видит успех в чате
+ *  благодаря onSuccess-хуку, зарегистрированному в диалоге логина. */
+async function handleSpotifyCallback(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  container: Container,
+): Promise<void> {
+  const err = url.searchParams.get("error");
+  if (err) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(oauthPage(`Ошибка: ${err}`, "Возвращайся в Telegram и попробуй ещё раз."));
+    return;
+  }
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(oauthPage("Пустой callback", "Не хватает code или state."));
+    return;
+  }
+  const { ok } = await container.authService.completeAuthByCode(state, code);
+  if (ok) {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(oauthPage("Готово!", "Возвращайся в Telegram — бот уже видит авторизацию."));
+  } else {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(oauthPage("Не сработало", "Флоу авторизации не найден или уже завершился."));
+  }
+}
+
+function oauthPage(title: string, sub: string): string {
+  const t = title.replace(/[<>&]/g, "");
+  const s = sub.replace(/[<>&]/g, "");
+  return `<!doctype html><meta charset="utf-8"><title>${t}</title>
+<style>body{font:16px/1.4 system-ui;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+main{max-width:420px;text-align:center;padding:24px}h1{font-size:28px;margin:0 0 12px}p{opacity:.75;margin:0}</style>
+<main><h1>${t}</h1><p>${s}</p></main>`;
 }
 
 main().catch((e) => {

@@ -2,7 +2,7 @@
  * pg-пулы к двум БД: users (токены/настройки) и cache (file_id треков).
  *
  * BIGINT (int8, OID 20) парсим в Number: все наши bigint'ы (telegram id,
- * yandex track/album id, epoch-секунды) надёжно < 2^53.
+ * music track/album id, epoch-секунды) надёжно < 2^53.
  */
 import pg from "pg";
 import { getLogger } from "../infra/logging.ts";

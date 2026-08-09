@@ -26,7 +26,9 @@ export interface InflightAlbum {
   id: number;
   user_id: number;
   chat_id: number;
-  album_id: number;
+  /** Spotify id альбома — строка (22 base62). */
+  album_id: string;
   progress_message_id: number | null;
-  completed_track_ids: number[];
+  /** Spotify id-ы уже отправленных треков — строки. */
+  completed_track_ids: string[];
 }

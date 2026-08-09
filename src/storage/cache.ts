@@ -46,7 +46,7 @@ export class CacheDb {
     // UNLOGGED — кэш файлов, можем потерять при crash postgres, не критично
     await cachePool.query(`
       CREATE UNLOGGED TABLE IF NOT EXISTS telegram_cache (
-        track_id             BIGINT       PRIMARY KEY,
+        track_id             TEXT         PRIMARY KEY,
         telegram_file_id     TEXT         NOT NULL,
         telegram_message_id  BIGINT,
         is_cached            BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -90,9 +90,9 @@ export class CacheDb {
         id                  BIGSERIAL    PRIMARY KEY,
         user_id             BIGINT       NOT NULL,
         chat_id             BIGINT       NOT NULL,
-        album_id            BIGINT       NOT NULL,
+        album_id            TEXT         NOT NULL,
         progress_message_id BIGINT,
-        completed_track_ids BIGINT[]     NOT NULL DEFAULT '{}',
+        completed_track_ids TEXT[]       NOT NULL DEFAULT '{}',
         started_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `);
@@ -102,7 +102,7 @@ export class CacheDb {
   async get(trackId: string | number, quality = "lossy"): Promise<CachedTrack | null> {
     const res = await cachePool.query<Record<string, unknown>>(
       `SELECT ${SELECT_COLS} FROM telegram_cache WHERE track_id = $1 AND quality = $2`,
-      [Number(trackId), quality],
+      [String(trackId), quality],
     );
     const row = res.rows[0];
     return row === undefined ? null : rowToCachedTrack(row);
@@ -180,7 +180,7 @@ export class CacheDb {
   async touchStale(trackId: string | number, quality = "lossy"): Promise<void> {
     await cachePool.query(
       "UPDATE telegram_cache SET updated_at = NOW() WHERE track_id = $1 AND quality = $2 AND is_cached = FALSE",
-      [Number(trackId), quality],
+      [String(trackId), quality],
     );
   }
 
@@ -213,7 +213,7 @@ export class CacheDb {
   async insertInflightAlbum(args: {
     user_id: number;
     chat_id: number;
-    album_id: number;
+    album_id: string;
     progress_message_id: number | null;
   }): Promise<number> {
     return cachePool.transaction(async (c) => {
@@ -226,7 +226,7 @@ export class CacheDb {
     });
   }
 
-  async markInflightTrackDone(inflightId: number, trackId: number): Promise<void> {
+  async markInflightTrackDone(inflightId: number, trackId: string): Promise<void> {
     await cachePool.query(
       "UPDATE album_inflight SET completed_track_ids = array_append(completed_track_ids, $2) WHERE id = $1 AND NOT ($2 = ANY(completed_track_ids))",
       [inflightId, trackId],
@@ -249,9 +249,9 @@ export class CacheDb {
       id: r.id as number,
       user_id: r.user_id as number,
       chat_id: r.chat_id as number,
-      album_id: r.album_id as number,
+      album_id: String(r.album_id),
       progress_message_id: (r.progress_message_id as number | null) ?? null,
-      completed_track_ids: ((r.completed_track_ids as number[]) ?? []).map(Number),
+      completed_track_ids: ((r.completed_track_ids as string[]) ?? []).map(String),
     }));
   }
 

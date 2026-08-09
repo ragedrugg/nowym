@@ -1,20 +1,38 @@
-/** OAuth Device Flow для яндекса. Опрашивает /token, при успехе сохраняет
- * access+refresh в БД (зашифрованно).
+/** Spotify OAuth Authorization Code + PKCE.
  *
- * транспорт — DeviceAuthMixin из @dvxch/yandex-music (requestDeviceCode/
- * pollDeviceToken/refreshAccessToken); Client допускает пустой token в
- * конструкторе, а device-эндпоинты на oauth.yandex.ru его не требуют.
- * client_id/secret берём из settings (по умолчанию — публичный клиент Android-
- * приложения Я.Музыки). */
-import { DeviceAuthError, type DeviceCode, Client as LibClient, type OAuthToken } from "@dvxch/yandex-music";
-import { sleep } from "../infra/async.ts";
+ * Гибридный флоу:
+ *   • Если задан WEBHOOK_HOST — редирект Spotify летит на
+ *     <WEBHOOK_HOST>/spotify/callback, main.ts ловит его, авторизация
+ *     завершается сама, юзер видит «готово» в чате.
+ *   • Иначе — paste-код: юзер открывает ссылку, авторизуется, попадает на
+ *     любой redirect_uri (мы используем http://127.0.0.1:8888/callback),
+ *     копирует `code=` из адресной строки и присылает боту.
+ *
+ * Токены (access + refresh) шифруются at-rest в UsersDb. */
+
+import { randomBytes, createHash } from "node:crypto";
+import { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
 import type { UsersDb } from "../storage/users.ts";
 
 const log = getLogger("auth");
 
-const AUTH_TIMEOUT_SEC = 300; // 5 мин, даже если сервер даёт больше
+const SPOTIFY_AUTH = "https://accounts.spotify.com";
+// Права: чтение метаданных пользователя + плеера, лайки/сохранённые.
+// user-library-modify нужен для setTrackLiked, user-read-currently-playing —
+// для карточки «сейчас играет», user-read-recently-played — для inline «недавнее».
+export const SPOTIFY_SCOPES = [
+  "user-read-private",
+  "user-read-email",
+  "user-read-playback-state",
+  "user-read-currently-playing",
+  "user-read-recently-played",
+  "user-library-read",
+  "user-library-modify",
+].join(" ");
+
+const AUTH_TIMEOUT_SEC = 600; // 10 минут — юзеру нужно время открыть браузер
 
 export type OnSuccess = (userId: number) => void | Promise<void>;
 export type OnFailure = (userId: number, reason: string) => void | Promise<void>;
@@ -22,84 +40,126 @@ export type OnFailure = (userId: number, reason: string) => void | Promise<void>
 export interface DeviceAuthState {
   userId: number;
   verificationUrl: string;
+  /** state — рандом, привязывающий OAuth-редирект к юзеру (в базе-мапе). */
+  state: string;
+  /** для paste-режима — короткий текст, что вставлять; для webhook-режима пустой. */
   userCode: string;
   expiresIn: number;
-  /** завершается, когда poll-цикл закончился (успех/отказ/таймаут/отмена). */
+  /** true = webhook доедет сам; false = юзеру надо прислать код. */
+  usesCallback: boolean;
+  /** резолвится, когда авторизация завершилась (ок/отказ/таймаут/отмена). */
   done: Promise<void>;
 }
 
 interface ActiveAuth {
   state: DeviceAuthState;
   cancelled: boolean;
+  pkceVerifier: string;
+  resolveDone: () => void;
+  onSuccess: OnSuccess;
+  onFailure: OnFailure;
+  deadline: number;
 }
 
-/** транспортный срез Client'а, нужный для device-flow — внедряемый ради тестов
- * (фейк без реальных запросов на oauth.yandex.ru). */
-export type DeviceAuthTransport = Pick<LibClient, "requestDeviceCode" | "pollDeviceToken" | "refreshAccessToken">;
+function base64url(buf: Buffer): string {
+  return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function makePkcePair(): { verifier: string; challenge: string } {
+  const verifier = base64url(randomBytes(32));
+  const challenge = base64url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
+}
+
+interface SpotifyTokenResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+  scope?: string;
+}
 
 export class AuthService {
   private active = new Map<number, ActiveAuth>();
+  // state → userId — mainhttp-callback ищет активный флоу по state из URL.
+  private stateToUser = new Map<string, number>();
 
   constructor(
     private usersDb: UsersDb,
-    // без токена: только device-flow эндпоинты, не привязаны к аккаунту.
-    private lib: DeviceAuthTransport = new LibClient(),
+    private http: HttpClient = new HttpClient(),
   ) {}
 
-  /** запустить device flow. если уже идёт — отменит старую и стартанёт новую. */
+  /** Публичный (для main.ts) — существует ли активный флоу с этим state. */
+  lookupPendingByState(state: string): number | null {
+    return this.stateToUser.get(state) ?? null;
+  }
+
+  /** Публичный (для main.ts) — довести OAuth-редирект до завершения. */
+  async completeAuthByCode(state: string, code: string): Promise<{ userId: number; ok: boolean }> {
+    const userId = this.stateToUser.get(state);
+    if (userId === undefined) return { userId: 0, ok: false };
+    const entry = this.active.get(userId);
+    if (!entry || entry.cancelled) return { userId, ok: false };
+    const ok = await this.exchangeAndFinish(entry, code);
+    return { userId, ok };
+  }
+
   async startDeviceAuth(userId: number, onSuccess: OnSuccess, onFailure: OnFailure): Promise<DeviceAuthState | null> {
     const existing = this.active.get(userId);
-    if (existing) {
-      existing.cancelled = true;
-      this.active.delete(userId);
-    }
+    if (existing) this.cancelAuthInternal(existing);
 
     const s = getSettings();
-    let code: DeviceCode;
-    try {
-      code = await this.lib.requestDeviceCode(undefined, "мойва", s.YANDEX_OAUTH_CLIENT_ID);
-      if (!code.deviceCode) {
-        log.error(`device code не получен для ${userId}: пустой ответ`);
-        return null;
-      }
-    } catch (e) {
-      log.error(`device code не получен для ${userId}: ${e}`);
+    if (!s.SPOTIFY_CLIENT_ID) {
+      log.error("SPOTIFY_CLIENT_ID не задан в .env — авторизация невозможна");
       return null;
     }
 
+    const { verifier, challenge } = makePkcePair();
+    const state = base64url(randomBytes(16));
+    const usesCallback = Boolean(s.WEBHOOK_HOST);
+    const redirectUri = this.redirectUri();
+
+    const url = new URL(`${SPOTIFY_AUTH}/authorize`);
+    url.searchParams.set("client_id", s.SPOTIFY_CLIENT_ID);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("code_challenge", challenge);
+    url.searchParams.set("state", state);
+    url.searchParams.set("scope", SPOTIFY_SCOPES);
+
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
     const entry: ActiveAuth = {
       cancelled: false,
+      pkceVerifier: verifier,
+      resolveDone,
+      onSuccess,
+      onFailure,
+      deadline: Date.now() + AUTH_TIMEOUT_SEC * 1000,
       state: {
         userId,
-        verificationUrl: code.verificationUrl ?? "",
-        userCode: code.userCode ?? "",
-        expiresIn: Math.min(code.expiresIn ?? AUTH_TIMEOUT_SEC, AUTH_TIMEOUT_SEC),
-        done: Promise.resolve(),
+        verificationUrl: url.toString(),
+        state,
+        userCode: usesCallback ? "" : "пришли мне значение параметра `code` из адресной строки после авторизации",
+        expiresIn: AUTH_TIMEOUT_SEC,
+        usesCallback,
+        done,
       },
     };
-    // pollLoop может упасть на usersDb.save (БД моргнула в момент успешного
-    // логина) — единственный путь, не обёрнутый в try/catch внутри pollLoop.
-    // .done никто не awaitит, без catch это unhandledRejection, а юзер молча
-    // зависает на экране «введи код» — зовём onFailure и тут, как во всех
-    // остальных ветках отказа внутри pollLoop.
-    entry.state.done = this.pollLoop(entry, code, onSuccess, onFailure).catch(async (e) => {
-      log.error(`pollLoop упал для ${userId}: ${e}`);
-      try {
-        await onFailure(userId, "внутренняя ошибка, попробуй ещё раз");
-      } catch {
-        // ignore — мы и так уже в catch-ветке отказавшего pollLoop
-      }
-    });
     this.active.set(userId, entry);
-    log.info(`device flow стартовал для ${userId}`);
+    this.stateToUser.set(state, userId);
+    this.armTimeout(entry);
+    log.info(`Spotify OAuth стартовал для ${userId} (callback=${usesCallback})`);
     return entry.state;
   }
 
   cancelAuth(userId: number): boolean {
     const entry = this.active.get(userId);
     if (entry && !entry.cancelled) {
-      entry.cancelled = true;
-      this.active.delete(userId);
+      this.cancelAuthInternal(entry);
       return true;
     }
     return false;
@@ -114,73 +174,129 @@ export class AuthService {
     return this.active.get(userId)?.state ?? null;
   }
 
-  /** обновляет access через refresh (OAuth2 refresh grant), сохраняет в БД. */
+  /** В paste-режиме юзер шлёт присланный `code=` — завершает авторизацию. */
+  async submitPastedCode(userId: number, rawCode: string): Promise<boolean> {
+    const entry = this.active.get(userId);
+    if (!entry || entry.cancelled) return false;
+    const code = extractCode(rawCode);
+    if (!code) {
+      await entry.onFailure(userId, "не нашёл параметр code — пришли ссылку целиком или значение code=... из адресной строки");
+      return false;
+    }
+    return this.exchangeAndFinish(entry, code);
+  }
+
+  private async exchangeAndFinish(entry: ActiveAuth, code: string): Promise<boolean> {
+    const s = getSettings();
+    try {
+      const body = new URLSearchParams();
+      body.set("grant_type", "authorization_code");
+      body.set("code", code);
+      body.set("redirect_uri", this.redirectUri());
+      body.set("client_id", s.SPOTIFY_CLIENT_ID);
+      body.set("code_verifier", entry.pkceVerifier);
+      const res = await this.http.request(`${SPOTIFY_AUTH}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+      if (res.status !== 200) {
+        const text = await res.body.text();
+        log.warning(`Spotify token exchange HTTP ${res.status}: ${text.slice(0, 200)}`);
+        await entry.onFailure(entry.state.userId, "Spotify не отдал токен — код мог протухнуть, попробуй ещё раз");
+        return false;
+      }
+      const token = (await res.body.json()) as SpotifyTokenResponse;
+      if (!token.access_token) {
+        await entry.onFailure(entry.state.userId, "Spotify вернул пустой токен");
+        return false;
+      }
+      await this.usersDb.save(
+        entry.state.userId,
+        token.access_token,
+        token.refresh_token ?? null,
+        token.expires_in ?? null,
+      );
+      log.info(`авторизация ок для ${entry.state.userId}`);
+      await entry.onSuccess(entry.state.userId);
+      this.finalize(entry);
+      return true;
+    } catch (e) {
+      log.error(`token exchange упал для ${entry.state.userId}: ${e}`);
+      await entry.onFailure(entry.state.userId, "внутренняя ошибка при обмене кода на токен");
+      return false;
+    }
+  }
+
   async refreshToken(userId: number, refreshToken: string): Promise<string | null> {
     const s = getSettings();
     try {
-      const token = await this.lib.refreshAccessToken(
-        refreshToken,
-        s.YANDEX_OAUTH_CLIENT_ID,
-        s.YANDEX_OAUTH_CLIENT_SECRET,
-      );
-      await this.usersDb.save(userId, token.accessToken!, token.refreshToken || refreshToken, token.expiresIn ?? null);
+      const body = new URLSearchParams();
+      body.set("grant_type", "refresh_token");
+      body.set("refresh_token", refreshToken);
+      body.set("client_id", s.SPOTIFY_CLIENT_ID);
+      const res = await this.http.request(`${SPOTIFY_AUTH}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+      if (res.status !== 200) {
+        const text = await res.body.text();
+        log.warning(`refresh для ${userId} HTTP ${res.status}: ${text.slice(0, 200)}`);
+        return null;
+      }
+      const token = (await res.body.json()) as SpotifyTokenResponse;
+      if (!token.access_token) return null;
+      await this.usersDb.save(userId, token.access_token, token.refresh_token ?? refreshToken, token.expires_in ?? null);
       log.info(`access обновлён для ${userId}`);
-      return token.accessToken!;
+      return token.access_token;
     } catch (e) {
       log.warning(`refresh для ${userId} не сработал: ${e}`);
       return null;
     }
   }
 
-  private async pollLoop(
-    entry: ActiveAuth,
-    code: DeviceCode,
-    onSuccess: OnSuccess,
-    onFailure: OnFailure,
-  ): Promise<void> {
-    const userId = entry.state.userId;
+  private redirectUri(): string {
     const s = getSettings();
-    const interval = Math.max(code.interval ?? 5, 3) * 1000;
-    const deadline = Date.now() + entry.state.expiresIn * 1000;
-
-    try {
-      while (true) {
-        await sleep(interval);
-        if (entry.cancelled) {
-          log.info(`авторизация отменена ${userId}`);
-          return;
-        }
-        if (Date.now() >= deadline) {
-          log.info(`таймаут авторизации ${userId}`);
-          await onFailure(userId, "timeout");
-          return;
-        }
-
-        // null = authorization_pending (юзер ещё не подтвердил) → опрашиваем дальше.
-        // прочие ошибки (в т.ч. expired/denied) pollDeviceToken бросает — ловим ниже.
-        let token: OAuthToken | null;
-        try {
-          token = await this.lib.pollDeviceToken(
-            code.deviceCode!,
-            s.YANDEX_OAUTH_CLIENT_ID,
-            s.YANDEX_OAUTH_CLIENT_SECRET,
-          );
-        } catch (e) {
-          const reason = e instanceof DeviceAuthError ? e.message : String(e);
-          log.warning(`DeviceAuthError ${userId}: ${reason}`);
-          await onFailure(userId, reason);
-          return;
-        }
-        if (token === null) continue;
-
-        await this.usersDb.save(userId, token.accessToken!, token.refreshToken ?? null, token.expiresIn ?? null);
-        log.info(`авторизация ок для ${userId}`);
-        await onSuccess(userId);
-        return;
-      }
-    } finally {
-      // снимаем только свою запись — параллельный start мог заменить новой
-      if (this.active.get(userId) === entry) this.active.delete(userId);
-    }
+    if (s.WEBHOOK_HOST) return `${s.WEBHOOK_HOST.replace(/\/+$/, "")}/spotify/callback`;
+    return "http://127.0.0.1:8888/callback";
   }
+
+  private cancelAuthInternal(entry: ActiveAuth): void {
+    entry.cancelled = true;
+    this.stateToUser.delete(entry.state.state);
+    this.active.delete(entry.state.userId);
+    entry.resolveDone();
+  }
+
+  private finalize(entry: ActiveAuth): void {
+    this.stateToUser.delete(entry.state.state);
+    if (this.active.get(entry.state.userId) === entry) this.active.delete(entry.state.userId);
+    entry.resolveDone();
+  }
+
+  private armTimeout(entry: ActiveAuth): void {
+    const ms = Math.max(0, entry.deadline - Date.now());
+    setTimeout(() => {
+      if (entry.cancelled || this.active.get(entry.state.userId) !== entry) return;
+      log.info(`таймаут авторизации ${entry.state.userId}`);
+      void Promise.resolve(entry.onFailure(entry.state.userId, "timeout")).catch(() => {});
+      this.finalize(entry);
+    }, ms).unref?.();
+  }
+}
+
+/** Достаёт code= из полной ссылки, из query, или считает всё за код. */
+export function extractCode(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed.startsWith("http") ? trimmed : `http://x/?${trimmed.replace(/^\?/, "")}`);
+    const code = url.searchParams.get("code");
+    if (code) return code;
+  } catch {
+    // не URL — считаем строку кодом
+  }
+  if (/^[A-Za-z0-9_-]{10,}$/.test(trimmed)) return trimmed;
+  return null;
 }

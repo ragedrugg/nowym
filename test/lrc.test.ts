@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { filterLrcLines, isLrc, parseLrc } from "../src/yandex/lrc.ts";
+import { filterLrcLines, isLrc, parseLrc } from "../src/music/lrc.ts";
 
 describe("parseLrc", () => {
   it("стандартный формат [MM:SS.cc]", () => {

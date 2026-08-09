@@ -48,10 +48,12 @@ export interface Settings {
   HTTP_CONNECTION_LIMIT: number;
   HTTP_LIMIT_PER_HOST: number;
 
-  YANDEX_RATE_LIMIT_INTERVAL: number;
-  YANDEX_MAX_RETRIES: number;
-  YANDEX_OAUTH_CLIENT_ID: string;
-  YANDEX_OAUTH_CLIENT_SECRET: string;
+  SPOTIFY_RATE_LIMIT_INTERVAL: number;
+  SPOTIFY_MAX_RETRIES: number;
+  /** Client ID Spotify-приложения (my apps → create app). Обязателен. */
+  SPOTIFY_CLIENT_ID: string;
+  /** Интервал polling'а /me/player/currently-playing в мс (по умолчанию 3000). */
+  SPOTIFY_NP_POLL_MS: number;
 
   DOWNLOAD_QUEUE_CONCURRENCY: number;
   ALBUM_PARALLEL_TRACKS: number;
@@ -109,10 +111,10 @@ function build(): Settings {
     HTTP_CONNECTION_LIMIT: envInt("HTTP_CONNECTION_LIMIT", "100"),
     HTTP_LIMIT_PER_HOST: envInt("HTTP_LIMIT_PER_HOST", "30"),
 
-    YANDEX_RATE_LIMIT_INTERVAL: envFloat("YANDEX_RATE_LIMIT_INTERVAL", "1.0"),
-    YANDEX_MAX_RETRIES: envInt("YANDEX_MAX_RETRIES", "3"),
-    YANDEX_OAUTH_CLIENT_ID: env("YANDEX_OAUTH_CLIENT_ID", "23cabbbdc6cd418abb4b39c32c41195d"),
-    YANDEX_OAUTH_CLIENT_SECRET: env("YANDEX_OAUTH_CLIENT_SECRET", "53bc75238f0c4d08a118e51fe9203300"),
+    SPOTIFY_RATE_LIMIT_INTERVAL: envFloat("SPOTIFY_RATE_LIMIT_INTERVAL", "0.2"),
+    SPOTIFY_MAX_RETRIES: envInt("SPOTIFY_MAX_RETRIES", "3"),
+    SPOTIFY_CLIENT_ID: env("SPOTIFY_CLIENT_ID"),
+    SPOTIFY_NP_POLL_MS: envInt("SPOTIFY_NP_POLL_MS", "3000"),
 
     DOWNLOAD_QUEUE_CONCURRENCY: envInt("DOWNLOAD_QUEUE_CONCURRENCY", "6"),
     ALBUM_PARALLEL_TRACKS: envInt("ALBUM_PARALLEL_TRACKS", "4"),
@@ -154,6 +156,9 @@ function validate(s: Settings): void {
     ["TOKEN_ENCRYPTION_KEY", s.TOKEN_ENCRYPTION_KEY],
     ["POSTGRES_USERS_DSN", s.POSTGRES_USERS_DSN],
     ["POSTGRES_CACHE_DSN", s.POSTGRES_CACHE_DSN],
+    // SPOTIFY_CLIENT_ID проверяется отдельно в services/auth.ts при первой
+    // попытке залогиниться, чтобы юнит-тесты, не касающиеся Spotify, не
+    // требовали его в env.
   ];
   for (const [name, val] of required) {
     if (!val) throw new Error(`${name} не задан в .env`);

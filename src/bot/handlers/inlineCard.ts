@@ -4,10 +4,10 @@ import { floodRetry } from "../../infra/floodRetry.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
 import type { LyricsBlock } from "../../services/card.ts";
-import { normalizeCoverUrl } from "../../yandex/media.ts";
-import { bestLyricsLineIndex, buildCardMeta, formatTrackBasics, splitLyricsLines } from "../../yandex/metadata.ts";
-import type { CardMeta, YaTrack } from "../../yandex/types.ts";
-import { trackUrl } from "../../yandex/urls.ts";
+import { normalizeCoverUrl } from "../../music/media.ts";
+import { bestLyricsLineIndex, buildCardMeta, formatTrackBasics, splitLyricsLines } from "../../music/metadata.ts";
+import type { CardMeta, Track } from "../../music/types.ts";
+import { trackUrl } from "../../music/urls.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
@@ -51,7 +51,7 @@ export function isCardResultId(resultId: string): boolean {
 
 /** artist/title/обложки(две размерности)/handle — общий набор для обоих билдеров карточек. */
 export function trackCardBasics(
-  track: YaTrack,
+  track: Track,
   user: { username?: string | null; firstName?: string | null },
 ): { artist: string; title: string; coverUrl: string; thumb: string; senderHandle: string } {
   const [artist, title] = formatTrackBasics(track, "");
@@ -90,7 +90,7 @@ function buildCardArticle(args: {
 /** лёгкий Article + стэш метаданных. без сетевых вызовов. */
 export function buildNowPlayingCardResult(
   container: Container,
-  track: YaTrack,
+  track: Track,
   current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
   user: { id: number; username?: string | null; firstName?: string | null },
   cardLayout = "button",
@@ -136,7 +136,7 @@ export function buildNowPlayingCardResult(
  * Текст тянем лениво на chosen (как обложку) — здесь только стэшим фразу. */
 export function buildLyricsCardResult(
   container: Container,
-  track: YaTrack,
+  track: Track,
   lyricPhrase: string,
   user: { id: number; username?: string | null; firstName?: string | null },
 ): ReturnType<typeof InlineQueryResult.article> | null {
@@ -227,8 +227,8 @@ async function fetchLyricsWithFallback(
   }
   if (token) {
     try {
-      const yandex = await container.getYandexService(token, userId);
-      const raw = await yandex.getTrackLyrics(trackId);
+      const music = await container.getMusicService(token, userId);
+      const raw = await music.getTrackLyrics(trackId);
       if (raw) {
         log.info(`[chosen] лирика для карточки взята из Яндекса track=${trackId}`);
         return raw;

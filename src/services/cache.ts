@@ -15,9 +15,9 @@ import type { CacheDb } from "../storage/cache.ts";
 import type { TrackCacheResult } from "../storage/types.ts";
 import { createEmptyMp3, getFilename } from "../tagging/emptyMp3.ts";
 import type { AudioTransform, TaggingService } from "../tagging/service.ts";
-import { fetchCover, origCoverUrl } from "../yandex/media.ts";
-import { estimateTrackBytes, HEAVY_TRACK_BYTES, MAX_TRACK_BYTES } from "../yandex/metadata.ts";
-import type { TrackMetadata } from "../yandex/types.ts";
+import { fetchCover, origCoverUrl } from "../music/media.ts";
+import { estimateTrackBytes, HEAVY_TRACK_BYTES, MAX_TRACK_BYTES } from "../music/metadata.ts";
+import type { TrackMetadata } from "../music/types.ts";
 
 const log = getLogger("services.cache");
 

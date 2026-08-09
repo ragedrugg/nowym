@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type Canvas, createCanvas, GlobalFonts, type Image, loadImage, type SKRSContext2D } from "@napi-rs/canvas";
 import { getLogger } from "../infra/logging.ts";
-import type { CardColors, CardMeta } from "../yandex/types.ts";
+import type { CardColors, CardMeta } from "../music/types.ts";
 
 const log = getLogger("services.card");
 

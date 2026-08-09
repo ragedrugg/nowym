@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createEmptyMp3, getFilename } from "../src/tagging/emptyMp3.ts";
 import { TaggingService } from "../src/tagging/service.ts";
-import { origCoverUrl } from "../src/yandex/media.ts";
-import type { TrackMetadata } from "../src/yandex/types.ts";
+import { origCoverUrl } from "../src/music/media.ts";
+import type { TrackMetadata } from "../src/music/types.ts";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
@@ -73,9 +73,8 @@ test("getFilename — чистит запрещённые символы", () =>
   assert.equal(getFilename("", "", "aac"), "Unknown - Unknown.m4a");
 });
 
-test("origCoverUrl — подменяет размер на orig", () => {
-  assert.equal(origCoverUrl("https://x.net/a/400x400"), "https://x.net/a/orig");
-  assert.equal(origCoverUrl("https://x.net/a/200x200?q=1"), "https://x.net/a/orig?q=1");
+test("origCoverUrl — для Spotify возвращает URL как есть (нет /orig-размера)", () => {
+  assert.equal(origCoverUrl("https://i.scdn.co/image/ab67616d0000b273abc"), "https://i.scdn.co/image/ab67616d0000b273abc");
   assert.equal(origCoverUrl(""), "");
 });
 

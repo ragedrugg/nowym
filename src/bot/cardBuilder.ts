@@ -5,9 +5,8 @@ import type { Bot } from "gramio";
 import { getLogger } from "../infra/logging.ts";
 import type { LyricsBlock } from "../services/card.ts";
 import type { UserSettings } from "../storage/settings.ts";
-import { fetchCover } from "../yandex/media.ts";
-import { enrichCardMetaColor, metaNeedsWaveColor } from "../yandex/metadata.ts";
-import type { CardMeta } from "../yandex/types.ts";
+import { fetchCover } from "../music/media.ts";
+import type { CardMeta } from "../music/types.ts";
 import type { Container } from "./container.ts";
 
 const log = getLogger("bot.card_builder");
@@ -48,7 +47,7 @@ export interface CardBuildInput {
   bot: Bot;
   container: Container;
   userId: number;
-  /** нужен только для wave-цвета (yandex-клиент). null → карточка рендерится без enrich. */
+  /** нужен только для wave-цвета (Spotify-клиент). null → карточка рендерится без enrich. */
   token: string | null;
   coverUrl: string;
   title: string;
@@ -65,25 +64,13 @@ export interface CardBuildInput {
 
 /** JPEG-байты карточки. Все сетевые операции — параллельно. */
 export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
-  const { bot, container, userId, token, meta, settings } = input;
+  const { bot, container, userId, meta, settings } = input;
   const toggles = settings.card_toggles;
   const avatarEnabled = Boolean(toggles.avatar);
-  const needColor = metaNeedsWaveColor(meta) && token !== null;
-
-  // wave-цвет требует яндекс-клиента — поднимаем его только при необходимости
-  const colorTask: Promise<void> = needColor
-    ? container
-        .getYandexService(token!, userId)
-        .then((yandex) => enrichCardMetaColor(meta, yandex))
-        .catch((e) => {
-          log.debug(`[card] wave-цвет не подтянут: ${e}`);
-        })
-    : Promise.resolve();
 
   const [coverBytes, senderAvatar] = await Promise.all([
     input.coverUrl ? fetchCover(input.coverUrl, container.httpClient) : Promise.resolve(null),
     avatarEnabled ? fetchUserAvatar(bot, userId, container) : Promise.resolve(null),
-    colorTask,
   ]);
 
   // рендер идёт в worker_threads — canvas.encode() иначе блокирует event loop

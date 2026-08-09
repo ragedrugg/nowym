@@ -7,8 +7,8 @@ import { AlbumService, formatEta, renderProgressBar } from "../src/services/albu
 import type { CacheService } from "../src/services/cache.ts";
 import type { CacheDb } from "../src/storage/cache.ts";
 import type { UserSettings } from "../src/storage/settings.ts";
-import type { YandexClient } from "../src/yandex/client.ts";
-import type { AlbumData, YaTrack } from "../src/yandex/types.ts";
+import type { MusicClient } from "../src/music/client.ts";
+import type { AlbumData, Track } from "../src/music/types.ts";
 
 function mkService(): AlbumService {
   return new AlbumService(
@@ -27,9 +27,9 @@ function mkRetryBuf(over: Partial<{ chatId: number; userId: number }> = {}) {
   return {
     chatId: over.chatId ?? 1,
     userId: over.userId ?? 2,
-    tracks: [] as YaTrack[],
+    tracks: [] as Track[],
     albumData: {} as AlbumData,
-    yandex: {} as YandexClient,
+    music: {} as MusicClient,
   };
 }
 

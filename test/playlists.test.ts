@@ -1,32 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { START_PLAYLIST_RE } from "../src/bot/handlers/common.ts";
-import { buildPlaylistAlbumData } from "../src/yandex/client.ts";
-import type { YaTrack } from "../src/yandex/types.ts";
+import { buildPlaylistAlbumData } from "../src/music/client.ts";
+import type { Track } from "../src/music/types.ts";
 
-test("deep-link playlist_<owner>_<kind>: owner с '_' не съедает kind", () => {
-  // owner жадный, kind якорится хвостовым _\d+$ — разбор однозначен
-  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_some_user_42")?.slice(1), ["some_user", "42"]);
-  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_vasya_1035")?.slice(1), ["vasya", "1035"]);
-  // owner, сам кончающийся на _<цифры>
-  assert.deepEqual(START_PLAYLIST_RE.exec("playlist_user_12_34")?.slice(1), ["user_12", "34"]);
-  assert.equal(START_PLAYLIST_RE.exec("playlist_vasya"), null);
-  assert.equal(START_PLAYLIST_RE.exec("album_123"), null);
+test("deep-link playlist_<id>: 22 base62 разбирается однозначно", () => {
+  const id = "37i9dQZF1DXcBWIGoYBM5M";
+  assert.deepEqual(START_PLAYLIST_RE.exec(`playlist_${id}`)?.slice(1), [id]);
+  assert.equal(START_PLAYLIST_RE.exec("playlist_short"), null);
+  assert.equal(START_PLAYLIST_RE.exec("album_" + id), null);
 });
 
-function mkTrack(id: number, available = true): YaTrack {
+function mkTrack(id: string, available = true): Track {
   return { id, title: `трек ${id}`, available };
 }
 
 test("buildPlaylistAlbumData — фильтрует недоступные, нумерует оставшиеся по порядку", () => {
-  const tracks = [mkTrack(1), mkTrack(2, false), mkTrack(3)];
-  const album = buildPlaylistAlbumData(42, "мой плейлист", "avatars.yandex.net/get-music/%%/orig", tracks);
+  const tracks = [mkTrack("1"), mkTrack("2", false), mkTrack("3")];
+  const album = buildPlaylistAlbumData("42", "мой плейлист", "https://i.scdn.co/image/abc", tracks);
 
   assert.ok(album);
   assert.equal(album!.tracks.length, 2);
   assert.deepEqual(
     album!.tracks.map((t) => t.id),
-    [1, 3],
+    ["1", "3"],
   );
   assert.equal(album!.tracks[0]!._trackNumber, 1);
   assert.equal(album!.tracks[1]!._trackNumber, 2);
@@ -34,18 +31,18 @@ test("buildPlaylistAlbumData — фильтрует недоступные, ну
 });
 
 test("buildPlaylistAlbumData — все треки недоступны → null", () => {
-  const album = buildPlaylistAlbumData(1, "пусто", "", [mkTrack(1, false), mkTrack(2, false)]);
+  const album = buildPlaylistAlbumData("1", "пусто", "", [mkTrack("1", false), mkTrack("2", false)]);
   assert.equal(album, null);
 });
 
 test("buildPlaylistAlbumData — пустой список треков → null", () => {
-  assert.equal(buildPlaylistAlbumData(1, "пусто", "", []), null);
+  assert.equal(buildPlaylistAlbumData("1", "пусто", "", []), null);
 });
 
 test("buildPlaylistAlbumData — поля AlbumData под переиспользуемую инфру альбомов", () => {
-  const album = buildPlaylistAlbumData(42, "мой плейлист", "", [mkTrack(1)]);
+  const album = buildPlaylistAlbumData("42", "мой плейлист", "", [mkTrack("1")]);
   assert.ok(album);
-  assert.equal(album!.id, 42);
+  assert.equal(album!.id, "42");
   assert.equal(album!.title, "мой плейлист");
   assert.equal(album!.artist, "Плейлист");
   assert.equal(album!.album_type, "playlist");
@@ -54,6 +51,6 @@ test("buildPlaylistAlbumData — поля AlbumData под переисполь�
 });
 
 test("buildPlaylistAlbumData — пустой coverUri не роняет normalizeCoverUrl", () => {
-  const album = buildPlaylistAlbumData(1, "x", "", [mkTrack(1)]);
+  const album = buildPlaylistAlbumData("1", "x", "", [mkTrack("1")]);
   assert.equal(album!.cover_url, "");
 });

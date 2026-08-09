@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# бэкап nowym_users/nowym_cache — pg_dump (custom format) + ротация по возрасту
+# бэкап nowspot_users/nowspot_cache — pg_dump (custom format) + ротация по возрасту
 # + отправка дампов админу в личку. Крон-скрипт, к процессу бота не привязан
 # (шлёт напрямую через Bot API, бот может быть в этот момент и не запущен).
 #
 #   ./scripts/backup.sh
 #
 # crontab -e (root, ежедневно):
-#   59 20 * * * /home/rage/nowym/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1
+#   59 20 * * * /home/rage/nowspot/scripts/backup.sh >> /var/log/nowspot-backup.log 2>&1
 #
 # восстановление:
-#   sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowym/nowym_users-*.dump
+#   sudo -u postgres pg_restore -d nowspot_users --clean --if-exists /var/backups/nowspot/nowspot_users-*.dump
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKUP_DIR="${NOWYM_BACKUP_DIR:-/var/backups/nowym}"
-KEEP_DAYS="${NOWYM_BACKUP_KEEP_DAYS:-14}"
+BACKUP_DIR="${NOWSPOT_BACKUP_DIR:-/var/backups/nowspot}"
+KEEP_DAYS="${NOWSPOT_BACKUP_KEEP_DAYS:-14}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$BACKUP_DIR"
 
 dumps=()
-for db in nowym_users nowym_cache; do
+for db in nowspot_users nowspot_cache; do
   file="$BACKUP_DIR/${db}-${STAMP}.dump"
   sudo -u postgres pg_dump -Fc "$db" >"$file"
   dumps+=("$file")

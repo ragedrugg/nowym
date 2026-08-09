@@ -4,6 +4,8 @@
  *  - request()      — общий keep-alive пул для обложек, api, retrieve;
  *  - downloadAudio() — свежее TCP-соединение на каждый запрос (без keepalive),
  *    CDN яндекса из EU иногда виснет на keepalive. */
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { Agent, type Dispatcher, interceptors, request } from "undici";
 import { getSettings } from "../settings.ts";
 import { sleep } from "./async.ts";
@@ -64,8 +66,20 @@ export class HttpClient {
   }
 
   /** скачать аудио: свежий agent (force_close) на каждую попытку + ретраи.
-   * signal — для racing-загрузки: отменяет проигравшие попытки. */
+   * signal — для racing-загрузки: отменяет проигравшие попытки.
+   *
+   * file:// URL читаются напрямую с диска — используется для yt-dlp резолвера:
+   * getUrl() возвращает file://<путь_к_локальному_temp_файлу>, downloadAudio
+   * читает файл в буфер, дальше пайплайн (теги/заливка в канал) работает как
+   * с обычной HTTP-загрузкой. */
   async downloadAudio(url: string, maxRetries = 3, signal?: AbortSignal): Promise<Buffer> {
+    if (signal?.aborted) throw new Error("aborted");
+    if (url.startsWith("file://")) {
+      const path = fileURLToPath(url);
+      const data = await readFile(path);
+      log.debug(`аудио с диска ${(data.length / 1024).toFixed(1)} KB: ${path}`);
+      return data;
+    }
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
