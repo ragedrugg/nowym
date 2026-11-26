@@ -56,7 +56,7 @@ function mkContainer(
     obj?: YaTrack | null;
   } = {},
 ) {
-  const renders: { progressMs: number; durationMs: number }[] = [];
+  const renders: { progressMs: number; durationMs: number; hideProgress?: boolean }[] = [];
   const yaCalls: string[] = [];
   const yaTrack = o.obj === undefined ? track() : o.obj;
   const container = {
@@ -85,7 +85,7 @@ function mkContainer(
           : { telegram_file_id: "FID", is_cached: true, codec: "mp3", bitrate_kbps: 320, duration: 200 },
     },
     cardRenderPool: {
-      render: async (a: { progressMs: number; durationMs: number }) => {
+      render: async (a: { progressMs: number; durationMs: number; hideProgress?: boolean }) => {
         renders.push(a);
         return Buffer.from("jpg");
       },
@@ -200,6 +200,7 @@ test("sendTrackToChat: deep link не играющего трека (card 0:00):
   await sendTrackToChat({ bot, chatId: 10, userId: 1, user, container, trackId: "777", statusMsgId: 5, card: pos });
   assert.equal(renders[0]!.progressMs, 0);
   assert.equal(renders[0]!.durationMs, 200000);
+  assert.equal(renders[0]!.hideProgress, true, "по ссылке без воспроизведения линии прогресса нет");
   assert.equal(calls.filter((c) => c.method === "sendRichMessage").length, 1);
 });
 
@@ -257,6 +258,22 @@ test("[regression guard] sendCurrentTrack: rich OFF: только sendAudio", as
     [{ chat_id: 10, audio: "FID" }],
   );
   assert.equal(methods(calls).includes("sendRichMessage"), false);
+});
+
+test("sendTrackToChat: карточка с позицией воспроизведения (/np): линия прогресса остаётся", async () => {
+  const { container, renders } = mkContainer();
+  const { bot } = mkBot();
+  await sendTrackToChat({
+    bot,
+    chatId: 10,
+    userId: 1,
+    user,
+    container,
+    trackId: "777",
+    statusMsgId: 5,
+    card: { progressMs: 42000, durationMs: 200000, paused: false },
+  });
+  assert.equal(renders[0]!.hideProgress, false);
 });
 
 // --- deepLinkCardPosition ---

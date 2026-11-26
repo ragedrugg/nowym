@@ -58,6 +58,8 @@ export interface CardBuildInput {
   progressMs: number;
   durationMs: number;
   paused: boolean;
+  /** не рисовать линию прогресса и тайминги. */
+  hideProgress?: boolean;
   senderHandle: string | null;
   meta: CardMeta;
   settings: Pick<UserSettings, "card_toggles" | "card_progress" | "card_style" | "card_aspect">;
@@ -97,6 +99,7 @@ export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
     progressMs: input.progressMs,
     durationMs: input.durationMs,
     paused: input.paused,
+    hideProgress: input.hideProgress ?? false,
     senderHandle: input.senderHandle,
     senderAvatar,
     botUsername: container.botUsername,

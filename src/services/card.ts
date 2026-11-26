@@ -251,6 +251,8 @@ export interface RenderCardArgs {
   /** при true возвращает сырой RGBA-буфер пикселей вместо JPEG — избегает
    * кодирования/декодирования JPEG на каждый кадр при пайпе в ffmpeg. */
   rawRGBA?: boolean;
+  /** без линии прогресса и таймингов (карточка по ссылке на трек, без контекста воспроизведения). */
+  hideProgress?: boolean;
 }
 
 // ── чистка/композиция заголовка ─────────────────────────────────────────────
@@ -1196,6 +1198,7 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   const badgeW = explicit ? L.explicitBadgeH + L.explicitBadgePad : 0;
 
   const drawProgressAndTime = (x0: number, maxW: number, waveYCenter: number): void => {
+    if (args.hideProgress) return;
     const x1 = x0 + maxW;
     if (progressStyle === "bar") {
       drawBarProgress(ctx, x0, x1, waveYCenter, progressMs, durationMs, accent, paused);

@@ -422,6 +422,8 @@ async function sendRichCardTrackToChat(a: {
         progressMs: a.card.progressMs,
         durationMs: a.card.durationMs || trackObj.durationMs || 0,
         paused: a.card.paused,
+        // нет длительности позиции = открыто по ссылке, а не из «что играет»: без линии прогресса
+        hideProgress: a.card.durationMs <= 0,
         senderHandle: senderHandleOf(a.user),
         meta: buildCardMeta(trackObj),
         settings,
