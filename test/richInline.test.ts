@@ -127,6 +127,21 @@ function mkChosenContainer(o: { allowed?: boolean; token?: string | null; failRe
 const stash = (container: Container, userId = 1, progressMs = 5000) =>
   (buildRichNowPlayingResult(container, track(), { progress_ms: progressMs }, { id: userId }) as { id: string }).id;
 
+test("chosen npr по ссылке на трек: hideProgress доходит до рендера; обычная npr — нет", async () => {
+  const link = mkChosenContainer();
+  const lid = (
+    buildRichNowPlayingResult(link.container, track(), { duration_ms: 200000 }, { id: 1 }, true) as { id: string }
+  ).id;
+  await chosenRichCardTrack(mkBot().bot, link.container, lid, "IM", 1);
+  await new Promise((r) => setImmediate(r));
+  assert.equal((link.renders[0] as { hideProgress?: boolean }).hideProgress, true);
+
+  const np = mkChosenContainer();
+  await chosenRichCardTrack(mkBot().bot, np.container, stash(np.container), "IM", 1);
+  await new Promise((r) => setImmediate(r));
+  assert.equal((np.renders[0] as { hideProgress?: boolean }).hideProgress, false);
+});
+
 test("chosen npr: getAudio идёт через ensureFileId, rich edit [photo, audio], позиция заморожена", async () => {
   const { container, renders, dbCalls } = mkChosenContainer();
   const { bot, calls } = mkBot();

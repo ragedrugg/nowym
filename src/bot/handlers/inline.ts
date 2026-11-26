@@ -824,6 +824,32 @@ function injectLyricsCard(
   }
 }
 
+/** ссылка на трек в inline: к аудио-результату добавляем карточку (и «карточка+трек» при rich) —
+ * без линии прогресса, позиции воспроизведения у ссылки нет. Мутирует `results`. */
+function injectTrackLinkCards(
+  container: Container,
+  trackService: SearchService,
+  user: { id: number; username?: string | null; firstName?: string | null },
+  opts: { text: string; richMessages: boolean; cardLayout: string },
+  results: unknown[],
+): void {
+  if (results.length === 0 || parseSearchQuery(opts.text).type !== "track_link") return;
+  const topId = parseTrackResultId(String((results[0] as { id?: string }).id ?? ""));
+  const track = topId ? trackService.getTrackObject(topId) : null;
+  if (!track) return;
+  const noPlayback = { progress_ms: 0, duration_ms: track.durationMs ?? 0, paused: false };
+  try {
+    const card = buildNowPlayingCardResult(container, track, noPlayback, user, opts.cardLayout, true);
+    if (card) results.splice(1, 0, card);
+    if (opts.richMessages) {
+      const rich = buildRichNowPlayingResult(container, track, noPlayback, user, true);
+      if (rich) results.unshift(rich);
+    }
+  } catch (e) {
+    log.warning(`[inline/link] карточка по ссылке не построена: ${errText(e)}`);
+  }
+}
+
 // ── обработчики ──────────────────────────────────────────────────────────
 
 async function onInlineQuery(
@@ -969,6 +995,13 @@ async function onInlineQuery(
     );
 
     if (isLyric) injectLyricsCard(container, trackService, user, lyricPhrase, results);
+    injectTrackLinkCards(
+      container,
+      trackService,
+      user,
+      { text, richMessages: settings.rich_messages, cardLayout },
+      results,
+    );
 
     // page0-кэш только для непагинируемых — у пагинируемого окна свой кэш в resultsCache
     if (text && !isPaged && !offset && results.length > 0) {

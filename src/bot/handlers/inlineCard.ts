@@ -37,6 +37,8 @@ export interface CardPayload {
   senderHandle: string;
   meta: CardMeta;
   cardLayout: string;
+  /** карточка по ссылке на трек: без линии прогресса и таймингов. */
+  hideProgress?: boolean;
   /** задан → лирик-карточка: на рендере тянем текст и подсвечиваем строку фразы. */
   lyricPhrase?: string;
 }
@@ -116,6 +118,7 @@ export function buildNowPlayingCardResult(
   current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
   user: { id: number; username?: string | null; firstName?: string | null },
   cardLayout = "button",
+  hideProgress = false,
 ): ReturnType<typeof InlineQueryResult.article> | null {
   const { artist, title, coverUrl, thumb, senderHandle } = trackCardBasics(track, user);
   const progressMs = current.progress_ms ?? 0;
@@ -135,6 +138,7 @@ export function buildNowPlayingCardResult(
     senderHandle,
     meta: buildCardMeta(track),
     cardLayout,
+    hideProgress,
   });
 
   // reply_markup обязателен даже для text/none — иначе tg не отдаёт inline_message_id
@@ -162,6 +166,7 @@ export function buildRichNowPlayingResult(
   track: YaTrack,
   current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
   user: { id: number; username?: string | null; firstName?: string | null },
+  hideProgress = false,
 ): ReturnType<typeof InlineQueryResult.article> | null {
   const { artist, title, coverUrl, thumb, senderHandle } = trackCardBasics(track, user);
   const progressMs = current.progress_ms ?? 0;
@@ -178,6 +183,7 @@ export function buildRichNowPlayingResult(
     senderHandle,
     meta: buildCardMeta(track),
     cardLayout: "button",
+    hideProgress,
   });
   return buildCardArticle({
     resultId,
@@ -335,6 +341,7 @@ export async function renderPendingCard(
     progressMs: payload.progressMs,
     durationMs: payload.durationMs,
     paused: payload.paused,
+    hideProgress: payload.hideProgress ?? false,
     senderHandle: payload.senderHandle,
     meta: payload.meta,
     settings,
