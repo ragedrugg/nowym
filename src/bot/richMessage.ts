@@ -41,7 +41,15 @@ export type RichTarget =
 
 /** "unknown": rich-запрос оборвался без ответа Telegram (сеть/таймаут) — сообщение могло
  * дойти, поэтому фолбэк НЕ запускаем (иначе дубль); вызывающий ничего не досылает. */
-export type DeliverResult = "rich" | "fallback" | "none" | "unknown";
+export type DeliverResult = "rich" | "fallback" | "none" | "unknown" | "partial";
+
+/** фолбэк уже отправил карточку, а трек не ушёл: повтор целиком продублировал бы карточку. */
+export class PartialDeliveryError extends Error {
+  constructor(cause: unknown) {
+    super(`карточка отправлена, трек нет: ${errText(cause)}`);
+    this.name = "PartialDeliveryError";
+  }
+}
 
 export interface FallbackInput {
   cardFileId: string | null;
@@ -170,7 +178,7 @@ export async function deliverCardAndTrack(o: {
       return "fallback";
     } catch (e) {
       log.warning(`[rich] ${o.label}: фолбэк упал: ${errText(e)}`);
-      return "none";
+      return e instanceof PartialDeliveryError ? "partial" : "none";
     }
   } finally {
     // канал-копию карточки удаляем только после того, как file_id использован
@@ -203,11 +211,16 @@ export function chatRichSenders(
         });
       }
       if (audio) {
-        await bot.api.sendAudio({
-          chat_id: chatId,
-          audio: audio.fileId,
-          ...(audio.degraded ? { caption: DEGRADED_NOTE } : {}),
-        });
+        try {
+          await bot.api.sendAudio({
+            chat_id: chatId,
+            audio: audio.fileId,
+            ...(audio.degraded ? { caption: DEGRADED_NOTE } : {}),
+          });
+        } catch (e) {
+          if (cardFileId) throw new PartialDeliveryError(e);
+          throw e;
+        }
       }
     },
   };

@@ -69,8 +69,8 @@ export class CacheDb {
     `);
     await cachePool.query("ALTER TABLE telegram_cache ADD COLUMN IF NOT EXISTS codec TEXT");
     await cachePool.query("ALTER TABLE telegram_cache ADD COLUMN IF NOT EXISTS bitrate_kbps INTEGER");
-    // тир качества в ключе: 'lossy' (mp3/aac) и 'lossless' (FLAC) — разные file_id
-    // одного трека. Существующие строки → 'lossy'. PK расширяем до (track_id, quality).
+    // тир качества в ключе: 'lossy' (mp3/aac), 'economy' (≤192) и 'lossless' (FLAC) —
+    // разные file_id одного трека (колонка — свободный текст). Существующие строки → 'lossy'. PK расширяем до (track_id, quality).
     await cachePool.query("ALTER TABLE telegram_cache ADD COLUMN IF NOT EXISTS quality TEXT NOT NULL DEFAULT 'lossy'");
     await cachePool.query(`
       DO $$ BEGIN

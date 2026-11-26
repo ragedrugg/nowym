@@ -92,7 +92,7 @@ export class CacheService {
 
   /** полная качка + кэш в канал. дедупит параллельные запросы по (track_id, quality).
    * Скачанные байты проверяются по магии контейнера кодека ДО тегов и кэша (мусор = неудачная попытка).
-   * quality — тир кэша: 'lossy' (mp3/aac) | 'lossless' (FLAC) | 'nightcore' — разные file_id.
+   * quality — тир кэша: 'lossy' (mp3/aac) | 'economy' (≤192) | 'lossless' (FLAC) | 'nightcore' — разные file_id.
    * transform — перекодировка через -af фильтр (выход mp3); codec тогда = исходный (для декода). */
   async downloadAndCacheTrack(
     trackId: string,

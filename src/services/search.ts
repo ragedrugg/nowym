@@ -266,7 +266,7 @@ export class SearchService {
       const cachedRes = this.resultsCache.get(cacheKey);
       if (cachedRes) {
         log.debug(`кэш HIT: ${JSON.stringify(query)}`);
-        return cachedRes;
+        return cachedRes.slice(); // копия: вызывающий вставляет карточки в массив, общий кэш мутировать нельзя
       }
 
       const parsed = parseSearchQuery(query);
@@ -319,7 +319,7 @@ export class SearchService {
 
       if (results.length > 0 && parsed.type !== "empty" && this.cacheService && !signal?.aborted) {
         const cacheable = trackIdsInResult.length === 0 || (await this.allAlreadyCached(trackIdsInResult));
-        if (cacheable) this.resultsCache.set(cacheKey, results, 300);
+        if (cacheable) this.resultsCache.set(cacheKey, results.slice(), 300);
       }
       log.debug(`создано ${results.length} результатов: ${JSON.stringify(query)}`);
       return results;
@@ -350,12 +350,13 @@ export class SearchService {
     const slice = tracks.slice(within, within + pageSize);
 
     const cacheKey = `paged:${layout}:${sendMode}:${query}:${ypage}:${within}:${pageSize}`;
-    let results = this.resultsCache.get(cacheKey);
+    const hit = this.resultsCache.get(cacheKey);
+    let results = hit ? hit.slice() : undefined;
     if (!results) {
       results = slice.length > 0 ? await this.createTrackResultsParallel(slice, layout, sendMode, signal) : [];
       if (results.length > 0 && this.cacheService && !signal?.aborted) {
         const cacheable = await this.allAlreadyCached(slice.map((t) => t.id!));
-        if (cacheable) this.resultsCache.set(cacheKey, results, 300);
+        if (cacheable) this.resultsCache.set(cacheKey, results.slice(), 300);
       }
     }
 
@@ -392,12 +393,13 @@ export class SearchService {
     const slice = pool.slice(within, within + pageSize);
 
     const cacheKey = `recent:${this.userId ?? "anon"}:${layout}:${sendMode}:${within}:${pageSize}`;
-    let results = this.resultsCache.get(cacheKey);
+    const hit = this.resultsCache.get(cacheKey);
+    let results = hit ? hit.slice() : undefined;
     if (!results) {
       results = slice.length > 0 ? await this.createTrackResultsParallel(slice, layout, sendMode, signal) : [];
       if (results.length > 0 && this.cacheService && !signal?.aborted) {
         const cacheable = await this.allAlreadyCached(slice.map((t) => t.id!));
-        if (cacheable) this.resultsCache.set(cacheKey, results, 120);
+        if (cacheable) this.resultsCache.set(cacheKey, results.slice(), 120);
       }
     }
 

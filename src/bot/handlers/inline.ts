@@ -14,7 +14,6 @@ import {
   buildTrackMetadata,
   enrichMetadataFromAlbum,
   findBestLyricsLine,
-  formatDurationHuman,
   formatTrackBasics,
   trackIsTooLong,
 } from "../../yandex/metadata.ts";
@@ -23,7 +22,7 @@ import { buildLyricsQuote, buildTrackCaption, senderHandleOf } from "../captions
 import { buildCardImage, mintCardFileId } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
-import { progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
+import { LOGIN_FIRST, progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
 import { chatRichSenders, deliverCardAndTrack, errText, type RichAudio } from "../richMessage.ts";
 import { safeAnswerCb, safeEditMedia, safeSetReplyMarkup, say } from "../safeApi.ts";
 import {
@@ -40,6 +39,27 @@ import {
 const log = getLogger("bot.inline");
 
 const RECENT_RE = /^(недавн(ее|ие)|recent|истори[яю])$/i;
+
+const LOGIN_HINT = "сначала войди — /login";
+const TOO_LONG_TEXT = "трек слишком длинный для телеграма";
+
+/** лимитер скачивания сработал уже на старте закачки (см. ensureFileId.onDownloadStart). */
+class DownloadRateLimited extends Error {
+  constructor(readonly retryAfterSec: number) {
+    super("download rate limited");
+  }
+}
+
+/** onDownloadStart-хук: кэшированное лимит не тратит, реальная закачка — тратит. */
+function downloadLimitGate(container: Container, userId: number): () => Promise<void> {
+  return async () => {
+    const [allowed, retryAfter] = container.downloadLimiter.check(userId);
+    if (!allowed) throw new DownloadRateLimited(retryAfter);
+  };
+}
+
+/** (user, track), у которых лайк-тоггл в полёте: параллельные тапы иначе ставят и тут же снимают. */
+const likesInFlight = new Set<string>();
 
 // ── аудио-эффекты ─────────────────────────────────────────────────────────
 // `@nowymbot <префикс> <запрос>` — обычный поиск, но выбранный трек отдаётся
@@ -90,7 +110,13 @@ async function resolveCacheEntry(
   quality: AudioQuality,
   cached: CachedTrack | null,
 ): Promise<CachedTrack | null> {
-  return quality === "lossless" ? await container.cacheDb.get(trackId, "lossless") : cached;
+  if (quality === "lossless" || quality === "economy") return await container.cacheDb.get(trackId, quality);
+  return cached;
+}
+
+/** тир кэша для lossy-закачки: economy (≤192) не должен затирать/подменять оптимальное. */
+function lossyTier(quality: AudioQuality): string {
+  return quality === "economy" ? "economy" : "lossy";
 }
 
 /** null, если result_id не сводится к числовому trackId. */
@@ -191,6 +217,7 @@ async function downloadFreshTrackBest(
     () => yandex.directLinkFromInfo(info),
     meta,
     info.codec,
+    lossyTier(quality),
   );
   return [true, fileId, info.codec, info.bitrateInKbps];
 }
@@ -211,6 +238,9 @@ async function downloadFreshTrack(
     } catch (e) {
       log.warning(`[lossless] сбой track=${trackId}: ${e} → фолбэк на mp3`);
     }
+    // уже есть lossy-копия в кэше — отдаём её, а не качаем mp3 заново
+    const lossy = await container.cacheDb.get(trackId, "lossy").catch(() => null);
+    if (lossy?.is_cached) return [true, lossy.telegram_file_id, lossy.codec, lossy.bitrate_kbps, true];
     // degraded только если фолбэк реально удался
     const fb = await downloadFreshTrackBest(container, trackObj, yandex, trackId, "best");
     return [fb[0], fb[1], fb[2], fb[3], fb[1] !== null];
@@ -375,11 +405,11 @@ export interface CardPosition {
   paused: boolean;
 }
 
-function ensureErrorText(kind: "not_found" | "too_long" | "no_variants" | "failed", trackObj: YaTrack | null) {
+function ensureErrorText(kind: "not_found" | "too_long" | "no_variants" | "failed") {
   return kind === "not_found"
     ? format`❌ трек не найден`
     : kind === "too_long"
-      ? format`❌ трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет, лимит 50 мб`
+      ? format`❌ ${TOO_LONG_TEXT}`
       : kind === "no_variants"
         ? format`❌ нет вариантов скачивания`
         : format`❌ не удалось скачать`;
@@ -471,14 +501,14 @@ async function sendRichCardTrackToChat(a: {
     );
     return;
   }
+  if (res === "partial") {
+    // карточка уже в чате — ошибка только про трек, чтобы повтор не слал карточку второй раз
+    await say(bot, chatId, statusMsgId, format`❌ карточка пришла, а трек не отправился — попробуй позже`);
+    return;
+  }
   if (res === "none" || !obtained) {
     // карточка (если вышла) уже отправлена фолбэком; статус превращаем в ошибку, как в обычном пути
-    await say(
-      bot,
-      chatId,
-      statusMsgId,
-      failKind ? ensureErrorText(failKind, trackObj) : format`❌ ошибка, попробуй ещё раз`,
-    );
+    await say(bot, chatId, statusMsgId, failKind ? ensureErrorText(failKind) : format`❌ ошибка, попробуй ещё раз`);
     return;
   }
   void a.yandex.reportPlayback(trackObj);
@@ -575,7 +605,7 @@ export async function sendTrackToChat(args: {
       },
     });
     if (!res.ok) {
-      await say(bot, chatId, statusMsgId, ensureErrorText(res.kind, trackObj));
+      await say(bot, chatId, statusMsgId, ensureErrorText(res.kind));
       return;
     }
 
@@ -826,14 +856,15 @@ function injectLyricsCard(
 
 /** ссылка на трек в inline: к аудио-результату добавляем карточку (и «карточка+трек» при rich) —
  * без линии прогресса, позиции воспроизведения у ссылки нет. Мутирует `results`. */
-function injectTrackLinkCards(
+export function injectTrackLinkCards(
   container: Container,
   trackService: SearchService,
   user: { id: number; username?: string | null; firstName?: string | null },
   opts: { text: string; richMessages: boolean; cardLayout: string },
   results: unknown[],
 ): void {
-  if (results.length === 0 || parseSearchQuery(opts.text).type !== "track_link") return;
+  // «ncore <ссылка>» — это трек с эффектом, карточки к нему не нужны
+  if (results.length === 0 || parseEffect(opts.text) || parseSearchQuery(opts.text).type !== "track_link") return;
   const topId = parseTrackResultId(String((results[0] as { id?: string }).id ?? ""));
   const track = topId ? trackService.getTrackObject(topId) : null;
   if (!track) return;
@@ -877,7 +908,7 @@ async function onInlineQuery(
 
   const token = await container.resolveToken(userId);
   if (!token) {
-    await ctx.answer([], { cache_time: 5, button: { text: "🔑 войди через /login", start_parameter: "start" } });
+    await ctx.answer([], { cache_time: 5, button: { text: "🔓 войти в аккаунт", start_parameter: "login" } });
     return;
   }
 
@@ -899,8 +930,10 @@ async function onInlineQuery(
   // userId в ключе обязателен: без него лирик-/нп-карточка внутри results несёт
   // чужой userId/токен (см. cardPending в inlineCard.ts) — второй юзер с тем же
   // текстом получал бы чужую личность в рендере.
+  // card_layout и rich_messages в ключе: они меняют состав и разметку карточек внутри results.
+  const page0Key = `${userId}:${layout}:${sendMode}:${cardLayout}:${settings.rich_messages ? 1 : 0}:${text}`;
   if (text && !isPaged && !offset) {
-    const hit = container.trackCache.get(`${userId}:${layout}:${sendMode}:${text}`);
+    const hit = container.trackCache.get(page0Key);
     if (hit && hit.length > 0) {
       await ctx.answer(hit, { cache_time: 60, is_personal: true });
       return;
@@ -915,7 +948,7 @@ async function onInlineQuery(
       log.warning(`[inline] яндекс-клиент не создан user=${userId}: ${e}`);
       await ctx.answer([], {
         cache_time: 3,
-        button: { text: "⏳ Яндекс не отвечает, попробуй ещё раз", start_parameter: "start" },
+        button: { text: "⏳ сервис не отвечает, попробуй ещё раз", start_parameter: "start" },
       });
       return;
     }
@@ -967,7 +1000,7 @@ async function onInlineQuery(
         },
         ac.signal,
       );
-      results = built.results;
+      results = [...built.results]; // свой массив: дальше в него вставляются карточки
       nextOffset = built.nextOffset;
     } catch (e) {
       ac.abort();
@@ -1005,7 +1038,7 @@ async function onInlineQuery(
 
     // page0-кэш только для непагинируемых — у пагинируемого окна свой кэш в resultsCache
     if (text && !isPaged && !offset && results.length > 0) {
-      container.trackCache.set(`${userId}:${layout}:${sendMode}:${text}`, results as InlineResult[]);
+      container.trackCache.set(page0Key, [...results] as InlineResult[]);
     }
 
     if (results.length > 0) {
@@ -1028,7 +1061,7 @@ async function onInlineQuery(
           ? "🎵 сейчас ничего не играет"
           : isRecent
             ? "🕗 пока нечего показать"
-            : `❌ не найдено: ${text}`;
+            : `❌ не найдено: ${text.length > 40 ? `${text.slice(0, 40)}…` : text}`;
       await ctx.answer([], { button: { text: label, start_parameter: "start" } });
     }
   } catch (e) {
@@ -1134,7 +1167,7 @@ export async function onChosenResult(
 
   if (isCardResultId(resultId)) {
     if (!inlineMsgId) return;
-    await renderAndSwapCard(bot, container, resultId, inlineMsgId);
+    await renderAndSwapCard(bot, container, resultId, inlineMsgId, userId);
     return;
   }
 
@@ -1149,20 +1182,11 @@ export async function onChosenResult(
     return;
   }
 
-  // тот же лимитер, что у /np и альбомов — без него chosen_inline_result был
-  // единственным путём выгрузки трека без рейт-лимита на скачивание вообще.
-  const [allowed, retryAfter] = container.downloadLimiter.check(userId);
-  if (!allowed) {
-    await safeSetReplyMarkup(
-      bot,
-      inlineMsgId,
-      progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`),
-    );
+  const token = await container.resolveToken(userId);
+  if (!token) {
+    await safeSetReplyMarkup(bot, inlineMsgId, progressMarkup(trackId, LOGIN_HINT));
     return;
   }
-
-  const token = await container.resolveToken(userId);
-  if (!token) return;
 
   const cancelTicker = startProgressTicker(bot, inlineMsgId, trackId);
 
@@ -1199,7 +1223,13 @@ export async function onChosenResult(
       return;
     }
 
-    const ensureOpts = { quality, tier: effect?.tier ?? null };
+    // тот же лимитер, что у /np и альбомов, но только когда реально начинается закачка:
+    // готовый file_id из кэша лимит не тратит и кнопки не затирает.
+    const ensureOpts = {
+      quality,
+      tier: effect?.tier ?? null,
+      onDownloadStart: downloadLimitGate(container, userId),
+    };
     let lyricsQuote: string | null = null;
     let res: EnsureResult;
     if (searchPhrase) {
@@ -1213,8 +1243,8 @@ export async function onChosenResult(
       res = await ensureFileId(container, cached, trackObj, yandex, trackId, ensureOpts);
     }
 
-    // для lossless mp3-кэш не считается «уже на месте» — нужен своп на FLAC
-    if (quality !== "lossless" && !effect && cached && cached.is_cached && !isTextMedia && !lyricsQuote) {
+    // для lossless/economy lossy-кэш не считается «уже на месте» — нужен своп на свой тир
+    if (quality === "best" && !effect && cached && cached.is_cached && !isTextMedia && !lyricsQuote) {
       log.info(`[chosen] трек ${trackId} уже в кэше user=${userId}`);
       // реальное аудио уже в сообщении (не текст-плейсхолдер) — просто чиним
       // кнопку, если тикер успел подменить её на «качаю...»/«отправляю...»
@@ -1245,6 +1275,15 @@ export async function onChosenResult(
     await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, media, markup);
     log.info(`[chosen] трек ${trackId} отправлен user=${userId}${degraded ? " (FLAC→mp3)" : ""}`);
   } catch (e) {
+    if (e instanceof DownloadRateLimited) {
+      await cancelTicker(); // иначе тикер перетрёт сообщение «подожди» своим «качаю...»
+      await safeSetReplyMarkup(
+        bot,
+        inlineMsgId,
+        progressMarkup(trackId, `слишком часто, подожди ${Math.round(e.retryAfterSec)} сек`),
+      );
+      return;
+    }
     log.error(`[chosen] ошибка user=${userId} track=${trackId}: ${e}`);
   } finally {
     await cancelTicker();
@@ -1263,7 +1302,7 @@ async function onLoadCallback(
   const data = cbData(ctx);
   const raw = data.includes(":") ? (data.split(":", 2)[1] ?? "") : "";
   if (!/^\d+$/.test(raw)) {
-    await safeAnswerCb(ctx, { text: "некорректный track_id", show_alert: true });
+    await safeAnswerCb(ctx, { text: "что-то пошло не так, найди трек заново", show_alert: true });
     return;
   }
   const trackId = raw;
@@ -1271,7 +1310,7 @@ async function onLoadCallback(
   const userId = ctx.from.id;
 
   if (!inlineMsgId) {
-    await safeAnswerCb(ctx, { text: "что-то пошло не так", show_alert: true });
+    await safeAnswerCb(ctx, { text: "что-то пошло не так, найди трек заново", show_alert: true });
     return;
   }
 
@@ -1280,22 +1319,22 @@ async function onLoadCallback(
   const owner = container.inlineOwners.get(inlineMsgId);
   if (owner !== null && owner !== userId) {
     log.info(`[load] чужой инлайн: tapper=${userId} owner=${owner} track=${trackId}`);
-    await safeAnswerCb(ctx, { text: "это не твой трек — запусти инлайн сам", show_alert: true });
-    return;
-  }
-
-  const [allowed, retryAfter] = container.downloadLimiter.check(userId);
-  if (!allowed) {
-    await safeAnswerCb(ctx, { text: `⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`, show_alert: true });
+    await safeAnswerCb(ctx, {
+      text: `это не твой трек — набери @${container.botUsername ?? "nowymbot"} и найди сам`,
+      show_alert: true,
+    });
     return;
   }
 
   const token = await container.resolveToken(userId);
   if (!token) {
-    await safeAnswerCb(ctx, { text: "сначала войди через /login", show_alert: true });
+    await safeAnswerCb(ctx, { text: LOGIN_HINT, show_alert: true });
     return;
   }
 
+  // отвечаем на callback сразу (иначе кнопка крутится до таймаута), итог — сменой кнопок.
+  // лимитер в onDownloadStart: готовый кэш лимит не тратит; дедуп закачек живёт в cacheService.
+  await safeAnswerCb(ctx, "загружаю...");
   try {
     const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
@@ -1303,32 +1342,42 @@ async function onLoadCallback(
     // эффект берём из запроса, запомненного на chosen_result: в callback_data его нет,
     // а «качаю...»/«загрузить снова» обязаны отдать тот же вариант, что просили.
     const tier = container.inlineEffects.get(inlineMsgId);
-    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, { quality, tier });
+    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
+      quality,
+      tier,
+      onDownloadStart: async () => {
+        await downloadLimitGate(container, userId)();
+        await safeSetReplyMarkup(bot, inlineMsgId, progressMarkup(trackId, "качаю..."));
+      },
+    });
     if (!res.ok) {
       const text =
         res.kind === "not_found"
           ? "трек не найден"
           : res.kind === "too_long"
-            ? `трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет`
+            ? TOO_LONG_TEXT
             : res.kind === "no_variants"
               ? "нет вариантов скачивания"
-              : "не удалось загрузить, попробуй ещё раз";
-      await safeAnswerCb(ctx, { text, show_alert: true });
+              : null;
+      await safeSetReplyMarkup(bot, inlineMsgId, text ? progressMarkup(trackId, text) : retryMarkup(trackId));
       return;
     }
     const { fileId, codec, bitrateKbps, degraded } = res;
-
-    // единственный оставшийся answerCallbackQuery на этот callback_query_id —
-    // держим его до сюда: Telegram позволяет ответить только раз, а все ошибки
-    // выше (нет токена/трека/слишком длинный/нет вариантов/не удалось) должны
-    // реально доходить до юзера, а не проглатываться этим вызовом раньше времени.
-    await safeAnswerCb(ctx, degraded ? "⚠️ превосходное недоступно — отдаю оптимальное" : "загружаю...");
     const layout = settings.track_layout;
     const { media, markup } = buildChosenEditPayload({ trackId, fileId, codec, bitrateKbps, layout, degraded });
     await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, media, markup);
     log.info(`[load] трек ${trackId} загружен user=${userId}${degraded ? " (FLAC→mp3)" : ""}`);
   } catch (e) {
+    if (e instanceof DownloadRateLimited) {
+      await safeSetReplyMarkup(
+        bot,
+        inlineMsgId,
+        progressMarkup(trackId, `слишком часто, подожди ${Math.round(e.retryAfterSec)} сек`),
+      );
+      return;
+    }
     log.error(`[load] ошибка user=${userId} track=${trackId}: ${e}`);
+    await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
   }
 }
 
@@ -1351,13 +1400,20 @@ async function onLikeCallback(
 
   const token = await container.resolveToken(userId);
   if (!token) {
-    await safeAnswerCb(ctx, { text: "сначала войди в бота — /login", show_alert: true });
+    await safeAnswerCb(ctx, { text: LOGIN_HINT, show_alert: true });
     return;
   }
 
+  const flightKey = `${userId}:${trackId}`;
+  if (likesInFlight.has(flightKey)) {
+    await safeAnswerCb(ctx, "секунду...");
+    return;
+  }
+  likesInFlight.add(flightKey);
   try {
     const yandex = await container.getYandexService(token, userId);
-    const liked = await yandex.isTrackLiked(trackId);
+    // strict: при сбое получения списка не гадаем «не лайкнут» — иначе ставим лайк поверх уже стоящего
+    const liked = await yandex.isTrackLiked(trackId, true);
     const ok = await yandex.setTrackLiked(trackId, !liked);
     if (!ok) {
       await safeAnswerCb(ctx, { text: "не вышло, попробуй ещё раз", show_alert: true });
@@ -1366,7 +1422,9 @@ async function onLikeCallback(
     await safeAnswerCb(ctx, !liked ? "❤️ лайкнул" : "убрал лайк");
   } catch (e) {
     log.error(`[like] ошибка user=${userId} track=${trackId}: ${e}`);
-    await safeAnswerCb(ctx, { text: "ошибка, попробуй ещё раз", show_alert: true });
+    await safeAnswerCb(ctx, { text: "не вышло, попробуй ещё раз", show_alert: true });
+  } finally {
+    likesInFlight.delete(flightKey);
   }
 }
 

@@ -1,4 +1,4 @@
-/** Окно настроек rich messages (s_rich): тексты, маппинг on/off, сохранение (без сети/БД). */
+/** Настройка rich messages (тумблер в разделе «карточка»): тексты, маппинг on/off, сохранение (без сети/БД). */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Bot } from "gramio";
@@ -8,8 +8,8 @@ import {
   radioOnClick,
   richCurrent,
   richLabel,
-  richPickText,
   richSave,
+  richToggleOnClick,
   settingsMainText,
 } from "../src/bot/dialogs.ts";
 import type { UserSettings } from "../src/storage/settings.ts";
@@ -41,8 +41,8 @@ function fakeContainer() {
 }
 
 test("richLabel / richCurrent: on/off <-> boolean, default off", () => {
-  assert.equal(richLabel("on"), "вкл.");
-  assert.equal(richLabel("off"), "выкл.");
+  assert.equal(richLabel("on"), "вкл");
+  assert.equal(richLabel("off"), "выкл");
   assert.equal(richCurrent({ ...base, rich_messages: true }), "on");
   assert.equal(richCurrent({ ...base, rich_messages: false }), "off");
 });
@@ -71,47 +71,67 @@ test("radioOnClick: сохраняет, инвалидирует кэш юзер
   assert.equal(order.at(-1), "show");
 });
 
-test("тексты: главная строка и окно s_rich", () => {
+test("тексты: главная строка настроек показывает карточка+трек", () => {
   const on = settingsMainText({ ...base, rich_messages: true }).toString();
   const off = settingsMainText(base).toString();
-  assert.match(on, /карточка\+трек: вкл\./);
-  assert.match(off, /карточка\+трек: выкл\./);
-  const t = richPickText().toString();
-  assert.match(t, /Rich messages \(карточка \+ трек\)/);
-  assert.match(t, /одним сообщением/);
-  assert.match(t, /как раньше/);
+  assert.match(on, /карточка\+трек: вкл/);
+  assert.match(off, /карточка\+трек: выкл/);
 });
 
-test("окно s_rich зарегистрировано сразу после s_sendmode и доступно из настроек", async () => {
-  const dialog = buildMenuDialog({} as Bot, {} as Container);
-  assert.equal(dialog.siblingState("s_sendmode", 1), "s_rich");
-  type Btn = {
-    id: string;
-    text: { renderText(rc: unknown): Promise<unknown> };
-    processCallback(id: string, payload: unknown, mgr: unknown): Promise<boolean>;
-  };
-  const buttons: Btn[] = [];
+type Btn = {
+  id: string;
+  text: { renderText(rc: unknown): Promise<unknown> };
+  processCallback(id: string, payload: unknown, mgr: unknown): Promise<boolean>;
+};
+const buttonsOf = (keyboard: unknown): Btn[] => {
+  const out: Btn[] = [];
   const walk = (o: unknown): void => {
     if (!o || typeof o !== "object") return;
     const w = o as { children?: unknown[]; processCallback?: unknown; text?: unknown };
     if (Array.isArray(w.children)) w.children.forEach(walk);
-    else if (typeof w.processCallback === "function" && w.text) buttons.push(o as Btn);
+    else if (typeof w.processCallback === "function" && w.text) out.push(o as Btn);
   };
-  walk(dialog.getWindow("settings").keyboard);
-  const texts = await Promise.all(buttons.map(async (b) => String(await b.text.renderText({}))));
-  const iSend = texts.findIndex((t) => t.includes("тип отправки"));
-  const iRich = texts.findIndex((t) => t.includes("карточка+трек"));
-  const iQuality = texts.findIndex((t) => t.includes("качество"));
-  assert.ok(iSend >= 0 && iRich === iSend + 1 && iQuality === iRich + 1, texts.join("|"));
-  let target = "";
-  const clickCtx = {
-    dialog: {
-      switchTo: async (s: string) => {
-        target = s;
-      },
-    },
-  };
-  await buttons[iRich]!.processCallback(buttons[iRich]!.id, undefined, { clickCtx });
-  assert.equal(target, "s_rich");
-  assert.ok(dialog.getWindow("s_rich"));
+  walk(keyboard);
+  return out;
+};
+const labelsOf = (btns: Btn[], data: unknown) =>
+  Promise.all(btns.map(async (b) => String(await b.text.renderText({ data }))));
+
+test("настройки: два раздела, «карточка+трек» живёт внутри «карточка», окна s_rich нет", async () => {
+  const dialog = buildMenuDialog({} as Bot, {} as Container);
+  const top = await labelsOf(buttonsOf(dialog.getWindow("settings").keyboard), { s: base });
+  assert.ok(top.some((t) => t.includes("трек")) && top.some((t) => t.includes("карточка")), top.join("|"));
+  assert.ok(!top.some((t) => t.includes("карточка+трек")), "в корне настроек пункта карточка+трек нет");
+  assert.ok(dialog.getWindow("s_track") && dialog.getWindow("s_card"));
+  assert.throws(() => dialog.getWindow("s_rich"));
+  const track = await labelsOf(buttonsOf(dialog.getWindow("s_track").keyboard), { s: base });
+  assert.ok(["качество", "подпись и кнопки", "способ отправки"].every((l) => track.some((t) => t.includes(l))));
+  const card = await labelsOf(buttonsOf(dialog.getWindow("s_card").keyboard), { s: base });
+  assert.ok(
+    card.some((t) => t.includes("карточка+трек: выкл")),
+    card.join("|"),
+  );
+  const cardOn = await labelsOf(buttonsOf(dialog.getWindow("s_card").keyboard), {
+    s: { ...base, rich_messages: true },
+  });
+  assert.ok(cardOn.some((t) => t.includes("карточка+трек: вкл")));
+});
+
+test("тумблер карточка+трек: переключает значение, сбрасывает кэш, ре-рендер", async () => {
+  for (const [start, expected] of [
+    [false, true],
+    [true, false],
+  ] as const) {
+    const { container, calls, invalidated } = fakeContainer();
+    (container as unknown as { getUserSettings: unknown }).getUserSettings = async () => ({
+      ...base,
+      rich_messages: start,
+    });
+    let shown = 0;
+    const ctx = { from: { id: 9 }, answerCallbackQuery: async () => {}, show: async () => void shown++ };
+    await richToggleOnClick(container)(ctx as never);
+    assert.deepEqual(calls, [[9, expected]]);
+    assert.deepEqual(invalidated, [9]);
+    assert.equal(shown, 1);
+  }
 });

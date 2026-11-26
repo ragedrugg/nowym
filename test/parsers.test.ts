@@ -16,6 +16,34 @@ test("ссылка на трек → track_link", () => {
   assert.deepEqual(parseSearchQuery("https://yandex.ru/music/album/10/track/20"), { type: "track_link", track_id: 20 });
 });
 
+test("короткая ссылка на трек (как ставит бот), домены и utm", () => {
+  for (const url of [
+    "https://music.yandex/track/77",
+    "https://music.yandex.ru/track/77",
+    "https://music.yandex.com/track/77?utm_source=web",
+    "music.yandex.by/album/5/track/77?utm_medium=copy_link",
+    "https://music.yandex.kz/album/5/track/77",
+    "https://music.yandex.uz/track/77",
+    "https://yandex.ru/music/track/77",
+    "https://yandex.com/music/album/5/track/77",
+  ]) {
+    assert.deepEqual(parseSearchQuery(url), { type: "track_link", track_id: 77 }, url);
+  }
+});
+
+test("альбом и плейлист на других доменах и с utm", () => {
+  assert.deepEqual(parseSearchQuery("https://music.yandex.com/album/42?utm_source=x"), {
+    type: "album_link",
+    album_id: 42,
+  });
+  assert.deepEqual(parseSearchQuery("https://music.yandex.by/users/vasya/playlists/7?utm_medium=a"), {
+    type: "playlist_link",
+    owner: "vasya",
+    kind: 7,
+  });
+  assert.equal(parseSearchQuery("https://music.yandex/track/77").type === "album_link", false);
+});
+
 test("ссылка на альбом → album_link (lookahead отделяет от /track)", () => {
   assert.deepEqual(parseSearchQuery("https://music.yandex.ru/album/789"), { type: "album_link", album_id: 789 });
   // с /track это всё-таки трек, не альбом

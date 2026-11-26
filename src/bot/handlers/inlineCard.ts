@@ -44,7 +44,8 @@ export interface CardPayload {
 }
 
 // стэш: inline_query кладёт payload → chosen_inline_result достаёт (FIFO + LRU-cap).
-const CARD_PENDING_MAX = 200;
+// ёмкость с запасом под время жизни выдачи: клиент держит её минуты, chosen может прийти поздно.
+const CARD_PENDING_MAX = 2000;
 const cardPending = new LRUMap<string, CardPayload>(CARD_PENDING_MAX);
 
 function stashCardPending(resultId: string, payload: CardPayload): void {
@@ -356,10 +357,27 @@ export async function renderAndSwapCard(
   container: Container,
   resultId: string,
   inlineMsgId: string,
+  /** кто выбрал результат; задан → сверяем со стэшем (как в chosenRichCardTrack). */
+  userId?: number,
 ): Promise<void> {
   const payload = peekCardPending(resultId);
+  const setRetry = async (trackId: string | number): Promise<void> => {
+    try {
+      await bot.api.editMessageReplyMarkup({ inline_message_id: inlineMsgId, reply_markup: retryMarkup(trackId) });
+    } catch (e) {
+      log.warning(`[chosen] ${resultId}: retry-разметка не встала: ${errText(e)}`);
+    }
+  };
   if (payload === null) {
     log.warning(`[chosen] нет pending payload для карточки ${resultId}`);
+    // плейсхолдер «готовлю карточку...» иначе висит вечно — даём «загрузить снова» по trackId из id
+    const m = /^(?:npc|lyc):\d+:(\d+):/.exec(resultId);
+    if (m) await setRetry(m[1]!);
+    return;
+  }
+  if (userId !== undefined && payload.userId !== userId) {
+    log.warning(`[chosen] карточка ${resultId}: стэш user=${payload.userId}, chosen user=${userId} — игнор`);
+    await setRetry(payload.trackId);
     return;
   }
 

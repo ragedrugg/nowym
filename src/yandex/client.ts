@@ -431,7 +431,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   /** множество id лайкнутых треков (строки, без album-части). кэш 30с. */
-  async getLikedTrackIds(): Promise<Set<string>> {
+  async getLikedTrackIds(strict = false): Promise<Set<string>> {
     const now = performance.now();
     if (this.likesCache !== null && now - this.likesCacheAt < LIKES_CACHE_TTL_MS) {
       return this.likesCache;
@@ -445,6 +445,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       });
     } catch (e) {
       log.debug(`usersLikesTracks: ${e}`);
+      if (strict) throw e; // лайк-тоггл не должен гадать «не лайкнут» по пустому списку
       return this.likesCache ?? new Set();
     }
     this.likesCache = ids;
@@ -452,8 +453,8 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     return ids;
   }
 
-  async isTrackLiked(trackId: number | string): Promise<boolean> {
-    const ids = await this.getLikedTrackIds();
+  async isTrackLiked(trackId: number | string, strict = false): Promise<boolean> {
+    const ids = await this.getLikedTrackIds(strict);
     return ids.has(bareTrackId(trackId));
   }
 

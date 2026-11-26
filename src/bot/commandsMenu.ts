@@ -6,10 +6,10 @@ import { getSettings } from "../settings.ts";
 const log = getLogger("bot.commands_menu");
 
 const PUBLIC_COMMANDS = [
-  { command: "start", description: "приветствие" },
+  { command: "start", description: "главное меню" },
   { command: "help", description: "как пользоваться" },
-  { command: "np", description: "карточка текущего трека" },
-  { command: "settings", description: "настройки" },
+  { command: "np", description: "карточка того, что играет" },
+  { command: "settings", description: "качество, подписи, карточка" },
   { command: "login", description: "войти в аккаунт" },
   { command: "logout", description: "выйти из аккаунта" },
 ];

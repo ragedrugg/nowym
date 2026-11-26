@@ -3,7 +3,7 @@ import type { Container } from "../container.ts";
 import { registerAdmin } from "./admin.ts";
 import { registerAlbums } from "./albums.ts";
 import { registerAuth } from "./auth.ts";
-import { registerCommon } from "./common.ts";
+import { registerCommon, registerPrivateFallback } from "./common.ts";
 import { registerInline } from "./inline.ts";
 import { registerPlaylists } from "./playlists.ts";
 
@@ -17,4 +17,5 @@ export function registerHandlers(bot: Bot, container: Container): void {
   registerAlbums(bot, container);
   registerPlaylists(bot, container);
   registerInline(bot, container);
+  registerPrivateFallback(bot); // строго последним: ловит только то, что не взял никто выше
 }

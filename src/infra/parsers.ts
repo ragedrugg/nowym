@@ -1,15 +1,19 @@
 /** парсинг inline-запросов: текст, ссылка на трек или ссылка на альбом. */
 
-const TRACK_URL_RE = /(?:music\.yandex(?:\.ru)?\/album\/\d+\/track|yandex\.ru\/music\/album\/\d+\/track)\/(\d+)/;
+// хост веб-плеера: music.yandex[.ru|.com|.by|.kz|.uz] (голый music.yandex ставит наш urls.ts) или yandex.<tld>/music
+const HOST = String.raw`(?:music\.yandex(?:\.(?:ru|com|by|kz|uz))?|yandex\.(?:ru|com|by|kz|uz)/music)`;
+
+// трек: и /album/N/track/M, и короткий /track/M (его бот сам ставит в кнопки)
+const TRACK_URL_RE = new RegExp(String.raw`${HOST}/(?:album/\d+/)?track/(\d+)`);
 
 // альбомный URL — без /track. (?!\d) не даёт \d+ бэктрекнуться на цифру короче
 // (иначе на .../album/123456/tracks lookahead после отката пропускал бы "12345").
-const ALBUM_URL_RE = /(?:music\.yandex(?:\.ru)?\/album|yandex\.ru\/music\/album)\/(\d+)(?!\d)(?!\/track\/\d)/;
+const ALBUM_URL_RE = new RegExp(String.raw`${HOST}/album/(\d+)(?!\d)(?!/track/\d)`);
 
 // owner — логин/uid Яндекса, реальный чарсет [A-Za-z0-9._-]; более широкий
 // класс ([^/\s]+) пропускал бы ?/#/пробелоподобное внутрь URL, который
 // собирается конкатенацией в lib.usersPlaylists() (client.ts.getPlaylist).
-export const PLAYLIST_URL_RE = /music\.yandex(?:\.ru)?\/users\/([\w.-]+)\/playlists\/(\d+)/;
+export const PLAYLIST_URL_RE = new RegExp(String.raw`${HOST}/users/([\w.-]+)/playlists/(\d+)`);
 
 export type ParsedQuery =
   | { type: "empty" }

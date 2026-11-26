@@ -1,6 +1,7 @@
 import type { Bot } from "gramio";
 import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
+import { parseSearchQuery } from "../../infra/parsers.ts";
 import { pluralTracks } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
 import type { YandexClient } from "../../yandex/client.ts";
@@ -8,10 +9,10 @@ import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metad
 import type { AlbumData } from "../../yandex/types.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
+import { LOGIN_FIRST } from "../markup.ts";
+import { startTrackUploadReply } from "./common.ts";
 
 const log = getLogger("bot.albums");
-
-const ALBUM_URL_RE = /music\.yandex(?:\.ru)?\/album\/(\d+)/;
 
 function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormattableString {
   const head = format`${albumEmoji(albumType)} ${bold(`${artist} — ${title}`)}`;
@@ -42,7 +43,7 @@ export async function startUpload(
 
   const token = await container.resolveToken(userId);
   if (!token) {
-    await bot.api.sendMessage({ chat_id: chatId, text: "сначала войди через /login" });
+    await bot.api.sendMessage({ chat_id: chatId, text: LOGIN_FIRST });
     return;
   }
 
@@ -50,14 +51,15 @@ export async function startUpload(
   if (!container.albumService.tryBegin(userId)) {
     await bot.api.sendMessage({
       chat_id: chatId,
-      text: "у тебя уже идёт выгрузка — дождись её или нажми «отмена»",
+      text: "у тебя уже идёт выгрузка — дождись или жми «отменить»",
     });
     return;
   }
   let handedOff = false;
+  let progressMsg: ProgressMessage | null = null;
   try {
     const progress = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу ${noun}...` });
-    const progressMsg = new ProgressMessage(bot, chatId, progress.message_id);
+    progressMsg = new ProgressMessage(bot, chatId, progress.message_id);
 
     const yandex = await container.getYandexService(token, userId);
     const album = await fetch(yandex);
@@ -93,6 +95,10 @@ export async function startUpload(
       yandex,
       coverBytes,
     });
+  } catch (e) {
+    log.error(`[${noun}] ошибка user=${userId}: ${e}`);
+    // после передачи слота sendAlbum сам разбирается со своими ошибками
+    if (!handedOff && progressMsg) await progressMsg.edit(format`❌ ошибка, попробуй ещё раз`).catch(() => {});
   } finally {
     if (!handedOff) container.albumService.release(userId);
   }
@@ -112,12 +118,24 @@ export async function startAlbumUpload(
 }
 
 export function registerAlbums(bot: Bot, container: Container): void {
-  bot.hears(ALBUM_URL_RE, async (ctx) => {
-    if (ctx.chat?.type !== "private") return;
-    const m = ALBUM_URL_RE.exec(ctx.text ?? "");
-    if (!m) return;
-    await startAlbumUpload(bot, ctx.chat.id, ctx.from!.id, Number(m[1]), container);
-  });
+  // ссылки на альбом и трек; плейлист — отдельный hears в playlists.ts
+  bot.hears(
+    (ctx) => {
+      const t = parseSearchQuery(ctx.text ?? "").type;
+      return t === "album_link" || t === "track_link";
+    },
+    async (ctx) => {
+      if (ctx.chat?.type !== "private") return;
+      const parsed = parseSearchQuery(ctx.text ?? "");
+      const from = ctx.from!;
+      if (parsed.type === "album_link") {
+        await startAlbumUpload(bot, ctx.chat.id, from.id, parsed.album_id, container);
+      } else if (parsed.type === "track_link") {
+        const user = { id: from.id, username: from.username ?? null, firstName: from.firstName ?? null };
+        await startTrackUploadReply(bot, ctx.chat.id, user, String(parsed.track_id), container);
+      }
+    },
+  );
 
   bot.callbackQuery("cancel_album", async (ctx) => {
     const cancelled = container.albumService.cancel(ctx.from.id);
@@ -135,11 +153,11 @@ export function registerAlbums(bot: Bot, container: Container): void {
     // тап мимо владельца) сжирал бы retry чужого альбома без права на него.
     const peeked = container.albumService.peekRetry(msgId);
     if (!peeked) {
-      await ctx.answer({ text: "слишком поздно, повтори запрос альбома", show_alert: true });
+      await ctx.answer({ text: "слишком поздно — кинь ссылку ещё раз", show_alert: true });
       return;
     }
     if (peeked.userId !== ctx.from.id) {
-      await ctx.answer({ text: "это не твой альбом", show_alert: true });
+      await ctx.answer({ text: "это не твоя выгрузка", show_alert: true });
       return;
     }
 
@@ -154,7 +172,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
     // все проверки прошли — теперь забираем буфер по-настоящему
     const buf = container.albumService.popRetry(msgId);
     if (!buf) {
-      await ctx.answer({ text: "слишком поздно, повтори запрос альбома", show_alert: true });
+      await ctx.answer({ text: "слишком поздно — кинь ссылку ещё раз", show_alert: true });
       return;
     }
 

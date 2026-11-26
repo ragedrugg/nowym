@@ -15,6 +15,10 @@ import { InlineKeyboard } from "gramio";
 import { trackUrl } from "../yandex/urls.ts";
 import { iconFor } from "./iconSet.ts";
 
+/** единые тексты «нет входа»: в сообщении и в алерте (короче). */
+export const LOGIN_FIRST = "сначала войди — /login или кнопка «войти» в /start";
+export const LOGIN_FIRST_ALERT = "сначала войди — /login";
+
 type BtnStyle = "danger" | "primary" | "success";
 interface BtnOpts {
   style?: BtnStyle;
@@ -132,8 +136,10 @@ export function broadcastSendingMarkup(): InlineKeyboard {
 // у карточки (фото) лайк-кнопки нет вовсе — только «слушать»; лайк доступен
 // на аудио-результате трека (trackMarkup withLike=true).
 export function nowPlayingMarkup(trackId: string | number, botUsername: string | null): InlineKeyboard {
-  const kb = new InlineKeyboard().pattern([botUsername ? 2 : 1]);
-  if (botUsername) {
+  // start=track_<uuid> не работает (START_TRACK_RE — только цифры): для подкастов/аудиокниг кнопки «в лс» нет
+  const dmOk = Boolean(botUsername) && /^\d+$/.test(String(trackId));
+  const kb = new InlineKeyboard().pattern([dmOk ? 2 : 1]);
+  if (dmOk) {
     inlineUrl(kb, "💬", "▷", "слушать в лс", `https://t.me/${botUsername}?start=track_${trackId}`);
   }
   inlineUrl(kb, "🔗", "↗", "слушать в плеере", trackUrl(trackId));
