@@ -2,7 +2,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
-import { ensureFileId, injectTrackLinkCards, onChosenResult, registerInline } from "../src/bot/handlers/inline.ts";
+import {
+  ensureFileId,
+  injectRichSearchCards,
+  injectTrackLinkCards,
+  onChosenResult,
+  registerInline,
+} from "../src/bot/handlers/inline.ts";
 import { buildNowPlayingCardResult, renderAndSwapCard } from "../src/bot/handlers/inlineCard.ts";
 import { chatRichSenders, deliverCardAndTrack, PartialDeliveryError } from "../src/bot/richMessage.ts";
 import { TTLCache } from "../src/infra/memoryCache.ts";
@@ -79,6 +85,40 @@ test("injectTrackLinkCards: «ncore <ссылка>» карточки не вс�
     plain,
   );
   assert.equal(plain.length, 2);
+});
+
+// ---------- поиск по названию: «карточка + трек» перед каждым треком ----------
+
+test("injectRichSearchCards: при rich_messages перед каждым треком встаёт npr-карточка, альбомы не трогаем", () => {
+  // getTrackObject получает id уже без префикса «tm:» (его снимает parseTrackResultId)
+  const tracks: Record<string, YaTrack> = { "1": track(1), "2": track(2) };
+  const trackService = {
+    getTrackObject: (id: string) => tracks[id] ?? null,
+  } as never;
+  const container = { botUsername: "nowymbot" } as never;
+  const mk = () => [{ id: "1" }, { id: "tm:2" }, { id: "album:9" }] as unknown[];
+
+  const rich = mk();
+  injectRichSearchCards(container, trackService, { id: 7 }, { richMessages: true, isPagedSearch: true }, rich);
+  assert.deepEqual(
+    rich.map(
+      (r) =>
+        String((r as { id: string }).id)
+          .split(":")
+          .slice(0, 1)[0],
+    ),
+    ["npr", "1", "npr", "tm", "album"],
+    "карточка+трек идёт ПЕРЕД аудио, альбом остаётся как есть",
+  );
+  assert.match(String((rich[0] as { id: string }).id), /^npr:7:1:0$/);
+
+  const off = mk();
+  injectRichSearchCards(container, trackService, { id: 7 }, { richMessages: false, isPagedSearch: true }, off);
+  assert.equal(off.length, 3, "настройка выключена — выдача не меняется");
+
+  const notSearch = mk();
+  injectRichSearchCards(container, trackService, { id: 7 }, { richMessages: true, isPagedSearch: false }, notSearch);
+  assert.equal(notSearch.length, 3, "не поиск по названию (ссылка, лирика, эффект, недавнее) — не трогаем");
 });
 
 // ---------- 2. лимитер: кэшированное не тратит ----------

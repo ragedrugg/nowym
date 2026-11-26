@@ -881,6 +881,39 @@ export function injectTrackLinkCards(
   }
 }
 
+/** поиск по названию при включённом rich_messages: перед аудио каждого трека — «карточка + трек».
+ * Плейсхолдер лёгкий (без сети, трек уже в кэше trackService); позиции воспроизведения у
+ * найденного трека нет, поэтому карточка без линии прогресса. Мутирует `results`. */
+export function injectRichSearchCards(
+  container: Container,
+  trackService: SearchService,
+  user: { id: number; username?: string | null; firstName?: string | null },
+  opts: { richMessages: boolean; isPagedSearch: boolean },
+  results: unknown[],
+): void {
+  if (!opts.richMessages || !opts.isPagedSearch || results.length === 0) return;
+  for (let i = 0; i < results.length; i++) {
+    const trackId = parseTrackResultId(String((results[i] as { id?: string }).id ?? ""));
+    const track = trackId ? trackService.getTrackObject(trackId) : null;
+    if (!track) continue;
+    try {
+      const rich = buildRichNowPlayingResult(
+        container,
+        track,
+        { progress_ms: 0, duration_ms: track.durationMs ?? 0, paused: false },
+        user,
+        true,
+      );
+      if (rich) {
+        results.splice(i, 0, rich);
+        i++; // аудио сдвинулось на одну позицию вправо
+      }
+    } catch (e) {
+      log.warning(`[inline/search] карточка+трек не построена: ${errText(e)}`);
+    }
+  }
+}
+
 // ── обработчики ──────────────────────────────────────────────────────────
 
 async function onInlineQuery(
@@ -1033,6 +1066,13 @@ async function onInlineQuery(
       trackService,
       user,
       { text, richMessages: settings.rich_messages, cardLayout },
+      results,
+    );
+    injectRichSearchCards(
+      container,
+      trackService,
+      user,
+      { richMessages: settings.rich_messages, isPagedSearch },
       results,
     );
 
