@@ -53,8 +53,6 @@ const L = {
   titleSizeMin: 56,
   metaSize: 30,
   metaPadTop: 14,
-  explicitBadgeH: 36,
-  explicitBadgePad: 14,
   waveHeight: 140,
   waveStroke: 10,
   waveAmplitude: 14,
@@ -582,32 +580,6 @@ function drawBackground(
   ctx.fillRect(0, 0, W, H);
 }
 
-/** «!»-маркер откровенного контента в стиле я.музыки — «!» в тонком кольце. */
-function drawExplicitMark(ctx: SKRSContext2D, x: number, y: number, d: number): void {
-  const col = "rgba(255, 255, 255, 0.92)";
-  ctx.save();
-  ctx.translate(x, y);
-  // кольцо
-  const ring = Math.max(2, d * 0.088);
-  ctx.strokeStyle = col;
-  ctx.lineWidth = ring;
-  ctx.beginPath();
-  ctx.arc(d / 2, d / 2, (d - ring) / 2, 0, Math.PI * 2);
-  ctx.stroke();
-  // палочка «!»
-  ctx.fillStyle = col;
-  const bw = d * 0.118;
-  const cx = d / 2;
-  roundRectPath(ctx, cx - bw / 2, d * 0.255, bw, d * 0.585 - d * 0.255, bw / 2);
-  ctx.fill();
-  // точка
-  const dotR = bw * 0.6;
-  ctx.beginPath();
-  ctx.arc(cx, d * 0.715, dotR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
 /** позиция плэйхеда на отрезке [x0, x1] по доле progressMs/durationMs (клэмп 0..1). */
 function computePlayX(x0: number, x1: number, progressMs: number, durationMs: number): number {
   const ratio = Math.max(0, Math.min(1, progressMs / durationMs));
@@ -1053,15 +1025,13 @@ async function drawAttribution(
   }
 }
 
-/** артист + тайтл (+explicit-бейдж), каскадом от artistY (тайтл — под артистом).
+/** артист + тайтл, каскадом от artistY (тайтл — под артистом).
  * Возвращает titleSize — нужен вызывающему для вёрстки meta/лирики под тайтлом. */
 function drawArtistAndTitle(
   ctx: SKRSContext2D,
   lay: LayoutSpec,
   artist: string,
   displayTitle: string,
-  badgeW: number,
-  explicit: boolean,
   artistY: number,
   titleY: number,
   artistMaxW: number,
@@ -1071,20 +1041,10 @@ function drawArtistAndTitle(
   ctx.font = fontStr(F_MEDIUM, lay.artistSize);
   ctx.fillText(artistText, lay.textX, artistY);
 
-  const [titleSize, titleText] = fitTitleToLine(
-    ctx,
-    displayTitle,
-    lay.titleMaxSize,
-    lay.titleMinSize,
-    Math.max(0, lay.textMaxW - badgeW),
-  );
+  const [titleSize, titleText] = fitTitleToLine(ctx, displayTitle, lay.titleMaxSize, lay.titleMinSize, lay.textMaxW);
   ctx.fillStyle = "rgba(255, 255, 255, 0.961)";
   ctx.font = fontStr(F_TITLE, titleSize);
   ctx.fillText(titleText, lay.textX, titleY);
-  if (explicit) {
-    const bx = lay.textX + ctx.measureText(titleText).width + L.explicitBadgePad;
-    drawExplicitMark(ctx, bx, titleY + titleSize * 0.46 - L.explicitBadgeH / 2, L.explicitBadgeH);
-  }
   return titleSize;
 }
 
@@ -1194,8 +1154,6 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
 
   ctx.textBaseline = "top";
   const displayTitle = composeTitleWithVersion(title, meta.version || "");
-  const explicit = Boolean(meta.explicit);
-  const badgeW = explicit ? L.explicitBadgeH + L.explicitBadgePad : 0;
 
   const drawProgressAndTime = (x0: number, maxW: number, waveYCenter: number): void => {
     if (args.hideProgress) return;
@@ -1217,17 +1175,7 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   };
 
   const titleY = lay.mainTextY + lay.artistSize + 18;
-  const titleSize = drawArtistAndTitle(
-    ctx,
-    lay,
-    artist,
-    displayTitle,
-    badgeW,
-    explicit,
-    lay.mainTextY,
-    titleY,
-    lay.artistMaxW,
-  );
+  const titleSize = drawArtistAndTitle(ctx, lay, artist, displayTitle, lay.mainTextY, titleY, lay.artistMaxW);
   const isSide = lay.mode === "side";
 
   if (lyrics && lyrics.lines.length > 0) {
