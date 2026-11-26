@@ -7,12 +7,13 @@
  * клиент) и резолв playable_id → Track. */
 import { EventEmitter } from "node:events";
 import {
-  ANDROID_DEVICE_INFO,
-  type DeviceInfoOverride,
   generateDeviceId,
   Client as LibClient,
   type Track as LibTrack,
   RealtimeClient,
+  type RealtimeOptions,
+  YnisonDeviceDisplacedError,
+  YnisonUnauthorizedError,
 } from "@dvxch/yandex-music";
 import { createInterruptibleSleep, withTimeout } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
@@ -26,16 +27,43 @@ import type { CurrentTrack } from "../yandex/ynison.ts";
 
 const log = getLogger("services.now_playing");
 
-// Android-идентитет наблюдателя (сервер раскрывает больше полей известному app_name).
-const WATCHER_DEVICE_INFO: DeviceInfoOverride = { ...ANDROID_DEVICE_INFO, title: "Мойва" };
+// Web-идентитет: Android (headerType 2) Ynison отклоняет с 500140000 / go-away 3600.
 
 const NO_TOKEN_RETRY_MS = 60_000;
 const TOKEN_POLL_MS = 30_000;
+// Терминальные ошибки Ynison: RealtimeClient.start() на них молча резолвится.
+const UNAUTHORIZED_MAX_BACKOFF_MS = 600_000;
+const DISPLACED_BASE_BACKOFF_MS = 30_000;
+const DISPLACED_MAX_BACKOFF_MS = 300_000;
+// минимальная пауза между проходами для любого быстрого выхода из start().
+const MIN_LOOP_DELAY_MS = 1_000;
+const GENERIC_MAX_BACKOFF_MS = 60_000;
+// сессия, продержавшаяся столько, сбрасывает backoff.
+const STABLE_SESSION_MS = 60_000;
 const TRACKS_LOOKUP_TIMEOUT_MS = 15_000;
 const TRACK_CACHE_LIMIT = 200;
 // ws жива, но фреймы молчат дольше порога → форс-реконнект (broken pipe без RST).
 const STALE_WS_MS = 120_000;
 const RECENT_HISTORY_MAX = 20;
+
+/** то, что watcher берёт от RealtimeClient (для подмены в тестах). */
+export type RealtimeLike = Pick<
+  RealtimeClient,
+  "on" | "start" | "stop" | "terminalError" | "nowPlaying" | "lastStateAgeMs"
+>;
+
+export interface WatcherDeps {
+  /** по умолчанию usersDb.getToken(ownerId). */
+  readToken?: () => Promise<string | null>;
+  /** по умолчанию new RealtimeClient(opts). */
+  createRealtime?: (opts: RealtimeOptions) => RealtimeLike;
+  /** по умолчанию прерываемый sleep; stop() в любом случае обрывает ожидание. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  /** обновление токена владельца после unauthorized (container.resolveToken);
+   * результат кладётся в БД самим колбэком, run() перечитает токен через readToken. */
+  refreshToken?: () => Promise<string | null>;
+}
 
 /** JSON-safe снимок трека для /now-playing (текущий и история). */
 interface NowPlayingTrack {
@@ -66,21 +94,32 @@ export class NowPlayingWatcher extends EventEmitter {
   private runPromise: Promise<void> | null = null;
   private readonly sleeper = createInterruptibleSleep();
 
-  private rt: RealtimeClient | null = null;
+  private readonly deps: WatcherDeps;
+  private stopSignal: Promise<void> = Promise.resolve();
+  private stopSignalResolve: (() => void) | null = null;
+  private lastToken: string | null = null;
+  private unauthorizedCount = 0;
+  private displacedCount = 0;
+  private genericCount = 0;
+  private terminalLogged = false;
+
+  private rt: RealtimeLike | null = null;
   private lib: LibClient | null = null;
   private libToken: string | null = null;
   // true с первого state-фрейма сессии (событие open), false на реконнект/stale.
   private connected = false;
   // lookup-кэш lib-Track по playable_id.
   private trackCache = new LRUMap<string, LibTrack>(TRACK_CACHE_LIMIT);
-  // СТАБИЛЬНЫЙ id на весь процесс: переживает и реконнекты (внутри RealtimeClient),
-  // и пересоздание клиента при смене токена — иначе Ynison дедуплицирует наблюдателя.
+  // id на жизнь процесса: переживает реконнекты внутри RealtimeClient и смену
+  // токена (пересоздание клиента). Случайный, чтобы не вытеснять другую сессию
+  // с тем же deviceId ("dislocated by newly connected device...").
   private readonly deviceId = generateDeviceId();
 
-  constructor(usersDb: UsersDb, ownerId: number) {
+  constructor(usersDb: UsersDb, ownerId: number, deps: WatcherDeps = {}) {
     super();
     this.usersDb = usersDb;
     this.ownerId = ownerId;
+    this.deps = deps;
   }
 
   /** для inline-handler: {track, paused, duration_ms, progress_ms}.
@@ -110,12 +149,16 @@ export class NowPlayingWatcher extends EventEmitter {
     if (this.running) return;
     this.running = true;
     this.stopRequested = false;
+    this.stopSignal = new Promise<void>((resolve) => {
+      this.stopSignalResolve = resolve;
+    });
     this.runPromise = this.run();
   }
 
   async stop(): Promise<void> {
     this.stopRequested = true;
     this.sleeper.wake();
+    this.stopSignalResolve?.();
     this.rt?.stop();
     if (this.runPromise) {
       try {
@@ -131,7 +174,8 @@ export class NowPlayingWatcher extends EventEmitter {
   /** ленивый lib-клиент под текущий токен; пересоздаём при смене токена. */
   private ensureLib(token: string): LibClient {
     if (this.lib !== null && this.libToken === token) return this.lib;
-    this.lib = new LibClient({ token });
+    if (this.lib === null) this.lib = new LibClient({ token });
+    else this.lib.token = token;
     this.libToken = token;
     this.trackCache = new LRUMap<string, LibTrack>(TRACK_CACHE_LIMIT);
     return this.lib;
@@ -194,7 +238,7 @@ export class NowPlayingWatcher extends EventEmitter {
 
   private async readToken(): Promise<string | null> {
     try {
-      return await this.usersDb.getToken(this.ownerId);
+      return await (this.deps.readToken ? this.deps.readToken() : this.usersDb.getToken(this.ownerId));
     } catch (e) {
       log.warning(`[np] getToken упал: ${e}`);
       return null;
@@ -206,19 +250,20 @@ export class NowPlayingWatcher extends EventEmitter {
    * гонку первым, вызывающая сторона обязана дёрнуть cancel(), иначе этот
    * цикл осиротеет и продолжит опрашивать БД раз в TOKEN_POLL_MS вечно, а
    * каждая следующая итерация run() будет плодить ещё один такой же. */
-  private watchToken(token: string): { promise: Promise<void>; cancel: () => void } {
+  private watchToken(token: string): { promise: Promise<boolean>; cancel: () => void } {
     const { sleep: interruptibleSleep, wake } = createInterruptibleSleep();
     let cancelled = false;
     const promise = (async () => {
       while (!this.stopRequested && !cancelled) {
         await interruptibleSleep(TOKEN_POLL_MS);
-        if (this.stopRequested || cancelled) return;
+        if (this.stopRequested || cancelled) return false;
         const fresh = await this.readToken();
         if (fresh && fresh !== token) {
           log.info("[np] токен владельца сменился — пересоздаю realtime-клиент");
-          return;
+          return true;
         }
       }
+      return false;
     })();
     return {
       promise,
@@ -229,9 +274,58 @@ export class NowPlayingWatcher extends EventEmitter {
     };
   }
 
+  /** пауза, обрываемая stop() (в том числе при подменённом deps.sleep). */
+  private async wait(ms: number): Promise<void> {
+    const sleep = this.deps.sleep ?? this.sleeper.sleep;
+    await Promise.race([sleep(ms), this.stopSignal]);
+  }
+
+  private resetBackoff(): void {
+    this.unauthorizedCount = 0;
+    this.displacedCount = 0;
+    this.genericCount = 0;
+    this.terminalLogged = false;
+  }
+
+  /** пауза после выхода rt.start(): start() на терминальных ошибках резолвится
+   * молча, без паузы получился бы горячий цикл (БД + новый WS + лог на проход). */
+  private async backoffAfterExit(terminal: Error | null, upMs: number): Promise<void> {
+    if (upMs >= STABLE_SESSION_MS) this.resetBackoff();
+    const logTerminal = (msg: string): void => {
+      if (this.terminalLogged) log.debug(msg);
+      else log.warning(msg);
+      this.terminalLogged = true;
+    };
+    if (terminal instanceof YnisonUnauthorizedError) {
+      const ms = Math.min(NO_TOKEN_RETRY_MS * 2 ** Math.min(this.unauthorizedCount++, 10), UNAUTHORIZED_MAX_BACKOFF_MS);
+      logTerminal(`[np] Ynison: токен отклонён (${terminal.message}), retry через ${(ms / 1000).toFixed(0)}s`);
+      await this.wait(ms);
+      if (this.stopRequested || !this.deps.refreshToken) return;
+      try {
+        await this.deps.refreshToken();
+      } catch (e) {
+        log.warning(`[np] обновление токена упало: ${e}`);
+      }
+      return;
+    }
+    if (terminal instanceof YnisonDeviceDisplacedError) {
+      const ms = Math.min(
+        DISPLACED_BASE_BACKOFF_MS * 2 ** Math.min(this.displacedCount++, 10),
+        DISPLACED_MAX_BACKOFF_MS,
+      );
+      logTerminal(`[np] Ynison: устройство вытеснено (${terminal.message}), retry через ${(ms / 1000).toFixed(0)}s`);
+      await this.wait(ms);
+      return;
+    }
+    const ms = Math.min(MIN_LOOP_DELAY_MS * 2 ** Math.min(this.genericCount++, 10), GENERIC_MAX_BACKOFF_MS);
+    if (terminal) log.warning(`[np] realtime завершён: ${terminal.message}, retry через ${(ms / 1000).toFixed(0)}s`);
+    await this.wait(ms);
+  }
+
   /** главный цикл: токен → realtime-клиент (он сам реконнектится) → пересоздание
    * при смене токена. Цикл крутится, пока не stop(). */
   private async run(): Promise<void> {
+    const now = this.deps.now ?? Date.now;
     while (!this.stopRequested) {
       const token = await this.readToken();
       if (!token) {
@@ -239,22 +333,29 @@ export class NowPlayingWatcher extends EventEmitter {
           `[np] нет токена для owner_id=${this.ownerId}, retry через ${(NO_TOKEN_RETRY_MS / 1000).toFixed(0)}s`,
         );
         this.current = null;
-        await this.sleeper.sleep(NO_TOKEN_RETRY_MS);
+        await this.wait(NO_TOKEN_RETRY_MS);
         continue;
+      }
+      if (token !== this.lastToken) {
+        this.resetBackoff();
+        this.lastToken = token;
       }
 
       this.ensureLib(token);
-      const rt = new RealtimeClient({
+      const opts: RealtimeOptions = {
         token,
         deviceId: this.deviceId,
-        deviceInfo: WATCHER_DEVICE_INFO,
         staleTimeoutMs: STALE_WS_MS,
         resolveTrack: (playableId) => this.resolveTrack(playableId),
-      });
+      };
+      const rt = this.deps.createRealtime ? this.deps.createRealtime(opts) : new RealtimeClient(opts);
       rt.on("open", () => {
         this.connected = true;
       });
       rt.on("reconnect", () => {
+        this.connected = false;
+      });
+      rt.on("close", () => {
         this.connected = false;
       });
       rt.on("stale", (idleMs) => {
@@ -267,9 +368,13 @@ export class NowPlayingWatcher extends EventEmitter {
 
       log.info("[np] подключение к Ynison");
       const watcher = this.watchToken(token);
+      const startedAt = now();
+      let tokenChanged = false;
+      let terminal: Error | null = null;
       try {
         // rt.start() реконнектится бесконечно; гонка с watchToken рвёт его на смене токена.
-        await Promise.race([rt.start(), watcher.promise]);
+        tokenChanged = await Promise.race([rt.start().then(() => false), watcher.promise]);
+        terminal = rt.terminalError;
       } catch (e) {
         log.error(`[np] неожиданная ошибка realtime-цикла: ${e}`);
       } finally {
@@ -283,6 +388,12 @@ export class NowPlayingWatcher extends EventEmitter {
         this.current = null;
         this.emit("change");
       }
+      if (this.stopRequested) break;
+      if (tokenChanged) {
+        this.resetBackoff();
+        continue;
+      }
+      await this.backoffAfterExit(terminal, now() - startedAt);
     }
   }
 }

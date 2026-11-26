@@ -41,6 +41,8 @@ export function rowToCachedTrack(r: Record<string, unknown>): CachedTrack {
   };
 }
 
+export type StaleTrack = CachedTrack & { quality: string };
+
 export class CacheDb {
   async initSchema(): Promise<void> {
     // UNLOGGED — кэш файлов, можем потерять при crash postgres, не критично
@@ -161,9 +163,9 @@ export class CacheDb {
     );
   }
 
-  async getStaleUncached(olderThanHours = 24, limit = 50): Promise<CachedTrack[]> {
+  async getStaleUncached(olderThanHours = 24, limit = 50): Promise<StaleTrack[]> {
     const res = await cachePool.query<Record<string, unknown>>(
-      `SELECT track_id, artist, title, album, cover_url, duration, year, label, genre
+      `SELECT track_id, quality, artist, title, album, cover_url, duration, year, label, genre
        FROM telegram_cache
        WHERE is_cached = FALSE AND updated_at < NOW() - $1 * INTERVAL '1 hour'
        ORDER BY updated_at ASC
@@ -171,7 +173,18 @@ export class CacheDb {
       [olderThanHours, limit],
     );
     // невыбранные запросом поля rowToCachedTrack молча дефолтит через ?? / Boolean(undefined)
-    return res.rows.map(rowToCachedTrack);
+    // PK (track_id, quality) уже даёт уникальность строк; страхуемся от дублей на случай смены схемы
+    const seen = new Set<string>();
+    const out: StaleTrack[] = [];
+    for (const r of res.rows) {
+      const quality = typeof r.quality === "string" && r.quality !== "" ? r.quality : "lossy";
+      const t = { ...rowToCachedTrack(r), quality };
+      const key = `${t.track_id}:${quality}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(t);
+    }
+    return out;
   }
 
   /** двигает updated_at без апгрейда is_cached — трек, который упал на

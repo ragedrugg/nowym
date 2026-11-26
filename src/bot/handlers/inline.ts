@@ -6,9 +6,11 @@ import { parseSearchQuery } from "../../infra/parsers.ts";
 import type { InlineResult, SearchService } from "../../services/search.ts";
 import { getSettings } from "../../settings.ts";
 import type { CachedTrack } from "../../storage/types.ts";
-import { makeEncrawDecrypt, type YandexClient } from "../../yandex/client.ts";
+import { losslessUrlPicker, type YandexClient } from "../../yandex/client.ts";
+import { normalizeCoverUrl } from "../../yandex/media.ts";
 import {
   type AudioQuality,
+  buildCardMeta,
   buildTrackMetadata,
   enrichMetadataFromAlbum,
   findBestLyricsLine,
@@ -17,12 +19,23 @@ import {
   trackIsTooLong,
 } from "../../yandex/metadata.ts";
 import type { YaTrack } from "../../yandex/types.ts";
-import { buildLyricsQuote, buildTrackCaption } from "../captions.ts";
+import { buildLyricsQuote, buildTrackCaption, senderHandleOf } from "../captions.ts";
+import { buildCardImage, mintCardFileId } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
 import { progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
+import { chatRichSenders, deliverCardAndTrack, errText, type RichAudio } from "../richMessage.ts";
 import { safeAnswerCb, safeEditMedia, safeSetReplyMarkup, say } from "../safeApi.ts";
-import { buildLyricsCardResult, buildNowPlayingCardResult, isCardResultId, renderAndSwapCard } from "./inlineCard.ts";
+import {
+  buildLyricsCardResult,
+  buildNowPlayingCardResult,
+  buildRichNowPlayingResult,
+  isCardResultId,
+  isRichResultId,
+  peekCardPending,
+  renderAndSwapCard,
+  resolveRichCard,
+} from "./inlineCard.ts";
 
 const log = getLogger("bot.inline");
 
@@ -140,7 +153,7 @@ async function resolveTrack(
   return { cached, trackObj: obj, yandex };
 }
 
-/** lossless: urls зашифрованы, требуют AES-CTR-расшифровку; кэш под своим тиром. */
+/** lossless (raw flac-mp4, без шифрования); кэш под своим тиром. lossy-ответ приходит как null → вызывающий деградирует. */
 async function downloadFreshTrackLossless(
   container: Container,
   trackObj: YaTrack,
@@ -153,18 +166,9 @@ async function downloadFreshTrackLossless(
   ]);
   if (info === null) return [false, null, null, null];
   const meta = { ...metadata, codec: info.codec, bitrate_kbps: info.bitrate };
-  // каждая racing-попытка берёт случайный url из списка — естественный спред по CDN.
-  const urls = info.links();
-  const pickUrl = async (): Promise<string | null> => urls[Math.floor(Math.random() * urls.length)] ?? null;
-  const decrypt = makeEncrawDecrypt(info.key);
-  const fileId = await container.cacheService.downloadAndCacheTrack(
-    trackId,
-    pickUrl,
-    meta,
-    info.codec,
-    decrypt,
-    "lossless",
-  );
+  // каждая racing-попытка берёт случайный url из списка; протухший список обновляется один раз.
+  const pickUrl = losslessUrlPicker(info, () => yandex.getLosslessDownload(trackObj));
+  const fileId = await container.cacheService.downloadAndCacheTrack(trackId, pickUrl, meta, info.codec, "lossless");
   return [true, fileId, info.codec ?? null, info.bitrate ?? null];
 }
 
@@ -243,7 +247,6 @@ async function buildEffectTrack(
     () => yandex.directLinkFromInfo(info),
     meta,
     info.codec,
-    undefined,
     tier,
     { filter: effect.filter },
   );
@@ -301,11 +304,11 @@ export async function ensureFileId(
   return { ok: true, fileId, codec, bitrateKbps, degraded };
 }
 
-async function buildEmptyResults(
+export async function buildEmptyResults(
   container: Container,
   trackService: SearchService,
   user: { id: number; username?: string | null; firstName?: string | null },
-  opts: { layout: string; cardLayout: string; sendMode: string },
+  opts: { layout: string; cardLayout: string; sendMode: string; richMessages?: boolean },
   signal?: AbortSignal,
 ): Promise<{ results: unknown[]; nextOffset: string }> {
   let current: { track?: YaTrack | null; progress_ms?: number; duration_ms?: number; paused?: boolean } | null = null;
@@ -329,6 +332,15 @@ async function buildEmptyResults(
   const results: unknown[] = [];
 
   if (track) {
+    // «карточка+трек» первым; обычные аудио и карточка остаются следом (старые клиенты)
+    if (opts.richMessages) {
+      try {
+        const rich = buildRichNowPlayingResult(container, track, current!, user);
+        if (rich) results.push(rich);
+      } catch (e) {
+        log.warning(`[inline] rich-плейсхолдер не построен: ${errText(e)}`);
+      }
+    }
     const audio = await trackService
       .createInlineResultFromTrack(track, opts.layout, opts.sendMode, signal)
       .catch((e) => {
@@ -341,7 +353,7 @@ async function buildEmptyResults(
       const cardResult = buildNowPlayingCardResult(container, track, current!, user, opts.cardLayout);
       if (cardResult) results.push(cardResult);
     } catch (e) {
-      log.warning(`[inline] карточка не построена: ${e}`);
+      log.warning(`[inline] карточка не построена: ${errText(e)}`);
     }
   }
 
@@ -356,7 +368,129 @@ async function buildEmptyResults(
   return { results, nextOffset: recent.nextOffset };
 }
 
-/** общий путь для deep-link и «что играет». */
+/** позиция на карточке: замораживается в момент команды. */
+export interface CardPosition {
+  progressMs: number;
+  durationMs: number;
+  paused: boolean;
+}
+
+function ensureErrorText(kind: "not_found" | "too_long" | "no_variants" | "failed", trackObj: YaTrack | null) {
+  return kind === "not_found"
+    ? format`❌ трек не найден`
+    : kind === "too_long"
+      ? format`❌ трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет, лимит 50 мб`
+      : kind === "no_variants"
+        ? format`❌ нет вариантов скачивания`
+        : format`❌ не удалось скачать`;
+}
+
+/** rich-ветка sendTrackToChat (настройка «карточка+трек» вкл.): карточка и трек одним
+ * сообщением; при сбое — отдельные карточка и трек из тех же file_id (фолбэк молча). */
+async function sendRichCardTrackToChat(a: {
+  bot: Bot;
+  chatId: number;
+  userId: number;
+  user: { id: number; username?: string | null; firstName?: string | null };
+  container: Container;
+  token: string;
+  trackId: string;
+  trackObj: YaTrack;
+  cached: CachedTrack | null;
+  yandex: YandexClient;
+  card: CardPosition;
+  quality: AudioQuality;
+  trackLayout: string;
+  statusMsgId: number | null;
+}): Promise<void> {
+  const { bot, chatId, userId, container, trackId, trackObj, statusMsgId } = a;
+  const [artist, title] = formatTrackBasics(trackObj, "");
+  let failKind: Extract<EnsureResult, { ok: false }>["kind"] | null = null;
+  let obtained = false;
+  const res = await deliverCardAndTrack({
+    label: `chat user=${userId} track=${trackId}`,
+    card: async () => {
+      const settings = await container.getUserSettings(userId);
+      const image = await buildCardImage({
+        bot,
+        container,
+        userId,
+        token: a.token,
+        coverUrl: normalizeCoverUrl(trackObj.coverUri ?? "", "1000x1000"),
+        title,
+        artist,
+        progressMs: a.card.progressMs,
+        durationMs: a.card.durationMs || trackObj.durationMs || 0,
+        paused: a.card.paused,
+        senderHandle: senderHandleOf(a.user),
+        meta: buildCardMeta(trackObj),
+        settings,
+      });
+      return mintCardFileId(bot, container.channelId, image, `chat:${trackId}`);
+    },
+    track: async () => {
+      const r = await ensureFileId(container, a.cached, trackObj, a.yandex, trackId, {
+        quality: a.quality,
+        onDownloadStart: async () => {
+          if (statusMsgId === null) return;
+          try {
+            await bot.api.editMessageText({
+              chat_id: chatId,
+              message_id: statusMsgId,
+              text: format`⬇️ качаю...`,
+            } as never);
+          } catch {
+            /* ignore */
+          }
+        },
+      });
+      if (!r.ok) {
+        failKind = r.kind;
+        return null;
+      }
+      obtained = true;
+      return {
+        fileId: r.fileId,
+        title,
+        performer: artist,
+        durationSec: trackObj.durationMs ? trackObj.durationMs / 1000 : (a.cached?.duration ?? null),
+        degraded: r.degraded,
+      };
+    },
+    ...chatRichSenders(bot, chatId, { trackId, trackLayout: a.trackLayout, botUsername: container.botUsername }),
+  });
+  if (res === "unknown") {
+    // rich-запрос мог дойти (нет ответа API): ничего не досылаем, чтобы не продублировать
+    await say(
+      bot,
+      chatId,
+      statusMsgId,
+      format`⚠️ не удалось подтвердить отправку — проверь чат, если трека нет, повтори`,
+    );
+    return;
+  }
+  if (res === "none" || !obtained) {
+    // карточка (если вышла) уже отправлена фолбэком; статус превращаем в ошибку, как в обычном пути
+    await say(
+      bot,
+      chatId,
+      statusMsgId,
+      failKind ? ensureErrorText(failKind, trackObj) : format`❌ ошибка, попробуй ещё раз`,
+    );
+    return;
+  }
+  void a.yandex.reportPlayback(trackObj);
+  if (statusMsgId !== null) {
+    try {
+      await bot.api.deleteMessage({ chat_id: chatId, message_id: statusMsgId });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** общий путь для deep-link и «что играет». card+user — только если вызывающий хочет
+ * карточку; она рисуется при включённой настройке rich_messages. */
 export async function sendTrackToChat(args: {
   bot: Bot;
   chatId: number;
@@ -367,6 +501,8 @@ export async function sendTrackToChat(args: {
   token?: string | null;
   statusMsgId?: number | null;
   checkLimit?: boolean;
+  user?: { id: number; username?: string | null; firstName?: string | null };
+  card?: CardPosition;
 }): Promise<void> {
   const { bot, chatId, userId, container, trackId } = args;
   const statusMsgId = args.statusMsgId ?? null;
@@ -398,7 +534,28 @@ export async function sendTrackToChat(args: {
 
   try {
     const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId, args.trackObj ?? null);
-    const quality = (await container.getUserSettings(userId)).track_quality as AudioQuality;
+    const settings = await container.getUserSettings(userId);
+    const quality = settings.track_quality as AudioQuality;
+
+    if (args.card && args.user && trackObj && settings.rich_messages) {
+      await sendRichCardTrackToChat({
+        bot,
+        chatId,
+        userId,
+        user: args.user,
+        container,
+        token,
+        trackId,
+        trackObj,
+        cached,
+        yandex,
+        card: args.card,
+        quality,
+        trackLayout: settings.track_layout,
+        statusMsgId,
+      });
+      return;
+    }
 
     const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
       quality,
@@ -416,15 +573,7 @@ export async function sendTrackToChat(args: {
       },
     });
     if (!res.ok) {
-      const text =
-        res.kind === "not_found"
-          ? format`❌ трек не найден`
-          : res.kind === "too_long"
-            ? format`❌ трек слишком длинный (${formatDurationHuman(trackObj?.durationMs)}) — telegram не примет, лимит 50 мб`
-            : res.kind === "no_variants"
-              ? format`❌ нет вариантов скачивания`
-              : format`❌ не удалось скачать`;
-      await say(bot, chatId, statusMsgId, text);
+      await say(bot, chatId, statusMsgId, ensureErrorText(res.kind, trackObj));
       return;
     }
 
@@ -527,6 +676,7 @@ interface QueryDispatchOpts {
   layout: string;
   sendMode: string;
   cardLayout: string;
+  richMessages: boolean;
   pageSize: number;
   timeout: number;
 }
@@ -549,13 +699,14 @@ async function dispatchQuery(
     layout,
     sendMode,
     cardLayout,
+    richMessages,
     pageSize,
     timeout,
   } = opts;
 
   if (!text && !offset) {
     return withTimeout(
-      buildEmptyResults(container, trackService, user, { layout, cardLayout, sendMode }, signal),
+      buildEmptyResults(container, trackService, user, { layout, cardLayout, sendMode, richMessages }, signal),
       timeout,
     );
   }
@@ -772,7 +923,20 @@ async function onInlineQuery(
         container,
         trackService,
         user,
-        { text, offset, searchText, isRecent, isPagedSearch, isLyric, layout, sendMode, cardLayout, pageSize, timeout },
+        {
+          text,
+          offset,
+          searchText,
+          isRecent,
+          isPagedSearch,
+          isLyric,
+          layout,
+          sendMode,
+          cardLayout,
+          richMessages: settings.rich_messages,
+          pageSize,
+          timeout,
+        },
         ac.signal,
       );
       results = built.results;
@@ -842,7 +1006,71 @@ async function onInlineQuery(
   }
 }
 
-async function onChosenResult(
+/** `npr:` после chosen: лимитер → resolveRichCard (карточка + трек параллельно). Любой
+ * исход, кроме успеха/фолбэка, заканчивается кнопкой с load: — плейсхолдер не залипает. */
+export async function chosenRichCardTrack(
+  bot: Bot,
+  container: Container,
+  resultId: string,
+  inlineMsgId: string,
+  userId: number,
+): Promise<void> {
+  const payload = peekCardPending(resultId);
+  if (payload === null) {
+    await resolveRichCard(bot, container, resultId, inlineMsgId, async () => null); // → expired + retry
+    return;
+  }
+  const trackId = String(payload.trackId);
+  if (payload.userId !== userId) {
+    // защита в глубину: стэш чужого пользователя трактуем как протухший
+    log.warning(`[chosen] rich ${resultId}: стэш user=${payload.userId}, chosen user=${userId} — игнор`);
+    await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
+    return;
+  }
+  let token: string | null;
+  try {
+    const [allowed, retryAfter] = container.downloadLimiter.check(userId);
+    if (!allowed) {
+      await safeSetReplyMarkup(
+        bot,
+        inlineMsgId,
+        progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`),
+      );
+      return;
+    }
+    token = await container.resolveToken(userId);
+  } catch (e) {
+    log.error(`[chosen] rich ${resultId}: токен/лимит: ${errText(e)}`);
+    await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
+    return;
+  }
+  if (!token) {
+    await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
+    return;
+  }
+  const getAudio = async (): Promise<RichAudio | null> => {
+    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const settings = await container.getUserSettings(userId);
+    const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
+      quality: settings.track_quality as AudioQuality,
+    });
+    if (!res.ok) {
+      log.error(`[chosen] rich: скачивание не удалось track=${trackId} (${res.kind})`);
+      return null;
+    }
+    const durationMs = trackObj?.durationMs ?? null;
+    return {
+      fileId: res.fileId,
+      title: payload.title,
+      performer: payload.artist,
+      durationSec: durationMs ? durationMs / 1000 : (cached?.duration ?? null),
+      degraded: res.degraded,
+    };
+  };
+  await resolveRichCard(bot, container, resultId, inlineMsgId, getAudio);
+}
+
+export async function onChosenResult(
   ctx: { from: { id: number }; resultId: string; inlineMessageId?: string | null; query?: string | null },
   container: Container,
   bot: Bot,
@@ -863,6 +1091,11 @@ async function onChosenResult(
   }
 
   if (resultId.startsWith("album:")) return;
+
+  if (isRichResultId(resultId)) {
+    if (inlineMsgId) await chosenRichCardTrack(bot, container, resultId, inlineMsgId, userId);
+    return;
+  }
 
   if (isCardResultId(resultId)) {
     if (!inlineMsgId) return;

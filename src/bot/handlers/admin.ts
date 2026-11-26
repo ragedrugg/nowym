@@ -1,13 +1,16 @@
-import type { Bot } from "gramio";
+import type { Bot, InlineKeyboard } from "gramio";
 import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { formatLatency, measureLatency } from "../../infra/ping.ts";
 import { ProgressMessage } from "../../services/albums.ts";
 import { broadcastProgressText } from "../../services/broadcast.ts";
+import { formatYandexHealth, getYandexHealth } from "../../services/yandexHealth.ts";
 import { getSettings } from "../../settings.ts";
 import { cachePool, usersPool } from "../../storage/pool.ts";
+import { errorDetail } from "../../yandex/health.ts";
 import type { Container } from "../container.ts";
-import { broadcastConfirmMarkup, broadcastSendingMarkup } from "../markup.ts";
+import { broadcastConfirmMarkup, broadcastSendingMarkup, healthMarkup, yandexHealthMarkup } from "../markup.ts";
+import { safeAnswerCb, safeEditApi } from "../safeApi.ts";
 
 const log = getLogger("bot.admin");
 
@@ -25,51 +28,50 @@ export function isAdmin(userId: number): boolean {
   return userId === adminId;
 }
 
-export function registerAdmin(bot: Bot, container: Container): void {
-  bot.command("health", async (ctx) => {
-    if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
-    const status = await ctx.reply("⏳ собираю статус...");
+async function buildMainHealth(
+  bot: Bot,
+  container: Container,
+): Promise<{ text: FormattableString; markup: InlineKeyboard }> {
+  const [users, counts, usersSize, cacheSize, tgMs, ymMs] = await Promise.all([
+    container.usersDb.count().catch(() => null),
+    container.cacheDb.counts().catch(() => null),
+    container.usersDb.dbSizeBytes().catch(() => 0),
+    container.cacheDb.dbSizeBytes().catch(() => 0),
+    measureLatency(TG_API, container.httpClient),
+    measureLatency(YM_API, container.httpClient),
+  ]);
 
-    const [users, counts, usersSize, cacheSize, tgMs, ymMs] = await Promise.all([
-      container.usersDb.count().catch(() => null),
-      container.cacheDb.counts().catch(() => null),
-      container.usersDb.dbSizeBytes().catch(() => 0),
-      container.cacheDb.dbSizeBytes().catch(() => 0),
-      measureLatency(TG_API, container.httpClient),
-      measureLatency(YM_API, container.httpClient),
-    ]);
+  const dbOk = users !== null && counts !== null;
+  const [totalTracks, cachedTracks] = counts ?? [0, 0];
+  const dbSizeMb = (usersSize + cacheSize) / (1024 * 1024);
+  const tc = container.trackCache.stats();
+  const ac = container.avatarCache.stats();
 
-    const dbOk = users !== null && counts !== null;
-    const [totalTracks, cachedTracks] = counts ?? [0, 0];
-    const dbSizeMb = (usersSize + cacheSize) / (1024 * 1024);
-    const tc = container.trackCache.stats();
-    const ac = container.avatarCache.stats();
+  let channelOk = false;
+  try {
+    const chat = await bot.api.getChat({ chat_id: getSettings().TELEGRAM_CHANNEL_ID });
+    channelOk = chat != null;
+  } catch (e) {
+    log.warning(`[admin] кэш-канал недоступен: ${e}`);
+  }
 
-    let channelOk = false;
-    try {
-      const chat = await bot.api.getChat({ chat_id: getSettings().TELEGRAM_CHANNEL_ID });
-      channelOk = chat != null;
-    } catch (e) {
-      log.warning(`[admin] кэш-канал недоступен: ${e}`);
-    }
+  const flag = (ok: boolean): FormattableString | string => (ok ? "✅" : "❌");
+  const tgOk = tgMs !== null && tgMs < 1000;
+  const ymOk = ymMs !== null && ymMs < 1000;
+  const botUserOk = Boolean(container.botUsername);
 
-    const flag = (ok: boolean): FormattableString | string => (ok ? "✅" : "❌");
-    const tgOk = tgMs !== null && tgMs < 1000;
-    const ymOk = ymMs !== null && ymMs < 1000;
-    const botUserOk = Boolean(container.botUsername);
+  const w = container.npWatcher?.health() ?? null;
+  const wAge = w?.lastStateAgeMs ?? null;
+  const wOk = Boolean(w?.running && w?.connected);
+  const wLine =
+    w === null
+      ? format`${flag(false)} ynison-watcher: не запущен (OWNER_ID=0)`
+      : format`${flag(wOk)} ynison-watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : `${Math.round(wAge / 1000)}с назад`}`;
 
-    const w = container.npWatcher?.health() ?? null;
-    const wAge = w?.lastStateAgeMs ?? null;
-    const wOk = Boolean(w?.running && w?.connected);
-    const wLine =
-      w === null
-        ? format`${flag(false)} ynison-watcher: не запущен (OWNER_ID=0)`
-        : format`${flag(wOk)} ynison-watcher: ${w.connected ? "подключён" : "нет ws"}, последний кадр ${wAge === null ? "—" : Math.round(wAge / 1000) + "с назад"}`;
+  const up = usersPool.stats();
+  const cp = cachePool.stats();
 
-    const up = usersPool.stats();
-    const cp = cachePool.stats();
-
-    const text = format`📊 ${bold("статус")}
+  const text = format`📊 ${bold("статус")}
 
 ${bold("сеть")}
 ${flag(tgOk)} telegram: ${formatLatency(tgMs)}
@@ -88,7 +90,60 @@ ${bold("кэши (in-memory)")}
 🔎 поиск: ${tc.size} зап., hit-rate ${tc.hit_rate}
 🖼 аватарки: ${ac.size} шт., hit-rate ${ac.hit_rate}
 👤 владельцы инлайнов: ${container.inlineOwners.size}`;
-    await bot.api.editMessageText({ chat_id: ctx.chat.id, message_id: status.id, text } as never);
+  return { text, markup: healthMarkup() };
+}
+
+export function registerAdmin(bot: Bot, container: Container): void {
+  bot.command("health", async (ctx) => {
+    if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
+    const status = await ctx.reply("⏳ собираю статус...");
+    const { text, markup } = await buildMainHealth(bot, container);
+    await bot.api.editMessageText({
+      chat_id: ctx.chat.id,
+      message_id: status.id,
+      text,
+      reply_markup: markup,
+    } as never);
+  });
+
+  bot.callbackQuery("health:ym", async (ctx) => {
+    const chat = ctx.message?.chat;
+    if (chat?.type !== "private" || !ctx.from || !isAdmin(ctx.from.id)) {
+      await safeAnswerCb(ctx, { text: "недоступно", show_alert: true });
+      return;
+    }
+    await safeAnswerCb(ctx);
+    const messageId = ctx.message!.id;
+    try {
+      await safeEditApi(
+        bot,
+        { chatId: chat.id, messageId },
+        format`⏳ ${bold("Яндекс Музыка")}: собираю статус...`,
+        yandexHealthMarkup(),
+      );
+      const report = await getYandexHealth(container, true);
+      await safeEditApi(bot, { chatId: chat.id, messageId }, formatYandexHealth(report), yandexHealthMarkup());
+    } catch (e) {
+      log.warning(`[admin] health:ym упал: ${e}`);
+      await safeEditApi(
+        bot,
+        { chatId: chat.id, messageId },
+        format`❌ ${bold("Яндекс Музыка")}: не удалось собрать статус
+${errorDetail(e)}`,
+        yandexHealthMarkup(),
+      );
+    }
+  });
+
+  bot.callbackQuery("health:main", async (ctx) => {
+    const chat = ctx.message?.chat;
+    if (chat?.type !== "private" || !ctx.from || !isAdmin(ctx.from.id)) {
+      await safeAnswerCb(ctx, { text: "недоступно", show_alert: true });
+      return;
+    }
+    await safeAnswerCb(ctx);
+    const { text, markup } = await buildMainHealth(bot, container);
+    await safeEditApi(bot, { chatId: chat.id, messageId: ctx.message!.id }, text, markup);
   });
 
   bot.command("broadcast", async (ctx) => {

@@ -5,3 +5,11 @@ node_modules
 docs
 test
 .omc
+.env.*
+!.env.example
+*.dump
+.github
+.claude
+.serena
+coverage
+assets/examples

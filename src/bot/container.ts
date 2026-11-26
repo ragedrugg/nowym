@@ -240,6 +240,22 @@ export class Container {
     return creds.access_token;
   }
 
+  /** принудительный refresh (без проверки expires_at): токен, который Ynison отклонил как
+   *  unauthorized, формально «валиден», и resolveToken его не обновит. Дедуп + запись в БД
+   *  как у resolveToken (refreshTokenDeduped → AuthService.refreshToken); не бросает. */
+  async forceRefreshToken(userId: number): Promise<string | null> {
+    try {
+      const creds = await this.usersDb.get(userId);
+      if (!creds?.refresh_token) return null;
+      const newToken = await this.refreshTokenDeduped(userId, creds.refresh_token);
+      if (newToken) this.invalidateTokenCacheForUser(userId);
+      return newToken;
+    } catch (e) {
+      log.warning(`forceRefreshToken(${userId}): ${e}`);
+      return null;
+    }
+  }
+
   invalidateTokenCacheForUser(userId: number): void {
     this.yandexClients.delete(String(userId));
     this.searchServices.delete(String(userId));

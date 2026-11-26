@@ -3,10 +3,11 @@
 #
 # делает: проверяет node, ставит зависимости, готовит .env (секреты и
 # постгресовые пароли генерит сам, при подтверждении сразу накатывает
-# postgres-роли), проверяет redis/ffmpeg, патчит ecosystem.config.cjs под
-# текущую машину, гоняет typecheck как smoke-тест.
+# postgres-роли), проверяет redis/ffmpeg (ecosystem.config.cjs портативен,
+# патчить его не нужно), гоняет typecheck как smoke-тест.
 #
-#   ./install.sh
+#   ./install.sh          # привилегированные шаги (sudo/postgres) — только с подтверждением в терминале
+#   ./install.sh --yes    # то же без вопросов (в т.ч. из CI/пайпа); без --yes вне терминала такие шаги пропускаются
 #
 set -euo pipefail
 
@@ -18,6 +19,15 @@ ok()   { echo "${c_green}✓${c_off} $*"; }
 warn() { echo "${c_yellow}!${c_off} $*"; }
 err()  { echo "${c_red}✗${c_off} $*" >&2; }
 step() { echo; echo "${c_bold}${c_cyan}▸ $*${c_off}"; }
+
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "неизвестный аргумент: $arg (есть только --yes)" >&2; exit 2 ;;
+  esac
+done
 
 # интерактивные подсказки — только если реально в терминале (не CI/пайп)
 INTERACTIVE=0
@@ -33,13 +43,18 @@ ask() {
 }
 
 confirm() {
-  # confirm "вопрос" -> 0 (да) / 1 (нет); дефолт "да" вне терминала
+  # confirm "вопрос" -> 0 (да) / 1 (нет). Вне терминала — "нет", если не передан --yes
+  # (привилегированные/необратимые шаги не должны выполняться молча в пайпе/CI).
   local prompt="$1" reply
-  if [ "$INTERACTIVE" -ne 1 ]; then return 0; fi
+  if [ "$ASSUME_YES" -eq 1 ]; then return 0; fi
+  if [ "$INTERACTIVE" -ne 1 ]; then return 1; fi
   read -r -p "  ${prompt} [Y/n]: " reply || true
   [ -z "$reply" ] || [[ "$reply" =~ ^[Yy] ]]
 }
 
+# Fernet-совместимый ключ: urlsafe base64 С паддингом (как Python urlsafe_b64encode);
+# crypto.ts принимает и с паддингом, и без.
+gen_fernet() { node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64").replace(/\+/g,"-").replace(/\//g,"_"))'; }
 gen_secret() { node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64url"))'; }
 gen_pw()     { node -e 'process.stdout.write(require("crypto").randomBytes(18).toString("base64url"))'; }
 
@@ -56,8 +71,13 @@ fi
 ok "node $(node -v)"
 
 step "зависимости"
-npm install
-ok "npm install готов"
+if [ -f package-lock.json ]; then
+  npm ci
+  ok "npm ci готов (по package-lock.json)"
+else
+  npm install
+  ok "npm install готов"
+fi
 
 step ".env"
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -86,7 +106,7 @@ set_env() {
 }
 
 if [ "$ENV_IS_NEW" -eq 1 ]; then
-  set_env "TOKEN_ENCRYPTION_KEY" "$(gen_secret)"
+  set_env "TOKEN_ENCRYPTION_KEY" "$(gen_fernet)"
   set_env "WEBHOOK_SECRET" "$(gen_secret)"
   set_env "NOW_PLAYING_TOKEN" "$(gen_secret)"
   ok "сгенерил TOKEN_ENCRYPTION_KEY / WEBHOOK_SECRET / NOW_PLAYING_TOKEN"
@@ -126,15 +146,19 @@ if [ "$PG_READY" -eq 1 ] && [ "$ENV_IS_NEW" -eq 1 ]; then
       -e "s/CHANGE_ME_USERS/${PW_USERS}/" \
       -e "s/CHANGE_ME_CACHE/${PW_CACHE}/" \
       docs/sql/init.sql)"
-    if sudo -u postgres psql -v ON_ERROR_STOP=1 >/tmp/nowym-install-psql.log 2>&1 <<< "$SQL_FILLED"; then
+    PSQL_LOG="$(mktemp "${TMPDIR:-/tmp}/nowym-install-psql.XXXXXX")"
+    if sudo -u postgres psql -v ON_ERROR_STOP=1 >"$PSQL_LOG" 2>&1 <<< "$SQL_FILLED"; then
+      rm -f "$PSQL_LOG"
       set_env "POSTGRES_USERS_DSN" "postgresql://nowym_users_app:${PW_USERS}@127.0.0.1:5432/nowym_users"
       set_env "POSTGRES_CACHE_DSN" "postgresql://nowym_cache_app:${PW_CACHE}@127.0.0.1:5432/nowym_cache"
       DB_READY_IN_ENV=1
       ok "роли и базы созданы, DSN прописаны в .env"
     else
-      err "psql упал — лог в /tmp/nowym-install-psql.log (частая причина: роли уже существуют — тогда"
+      err "psql упал — лог в $PSQL_LOG (частая причина: роли уже существуют — тогда"
       err "просто пропиши POSTGRES_*_DSN в .env вручную с уже имеющимися паролями)."
     fi
+  else
+    warn "роли не накатывал (нет подтверждения; в неинтерактивном режиме нужен --yes)"
   fi
 fi
 if [ "$DB_READY_IN_ENV" -eq 0 ]; then

@@ -1,7 +1,8 @@
 /** Сборка карточки «сейчас играет»: параллельно тянет обложку, аватар и (если
  * нужно) wave-цвет, затем рендерит. Общая точка входа для /np и inline-карточки.
  * `enrichCardMetaLiked` не вызывается — лайк живёт кнопкой на треке, не на карточке. */
-import type { Bot } from "gramio";
+import { type Bot, MediaUpload } from "gramio";
+import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { LyricsBlock } from "../services/card.ts";
 import type { UserSettings } from "../storage/settings.ts";
@@ -9,6 +10,7 @@ import { fetchCover } from "../yandex/media.ts";
 import { enrichCardMetaColor, metaNeedsWaveColor } from "../yandex/metadata.ts";
 import type { CardMeta } from "../yandex/types.ts";
 import type { Container } from "./container.ts";
+import { errText, type MintedCard } from "./richMessage.ts";
 
 const log = getLogger("bot.card_builder");
 
@@ -36,7 +38,7 @@ async function fetchUserAvatar(bot: Bot, userId: number, container: Container): 
     cache.set(key, data);
     return data;
   } catch (e) {
-    log.debug(`[card] аватар не достал user=${userId}: ${e}`);
+    log.debug(`[card] аватар не достал user=${userId}: ${errText(e)}`);
     // без этого юзер с постоянно падающим getUserProfilePhotos (приватность,
     // транзиентный 400) дёргал бы Telegram на каждый рендер карточки
     cache.set(key, Buffer.alloc(0), AVATAR_NEG_TTL);
@@ -76,7 +78,7 @@ export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
         .getYandexService(token!, userId)
         .then((yandex) => enrichCardMetaColor(meta, yandex))
         .catch((e) => {
-          log.debug(`[card] wave-цвет не подтянут: ${e}`);
+          log.debug(`[card] wave-цвет не подтянут: ${errText(e)}`);
         })
     : Promise.resolve();
 
@@ -107,4 +109,38 @@ export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
     },
     lyrics: input.lyrics ?? null,
   });
+}
+
+/** Telegram не даёт залить буфер в editMessageMedia/rich_message по inline_message_id
+ * (только file_id/URL) — минтим file_id аплоадом в служебный канал. Под бёрстом аплоад
+ * ловит 429 — ретраим по retry_after. release() удаляет копию в канале (best-effort,
+ * не бросает, идемпотентен): file_id ссылается на файл в хранилище tg, не на сообщение. */
+export async function mintCardFileId(
+  bot: Bot,
+  channelId: number | string,
+  image: Buffer,
+  tag: string,
+): Promise<MintedCard> {
+  const msg = await floodRetry(
+    () => bot.api.sendPhoto({ chat_id: channelId, photo: MediaUpload.buffer(image, "now_playing.jpg") }),
+    {
+      attempts: 3,
+      graceMs: 500,
+      onWait: (ra, n) => log.warning(`[chosen] карточка ${tag}: 429, ждём ${ra}s (попытка ${n}/3)`),
+    },
+  );
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    void Promise.resolve()
+      .then(() => bot.api.deleteMessage({ chat_id: channelId, message_id: msg.message_id }))
+      .catch(() => undefined);
+  };
+  const fileId = msg.photo?.at(-1)?.file_id;
+  if (!fileId) {
+    release();
+    throw new Error(`карточка ${tag}: telegram не вернул file_id`);
+  }
+  return { fileId, release };
 }

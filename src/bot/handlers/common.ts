@@ -10,9 +10,10 @@ import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
 import { nowPlayingMarkup } from "../markup.ts";
+import { errText } from "../richMessage.ts";
 import { say } from "../safeApi.ts";
 import { startAlbumUpload } from "./albums.ts";
-import { sendTrackToChat } from "./inline.ts";
+import { type CardPosition, sendTrackToChat } from "./inline.ts";
 import { startPlaylistUpload } from "./playlists.ts";
 
 /** ResetStack: дефолтный Normal пушил бы новый диалог на стек на каждый /start|/help|/settings,
@@ -119,6 +120,28 @@ export async function renderNowPlaying(
     const senderHandle = senderHandleOf(user);
     const settings = await container.getUserSettings(user.id);
 
+    if (settings.rich_messages) {
+      // карточка+трек одним сообщением; лимит и токен уже проверены выше, позиция заморожена сейчас
+      await sendTrackToChat({
+        bot,
+        chatId,
+        userId: user.id,
+        user,
+        container,
+        trackId: String(track.id),
+        trackObj: track,
+        token,
+        statusMsgId,
+        checkLimit: false,
+        card: {
+          progressMs: current?.progress_ms ?? 0,
+          durationMs: current?.duration_ms ?? 0,
+          paused: Boolean(current?.paused),
+        },
+      });
+      return;
+    }
+
     const image = await buildCardImage({
       bot,
       container,
@@ -148,7 +171,7 @@ export async function renderNowPlaying(
       }
     }
   } catch (e) {
-    log.error(`[np] ошибка user=${user.id}: ${e}`);
+    log.error(`[np] ошибка user=${user.id}: ${errText(e)}`);
     await say(bot, chatId, statusMsgId, format`❌ не получилось, попробуй ещё раз`);
   }
 }
@@ -164,15 +187,16 @@ export async function sendCurrentTrack(
   const token = await checkLimitAndToken(bot, chatId, user, container, statusMsgId);
   if (!token) return;
 
-  let track: YaTrack | null | undefined;
+  let current: Awaited<ReturnType<typeof currentTrackOf>>;
   try {
-    track = (await currentTrackOf(container, user, token))?.track;
+    current = await currentTrackOf(container, user, token);
   } catch (e) {
-    log.error(`[current] ошибка user=${user.id}: ${e}`);
+    log.error(`[current] ошибка user=${user.id}: ${errText(e)}`);
     await say(bot, chatId, statusMsgId, format`❌ не получилось, попробуй ещё раз`);
     return;
   }
 
+  const track = current?.track;
   if (!track) {
     await say(bot, chatId, statusMsgId, format`🎵 сейчас ничего не играет`);
     return;
@@ -182,6 +206,12 @@ export async function sendCurrentTrack(
     bot,
     chatId,
     userId: user.id,
+    user,
+    card: {
+      progressMs: current?.progress_ms ?? 0,
+      durationMs: current?.duration_ms ?? 0,
+      paused: Boolean(current?.paused),
+    },
     container,
     trackId: String(track.id),
     trackObj: track,
@@ -209,7 +239,7 @@ export function registerCommon(bot: Bot, container: Container): void {
       }
       const mt = START_TRACK_RE.exec(args);
       if (mt) {
-        await startTrackUploadReply(bot, ctx.chat.id, user.id, mt[1]!, container);
+        await startTrackUploadReply(bot, ctx.chat.id, user, mt[1]!, container);
         return;
       }
       const mp = START_PLAYLIST_RE.exec(args);
@@ -241,10 +271,30 @@ export function registerCommon(bot: Bot, container: Container): void {
 async function startTrackUploadReply(
   bot: Bot,
   chatId: number,
-  userId: number,
+  user: TgUser,
   trackId: string,
   container: Container,
 ): Promise<void> {
   const status = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу трек...` });
-  await sendTrackToChat({ bot, chatId, userId, container, trackId, statusMsgId: status.message_id ?? null });
+  await sendTrackToChat({
+    bot,
+    chatId,
+    userId: user.id,
+    user,
+    card: deepLinkCardPosition(container, user.id, trackId),
+    container,
+    trackId,
+    statusMsgId: status.message_id ?? null,
+  });
+}
+
+export function deepLinkCardPosition(container: Container, userId: number, trackId: string): CardPosition {
+  const watcher = container.npWatcher;
+  if (watcher !== null && watcher.ownerId === userId) {
+    const snap = watcher.getCurrentSnapshot();
+    if (snap?.track && String(snap.track.id) === trackId) {
+      return { progressMs: snap.progress_ms ?? 0, durationMs: snap.duration_ms ?? 0, paused: Boolean(snap.paused) };
+    }
+  }
+  return { progressMs: 0, durationMs: 0, paused: false };
 }

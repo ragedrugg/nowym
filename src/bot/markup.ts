@@ -139,3 +139,18 @@ export function nowPlayingMarkup(trackId: string | number, botUsername: string |
   inlineUrl(kb, "🔗", "↗", "слушать в плеере", trackUrl(trackId));
   return kb;
 }
+
+/** главная панель /health: вход в детальный статус Яндекс Музыки. */
+export function healthMarkup(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  dmText(kb, "🎵", "♪", "Яндекс Музыка", "health:ym", "primary");
+  return kb;
+}
+
+/** детальная панель Яндекс Музыки: обновить и назад. */
+export function yandexHealthMarkup(): InlineKeyboard {
+  const kb = new InlineKeyboard().pattern([1, 1]);
+  dmText(kb, "🔄", "↻", "обновить", "health:ym", "primary");
+  dmText(kb, "⬅️", "←", "назад", "health:main");
+  return kb;
+}

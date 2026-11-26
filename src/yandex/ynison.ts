@@ -3,7 +3,17 @@
  * Одноразовый сценарий: на каждый вызов открывает свежий ws (redirect→state),
  * берёт первый state-фрейм, резолвит playable_id в трек и закрывается. */
 
-import { type Client as LibClient, YnisonClient, YnisonError, type YnisonState } from "@dvxch/yandex-music";
+import {
+  deviceIdFromToken,
+  type Client as LibClient,
+  YnisonClient,
+  YnisonConnectionClosedError,
+  YnisonDeviceDisplacedError,
+  YnisonError,
+  YnisonServerError,
+  type YnisonState,
+  YnisonUnauthorizedError,
+} from "@dvxch/yandex-music";
 import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { YaTrack } from "./types.ts";
@@ -39,46 +49,107 @@ export function liveProgressMs(
   return Math.max(0, Math.min(progress, durationMs || progress));
 }
 
+/** тестовый шов: подмена эндпоинтов и паузы (без сети). */
+export interface YnisonServiceOptions {
+  redirectUrl?: string;
+  stateUrl?: (host: string) => string;
+  retryBackoffMs?: number;
+}
+
+/** стабильный id one-shot устройства: не засоряет список устройств аккаунта и
+ * не совпадает с id долгоживущего наблюдателя (иначе они вытесняли бы друг друга). */
+export function oneShotDeviceId(token: string): string {
+  return deviceIdFromToken(`oneshot:${token}`);
+}
+
+/** ошибки, для которых повтор бессмысленен. */
+function isTerminal(e: YnisonError): boolean {
+  return (
+    e instanceof YnisonUnauthorizedError ||
+    e instanceof YnisonDeviceDisplacedError ||
+    (e instanceof YnisonServerError && (e.goAwaySeconds ?? 0) > 0)
+  );
+}
+
 export class YnisonService {
+  private chain: Promise<void> = Promise.resolve();
+
   constructor(
     private lib: LibClient,
     private token: string,
+    private opts: YnisonServiceOptions = {},
   ) {}
 
-  /** один retry на YnisonError — транзиентные ws-сбои.
+  /** один retry на транзиентный YnisonError. Не ретраим то, что повтор не лечит:
+   * протухший токен (Unauthorized), вытеснение устройства (DeviceDisplaced) и
+   * явный go-away сервера — эти ошибки отдаём сразу, с исходным сообщением.
    * реальный «не играет» (пустая очередь) сюда не падает — отдаёт валидный state. */
   private async getStateWithRetry(): Promise<YnisonState> {
     try {
       return await this.fetchFirstState();
     } catch (e) {
-      if (!(e instanceof YnisonError)) throw e;
+      if (!(e instanceof YnisonError) || isTerminal(e)) throw e;
       log.debug(`ynison первая попытка: ${e.message}, повтор`);
     }
-    await sleep(RETRY_BACKOFF_MS);
+    await sleep(this.opts.retryBackoffMs ?? RETRY_BACKOFF_MS);
     try {
       return await this.fetchFirstState();
     } catch (e) {
-      throw new Error(`ynison недоступен: ${e instanceof Error ? e.message : e}`);
+      if (e instanceof YnisonError && isTerminal(e)) throw e;
+      throw new Error(`ynison недоступен: ${e instanceof Error ? e.message : e}`, { cause: e });
     }
   }
 
-  /** одна ws-сессия: handshake → первый state-фрейм → закрытие. */
-  private async fetchFirstState(): Promise<YnisonState> {
-    const client = new YnisonClient({ token: this.token });
-    // connect() резолвится только при закрытии сессии — гоняем в фоне и читаем
-    // его ошибку, чтобы не было «unhandled rejection» при обрыве handshake.
-    const connectPromise = client.connect(REDIRECT_TIMEOUT_MS).catch((e: unknown) => {
-      throw e instanceof Error ? e : new Error(String(e));
+  /** одна ws-сессия: handshake → первый state-фрейм → закрытие.
+   * Вызовы сериализуются: общий стабильный deviceId двух параллельных сессий
+   * вытеснил бы одну из них (400090001). */
+  private fetchFirstState(): Promise<YnisonState> {
+    const run = this.chain.then(() => this.fetchFirstStateOnce());
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async fetchFirstStateOnce(): Promise<YnisonState> {
+    const client = new YnisonClient({
+      token: this.token,
+      deviceId: oneShotDeviceId(this.token),
+      connectTimeoutMs: REDIRECT_TIMEOUT_MS,
+      ...(this.opts.redirectUrl ? { redirectUrl: this.opts.redirectUrl } : {}),
+      ...(this.opts.stateUrl ? { stateUrl: this.opts.stateUrl } : {}),
+    });
+    // connect() резолвится только при закрытии сессии, отклоняется при сбое handshake.
+    // Закрытие до первого фрейма — тоже отказ; все промисы гасим от unhandled rejection.
+    const connectFailed = client.connect(REDIRECT_TIMEOUT_MS).then(() => {
+      throw new YnisonConnectionClosedError("ynison: сессия закрыта до первого state");
     });
     const first = client.waitFirstState(FIRST_STATE_TIMEOUT_MS);
+    connectFailed.catch(() => {});
+    first.catch(() => {});
     try {
-      // что наступит раньше: первый фрейм или фатальный обрыв connect.
-      return await Promise.race([first, connectPromise.then(() => first)]);
+      return await Promise.race([first, connectFailed]);
     } finally {
-      await client.disconnect();
-      // дочитываем connect, чтобы заглушить unhandled rejection после закрытия.
-      void connectPromise.catch(() => {});
+      // disconnect() синхронный (void, ждать нечего): сокет закрывается сам, а цепочка
+      // сериализации держит следующую сессию до возврата отсюда
+      client.disconnect();
     }
+  }
+
+  /** health-проверка транспорта: handshake redirect→state и первый state-фрейм.
+   * В отличие от getCurrentTrack не требует играющего трека — пустая очередь
+   * тоже валидный ответ. Без retry: панель должна отвечать быстро. */
+  async probe(): Promise<{ ok: true; latencyMs: number; detail: string }> {
+    const startedAt = Date.now();
+    const state = await this.fetchFirstState();
+    const latencyMs = Date.now() - startedAt;
+    const queued = state.playableList.length;
+    return {
+      ok: true,
+      latencyMs,
+      detail: queued > 0 ? `state получен, очередь ${queued}` : "state получен, очередь пуста",
+    };
   }
 
   /** {track, paused, duration_ms, progress_ms, entity_id, entity_type}.

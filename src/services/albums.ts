@@ -14,7 +14,7 @@ import { getSettings } from "../settings.ts";
 import type { CacheDb } from "../storage/cache.ts";
 import type { UserSettings } from "../storage/settings.ts";
 import type { CachedTrack, InflightAlbum } from "../storage/types.ts";
-import { makeEncrawDecrypt, type YandexClient } from "../yandex/client.ts";
+import { losslessUrlPicker, type YandexClient } from "../yandex/client.ts";
 import { fetchCover } from "../yandex/media.ts";
 import {
   type AudioQuality,
@@ -502,26 +502,16 @@ export class AlbumService {
         let actualTier = "lossy";
         try {
           const result = await this.downloadQueue.enqueue(async () => {
-            // lossless-режим: тянем FLAC через get-file-info с дешифровкой encraw.
+            // lossless-режим: raw flac-mp4 через get-file-info (lossy-ответ = null → фолбэк в lossy-тир).
             if (losslessMode) {
               const ll = await yandex.getLosslessDownload(track);
               if (ll !== null) {
                 metadata.codec = ll.codec;
                 metadata.bitrate_kbps = ll.bitrate;
-                const decrypt = makeEncrawDecrypt(ll.key);
-                // каждая racing-попытка берёт случайный url — естественный спред по CDN.
-                const llUrls = ll.links();
-                const pickUrl = async (): Promise<string | null> =>
-                  llUrls[Math.floor(Math.random() * llUrls.length)] ?? null;
+                // каждая racing-попытка берёт случайный url; протухший список обновляется один раз.
+                const pickUrl = losslessUrlPicker(ll, () => yandex.getLosslessDownload(track));
                 const llCodec = ll.codec ?? "flac";
-                const p = await this.cache.prepareTrackPayload(
-                  trackId,
-                  pickUrl,
-                  metadata,
-                  llCodec,
-                  decrypt,
-                  "lossless",
-                );
+                const p = await this.cache.prepareTrackPayload(trackId, pickUrl, metadata, llCodec, "lossless");
                 if (p !== null) return { codec: llCodec, payload: p, tier: "lossless" };
                 log.warning(`[album] lossless не вышел для ${trackId} → фолбэк на lossy`);
               }

@@ -13,6 +13,8 @@ import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.stale");
 
+const MAX_TOKEN_CANDIDATES = 5;
+
 export interface StaleDeps {
   cacheDb: CacheDb;
   usersDb: UsersDb;
@@ -65,40 +67,55 @@ export class StaleRefresher {
     }
     log.info(`[stale] нашёл ${stale.length} треков`);
 
-    // дёргаем любого живого юзера — за CDN всё равно ходим под чьим-то токеном
-    const userId = await this.deps.usersDb.anyUserId();
-    if (userId === null) {
+    // за CDN ходим под токеном любого живого юзера: пробуем ограниченное число
+    // кандидатов (свежие первыми), мёртвый/нерасшифровываемый токен не валит прогон
+    const candidates = await this.deps.usersDb.candidateUserIds(MAX_TOKEN_CANDIDATES);
+    if (candidates.length === 0) {
       log.warning("[stale] нет доступных токенов");
       return;
     }
-    const token = await this.deps.resolveToken(userId);
-    if (!token) {
-      log.warning("[stale] resolveToken вернул null");
+    let yandex: YandexClient | null = null;
+    for (const userId of candidates) {
+      try {
+        const token = await this.deps.resolveToken(userId);
+        if (!token) {
+          log.warning(`[stale] токен юзера ${userId} недоступен, пробую следующего`);
+          continue;
+        }
+        yandex = await this.deps.getYandexClient(token, userId);
+        break;
+      } catch (e) {
+        log.warning(
+          `[stale] юзер ${userId}: токен не подошёл (${e instanceof Error ? e.name : "error"}), пробую следующего`,
+        );
+      }
+    }
+    if (yandex === null) {
+      log.warning(`[stale] ни один из ${candidates.length} кандидатов не дал рабочий токен — прогон пропущен`);
       return;
     }
-
-    const yandex = await this.deps.getYandexClient(token, userId);
     let refreshed = 0;
 
     for (const entry of stale) {
       if (this.stopped) break; // shutdown — не начинаем ещё один тяжёлый докачивание
       const trackId = entry.track_id;
+      const quality = entry.quality;
       try {
         const track = await yandex.getTrackById(Number(trackId));
         if (!track) {
-          await this.deps.cacheDb.touchStale(trackId);
+          await this.deps.cacheDb.touchStale(trackId, quality);
           continue;
         }
         if (trackIsTooLong(track)) {
           log.debug(`[stale] трек ${trackId} длинный — пропуск`);
-          await this.deps.cacheDb.touchStale(trackId);
+          await this.deps.cacheDb.touchStale(trackId, quality);
           continue;
         }
         let metadata: CacheMetadata = buildTrackMetadata(track);
         metadata = (await enrichMetadataFromAlbum(metadata, track, yandex)) as CacheMetadata;
         const info = await yandex.getBestDownloadInfo(track);
         if (info === null) {
-          await this.deps.cacheDb.touchStale(trackId);
+          await this.deps.cacheDb.touchStale(trackId, quality);
           continue;
         }
         metadata.codec = info.codec;
@@ -111,15 +128,16 @@ export class StaleRefresher {
           () => yandex.directLinkFromInfo(info),
           metadata,
           info.codec,
+          quality,
         );
         if (fileId === null) {
-          await this.deps.cacheDb.touchStale(trackId);
+          await this.deps.cacheDb.touchStale(trackId, quality);
           continue;
         }
         refreshed++;
       } catch (e) {
         log.warning(`[stale] ошибка трек ${trackId}: ${e}`);
-        await this.deps.cacheDb.touchStale(trackId).catch(() => {});
+        await this.deps.cacheDb.touchStale(trackId, quality).catch(() => {});
       }
     }
     log.info(`[stale] перезалито ${refreshed}/${stale.length}`);

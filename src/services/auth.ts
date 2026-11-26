@@ -2,11 +2,11 @@
  * access+refresh в БД (зашифрованно).
  *
  * транспорт — DeviceAuthMixin из @dvxch/yandex-music (requestDeviceCode/
- * pollDeviceToken/refreshAccessToken); Client допускает пустой token в
+ * pollDeviceTokenOnce/refreshAccessToken); Client допускает пустой token в
  * конструкторе, а device-эндпоинты на oauth.yandex.ru его не требуют.
  * client_id/secret берём из settings (по умолчанию — публичный клиент Android-
  * приложения Я.Музыки). */
-import { DeviceAuthError, type DeviceCode, Client as LibClient, type OAuthToken } from "@dvxch/yandex-music";
+import { DeviceAuthError, type DeviceCode, Client as LibClient } from "@dvxch/yandex-music";
 import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
@@ -15,6 +15,7 @@ import type { UsersDb } from "../storage/users.ts";
 const log = getLogger("auth");
 
 const AUTH_TIMEOUT_SEC = 300; // 5 мин, даже если сервер даёт больше
+const SLOW_DOWN_STEP_MS = 5000; // RFC 8628 §3.5: на slow_down интервал растёт на 5 с
 
 export type OnSuccess = (userId: number) => void | Promise<void>;
 export type OnFailure = (userId: number, reason: string) => void | Promise<void>;
@@ -35,7 +36,13 @@ interface ActiveAuth {
 
 /** транспортный срез Client'а, нужный для device-flow — внедряемый ради тестов
  * (фейк без реальных запросов на oauth.yandex.ru). */
-export type DeviceAuthTransport = Pick<LibClient, "requestDeviceCode" | "pollDeviceToken" | "refreshAccessToken">;
+export type DeviceAuthTransport = Pick<LibClient, "requestDeviceCode" | "pollDeviceTokenOnce" | "refreshAccessToken">;
+
+/** часы/пауза поллинга — внедряются в тестах, чтобы не ждать реальные секунды. */
+export interface AuthClock {
+  sleepFn: (ms: number) => Promise<void>;
+  now: () => number;
+}
 
 export class AuthService {
   private active = new Map<number, ActiveAuth>();
@@ -44,6 +51,7 @@ export class AuthService {
     private usersDb: UsersDb,
     // без токена: только device-flow эндпоинты, не привязаны к аккаунту.
     private lib: DeviceAuthTransport = new LibClient(),
+    private clock: AuthClock = { sleepFn: (ms) => sleep(ms), now: Date.now },
   ) {}
 
   /** запустить device flow. если уже идёт — отменит старую и стартанёт новую. */
@@ -140,27 +148,28 @@ export class AuthService {
   ): Promise<void> {
     const userId = entry.state.userId;
     const s = getSettings();
-    const interval = Math.max(code.interval ?? 5, 3) * 1000;
-    const deadline = Date.now() + entry.state.expiresIn * 1000;
+    let interval = Math.max(code.interval ?? 5, 3) * 1000;
+    const deadline = this.clock.now() + entry.state.expiresIn * 1000;
 
     try {
       while (true) {
-        await sleep(interval);
+        await this.clock.sleepFn(interval);
         if (entry.cancelled) {
           log.info(`авторизация отменена ${userId}`);
           return;
         }
-        if (Date.now() >= deadline) {
+        if (this.clock.now() >= deadline) {
           log.info(`таймаут авторизации ${userId}`);
           await onFailure(userId, "timeout");
           return;
         }
 
-        // null = authorization_pending (юзер ещё не подтвердил) → опрашиваем дальше.
-        // прочие ошибки (в т.ч. expired/denied) pollDeviceToken бросает — ловим ниже.
-        let token: OAuthToken | null;
+        // 'pending' = юзер ещё не подтвердил → опрашиваем дальше тем же интервалом;
+        // 'slow_down' → дальше реже. прочие ошибки (expired/denied/не распарсился
+        // ответ) библиотека бросает как DeviceAuthError — ловим ниже.
+        let outcome: Awaited<ReturnType<DeviceAuthTransport["pollDeviceTokenOnce"]>>;
         try {
-          token = await this.lib.pollDeviceToken(
+          outcome = await this.lib.pollDeviceTokenOnce(
             code.deviceCode!,
             s.YANDEX_OAUTH_CLIENT_ID,
             s.YANDEX_OAUTH_CLIENT_SECRET,
@@ -171,7 +180,13 @@ export class AuthService {
           await onFailure(userId, reason);
           return;
         }
-        if (token === null) continue;
+        if (outcome === "pending") continue;
+        if (outcome === "slow_down") {
+          interval += SLOW_DOWN_STEP_MS;
+          log.info(`slow_down ${userId}: интервал ${interval} мс`);
+          continue;
+        }
+        const token = outcome;
 
         await this.usersDb.save(userId, token.accessToken!, token.refreshToken ?? null, token.expiresIn ?? null);
         log.info(`авторизация ок для ${userId}`);

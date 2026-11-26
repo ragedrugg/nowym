@@ -64,8 +64,9 @@ export function formatDurationHuman(durationMs: number | null | undefined): stri
   return `${Math.floor(s / 60)}:${pad(s % 60)}`;
 }
 
-/** "123:456" | 123 → "123" (отбрасываем album-часть составного trackId). */
+/** "123:456" | 123 → "123" (отбрасываем album-часть составного trackId); null/undefined → "". */
 export function bareTrackId(id: number | string | null | undefined): string {
+  if (id === null || id === undefined) return "";
   return String(id).split(":")[0]!;
 }
 

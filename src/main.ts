@@ -2,9 +2,8 @@
  * задачи: stale-refresher, чистка пустышек, дочитывание упавших альбомов,
  * ws-наблюдатель Ynison владельца. */
 
-import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createDialogs } from "@gramio/dialogs";
 import { redisStorage } from "@gramio/storage-redis";
@@ -17,22 +16,15 @@ import { resolveIconSet } from "./bot/iconSet.ts";
 import { safeAnswerCb } from "./bot/safeApi.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
 import { sleep } from "./infra/async.ts";
+import { closeServer, createHttpApp } from "./infra/httpServer.ts";
 import { getLogger } from "./infra/logging.ts";
-import { counterSnapshot, incCounter } from "./infra/metrics.ts";
+import { incCounter } from "./infra/metrics.ts";
 import { NowPlayingWatcher } from "./services/nowPlayingWatcher.ts";
 import { StaleRefresher } from "./services/stale.ts";
 import { getSettings } from "./settings.ts";
 import { cachePool, usersPool } from "./storage/pool.ts";
 
 const log = getLogger("main");
-
-function secretMatches(header: string | undefined, expected: string): boolean {
-  if (!expected) return true; // секрет не задан — не проверяем
-  if (!header) return false;
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 async function withRetry(label: string, fn: () => Promise<void>): Promise<void> {
   let delay = 2000;
@@ -121,7 +113,7 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(1), 1000).unref();
   });
 
-  await bot.init();
+  await withRetry("bot_init", () => bot.init());
   await container.start(bot);
 
   // ── фоновые задачи ──────────────────────────────────────────────────
@@ -157,10 +149,14 @@ async function main(): Promise<void> {
 
   let npWatcher: NowPlayingWatcher | null = null;
   if (s.OWNER_ID) {
-    npWatcher = new NowPlayingWatcher(container.usersDb, s.OWNER_ID);
+    npWatcher = new NowPlayingWatcher(container.usersDb, s.OWNER_ID, {
+      // токен отклонён Ynison → принудительный refresh (resolveToken обновляет только за 5 мин до expires_at);
+      // AuthService.refreshToken сохраняет пару в БД, run() перечитает её
+      refreshToken: () => container.forceRefreshToken(s.OWNER_ID),
+    });
     // по слушателю "change" на каждое SSE-соединение — иначе с 11-го летит
     // MaxListenersExceededWarning (дефолт EventEmitter — 10)
-    npWatcher.setMaxListeners(NOW_PLAYING_STREAM_MAX_CONNECTIONS + 5);
+    npWatcher.setMaxListeners(25);
     container.npWatcher = npWatcher; // для inline fast-path
     npWatcher.start();
   } else {
@@ -168,13 +164,11 @@ async function main(): Promise<void> {
   }
 
   // КРИТИЧНО (webhook-режим): без secret_token кто угодно, зная URL, может слать
-  // поддельные апдейты с произвольным from.id (спуфинг, обход admin-гейта). В
-  // long-polling апдейты тянутся с доверенного local-сервера — спуфинг невозможен.
-  if (!localApi && !s.WEBHOOK_SECRET) {
-    log.warning(
-      "[webhook] WEBHOOK_SECRET НЕ ЗАДАН — вебхук принимает любые апдейты без " +
-        "проверки. Возможен спуфинг from.id. Задай WEBHOOK_SECRET в .env.",
-    );
+  // поддельные апдейты с произвольным from.id. Бот стартует, но все webhook-POST
+  // отклоняются с 401 (secretMatches с пустым секретом всегда false). В long-polling
+  // апдейты тянутся с доверенного local-сервера — спуфинг невозможен.
+  if (s.webhookSecretMissing) {
+    log.error("[webhook] WEBHOOK_SECRET не задан — все webhook-запросы будут отклонены (401). Задай WEBHOOK_SECRET.");
   }
 
   await withRetry("register_commands", () => registerCommands(bot));
@@ -197,40 +191,24 @@ async function main(): Promise<void> {
   // ── http(s)-сервер: webhook + /now-playing ──────────────────────────
   const tgHandler = webhookHandler(bot, "http");
 
-  const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-
-    if (!localApi && req.method === "POST" && url.pathname === s.WEBHOOK_PATH) {
-      if (!secretMatches(req.headers["x-telegram-bot-api-secret-token"] as string | undefined, s.WEBHOOK_SECRET)) {
-        res.writeHead(401).end();
-        return;
-      }
-      void tgHandler(req, res);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/now-playing") {
-      handleNowPlaying(req, res, npWatcher, s.NOW_PLAYING_TOKEN);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/now-playing/stream") {
-      handleNowPlayingStream(req, res, npWatcher, s.NOW_PLAYING_TOKEN);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/health") {
-      void handleHealth(res, container, npWatcher);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/metrics") {
-      handleMetrics(res, container, npWatcher);
-      return;
-    }
-
-    res.writeHead(404).end();
-  };
+  const httpApp = createHttpApp({
+    localApi,
+    webhookPath: s.WEBHOOK_PATH,
+    webhookSecret: s.WEBHOOK_SECRET,
+    tgHandler,
+    nowPlayingToken: s.NOW_PLAYING_TOKEN,
+    metricsToken: process.env.METRICS_TOKEN ?? "",
+    watcher: npWatcher,
+    usersPool,
+    cachePool,
+    caches: {
+      track: container.trackCache,
+      avatar: container.avatarCache,
+      settings: container.userSettingsCache,
+      inline_owners: container.inlineOwners,
+    },
+  });
+  const requestHandler = httpApp.handler;
 
   const useTls = Boolean(s.WEBHOOK_SSL_CERT && s.WEBHOOK_SSL_KEY);
   const server = useTls
@@ -263,7 +241,7 @@ async function main(): Promise<void> {
       }
     }
     await container.stop();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server, httpApp);
     log.info("стоп");
   };
 
@@ -277,181 +255,10 @@ async function main(): Promise<void> {
   }
 }
 
-function buildNowPlayingPayload(watcher: NowPlayingWatcher | null): unknown {
-  if (watcher === null || watcher.current === null) {
-    return { playing: false, recent: watcher?.getRecent() ?? [] };
-  }
-  const snap = watcher.getCurrentSnapshot();
-  const progress_ms = snap?.progress_ms ?? null;
-  const duration_ms = snap?.duration_ms ?? null;
-  return {
-    ...watcher.current,
-    paused: snap?.paused ?? null,
-    progress_ms,
-    duration_ms,
-    remaining_ms: progress_ms !== null && duration_ms !== null ? Math.max(duration_ms - progress_ms, 0) : null,
-    recent: watcher.getRecent(),
-  };
-}
-
-function checkNowPlayingAuth(req: IncomingMessage, res: ServerResponse, token: string): boolean {
-  if (!token) {
-    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "disabled" }));
-    return false;
-  }
-  if (!secretMatches(req.headers.authorization, `Bearer ${token}`)) {
-    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "unauthorized" }));
-    return false;
-  }
-  return true;
-}
-
-function handleNowPlaying(
-  req: IncomingMessage,
-  res: ServerResponse,
-  watcher: NowPlayingWatcher | null,
-  token: string,
-): void {
-  if (!checkNowPlayingAuth(req, res, token)) return;
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(buildNowPlayingPayload(watcher)));
-}
-
-// heartbeat покрывает paused-дрейф (не событийный) и держит соединение живым
-// через прокси/CDN, которые рвут простаивающие стримы.
-const NOW_PLAYING_STREAM_HEARTBEAT_MS = 10_000;
-// у каждого SSE-клиента свой аплинк до этого процесса (через Worker-прокси
-// сайта) — без потолка шквал соединений грузит тот же процесс, что держит
-// бота. Легитимных одновременных зрителей у личного сайта в разы меньше.
-const NOW_PLAYING_STREAM_MAX_CONNECTIONS = 20;
-let nowPlayingStreamConnections = 0;
-
-function handleNowPlayingStream(
-  req: IncomingMessage,
-  res: ServerResponse,
-  watcher: NowPlayingWatcher | null,
-  token: string,
-): void {
-  if (!checkNowPlayingAuth(req, res, token)) return;
-
-  if (nowPlayingStreamConnections >= NOW_PLAYING_STREAM_MAX_CONNECTIONS) {
-    res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "too_many_streams" }));
-    return;
-  }
-  nowPlayingStreamConnections++;
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-
-  const send = (): void => {
-    res.write(`data: ${JSON.stringify(buildNowPlayingPayload(watcher))}\n\n`);
-  };
-  send();
-
-  watcher?.on("change", send);
-  const heartbeat = setInterval(send, NOW_PLAYING_STREAM_HEARTBEAT_MS);
-
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    watcher?.off("change", send);
-    nowPlayingStreamConnections--;
+// NODE_ENV=test (test/setup.ts) — импорт модуля не поднимает бота
+if (process.env.NODE_ENV !== "test") {
+  main().catch((e) => {
+    log.error(`фатальная ошибка: ${e}`);
+    process.exit(1);
   });
 }
-
-/** /health — без авторизации, без чувствительных данных. 200=ok, 503=БД лежит.
- * Удобно вешать на uptime-монитор: alert по любому не-200. */
-async function handleHealth(
-  res: ServerResponse,
-  container: Container,
-  watcher: NowPlayingWatcher | null,
-): Promise<void> {
-  // abort гасит таймеры сразу после гонки — /health дёргает монитор раз в минуту вечно
-  const ac = new AbortController();
-  const [usersOk, cacheOk] = await Promise.all([
-    Promise.race([usersPool.ping(), sleep(3000, ac.signal).then(() => false)]),
-    Promise.race([cachePool.ping(), sleep(3000, ac.signal).then(() => false)]),
-  ]);
-  ac.abort();
-  const dbOk = usersOk && cacheOk;
-
-  const body = {
-    status: dbOk ? "ok" : "degraded",
-    uptime_s: Math.round(process.uptime()),
-    rss_mb: Math.round(process.memoryUsage().rss / 1048576),
-    db: {
-      users: { up: usersOk, ...usersPool.stats() },
-      cache: { up: cacheOk, ...cachePool.stats() },
-    },
-    watcher: watcher ? watcher.health() : { running: false, connected: false, lastStateAgeMs: null, hasTrack: false },
-    caches: {
-      track: container.trackCache.size,
-      avatar: container.avatarCache.size,
-      settings: container.userSettingsCache.size,
-      inline_owners: container.inlineOwners.size,
-    },
-  };
-  res.writeHead(dbOk ? 200 : 503, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-/** /metrics — Prometheus text exposition. Те же данные, что /health, плюс
- * счётчики (errors_total, rate_limit_rejections_total, ...) из infra/metrics.ts.
- * Без авторизации — как и /health, ничего чувствительного тут нет. */
-function handleMetrics(res: ServerResponse, container: Container, watcher: NowPlayingWatcher | null): void {
-  const lines: string[] = [];
-  const gauge = (name: string, help: string, value: number, labels = ""): void => {
-    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`, `${name}${labels} ${value}`);
-  };
-  const counter = (name: string, help: string, value: number, labels = ""): void => {
-    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} counter`, `${name}${labels} ${value}`);
-  };
-
-  gauge("nowym_uptime_seconds", "process uptime in seconds", Math.round(process.uptime()));
-  gauge("nowym_rss_bytes", "resident memory in bytes", process.memoryUsage().rss);
-
-  const usersStats = usersPool.stats();
-  const cacheStats = cachePool.stats();
-  for (const [db, stats] of [
-    ["users", usersStats],
-    ["cache", cacheStats],
-  ] as const) {
-    gauge("nowym_db_pool_total", "postgres pool: total connections", stats.total, `{db="${db}"}`);
-    gauge("nowym_db_pool_idle", "postgres pool: idle connections", stats.idle, `{db="${db}"}`);
-    gauge("nowym_db_pool_waiting", "postgres pool: waiting acquires", stats.waiting, `{db="${db}"}`);
-  }
-
-  const caches = {
-    track: container.trackCache,
-    avatar: container.avatarCache,
-    settings: container.userSettingsCache,
-    inline_owners: container.inlineOwners,
-  };
-  for (const [name, cache] of Object.entries(caches)) {
-    const stats = cache.stats();
-    gauge("nowym_cache_size", "in-memory cache entries", stats.size, `{cache="${name}"}`);
-    counter("nowym_cache_hits_total", "in-memory cache hits", stats.hits, `{cache="${name}"}`);
-    counter("nowym_cache_misses_total", "in-memory cache misses", stats.misses, `{cache="${name}"}`);
-  }
-
-  const w = watcher?.health() ?? { running: false, connected: false, lastStateAgeMs: null, hasTrack: false };
-  gauge("nowym_watcher_running", "ynison watcher: process running (1/0)", w.running ? 1 : 0);
-  gauge("nowym_watcher_connected", "ynison watcher: ws connected (1/0)", w.connected ? 1 : 0);
-  if (w.lastStateAgeMs !== null) {
-    gauge("nowym_watcher_last_state_age_ms", "ynison watcher: ms since last state frame", w.lastStateAgeMs);
-  }
-
-  for (const [name, value] of counterSnapshot()) {
-    counter(`nowym_${name}`, name, value);
-  }
-
-  res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
-  res.end(`${lines.join("\n")}\n`);
-}
-
-main().catch((e) => {
-  log.error(`фатальная ошибка: ${e}`);
-  process.exit(1);
-});

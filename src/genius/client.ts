@@ -3,7 +3,7 @@
  * конфликтует по версиям под tsx. */
 
 import { parse, TextNode } from "node-html-parser";
-import { fetch } from "node-wreq";
+import { fetch as wreqFetch } from "node-wreq";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 
@@ -16,6 +16,20 @@ const BROWSER = "chrome_140";
 const EXCLUDED_TERMS = ["(remix)", "(live)"];
 // заголовки секций вида [Chorus]/[Verse] вырезаем из текста
 const SECTION_HEADER_RE = /^\[.*\]$/;
+// definitive-негатив («не найдено») помним недолго и потом пробуем снова;
+// исключения/429/5xx/Cloudflare не кэшируем вовсе
+const NEGATIVE_TTL_MS = 15 * 60_000;
+
+export interface GeniusDeps {
+  fetch?: typeof wreqFetch;
+  now?: () => number;
+}
+
+/** результат шага: definitive=false — временный сбой, кэшировать нельзя. */
+interface Step<T> {
+  value: T | null;
+  definitive: boolean;
+}
 
 interface Hit {
   title: string;
@@ -32,33 +46,55 @@ export class GeniusClient {
   private lyricsByUrl = new LRUMap<string, string | null>(500);
   private byArtistTitle = new LRUMap<string, string | null>(500);
 
-  constructor(token: string) {
+  // key → момент (мс), до которого помним definitive-негатив
+  private negUntil = new LRUMap<string, number>(2000);
+  private readonly fetchFn: typeof wreqFetch;
+  private readonly now: () => number;
+
+  constructor(token: string, deps: GeniusDeps = {}) {
     this.token = token;
+    this.fetchFn = deps.fetch ?? wreqFetch;
+    this.now = deps.now ?? Date.now;
+  }
+
+  private isNeg(key: string): boolean {
+    const until = this.negUntil.peek(key);
+    return until !== undefined && until > this.now();
+  }
+
+  private setNeg(key: string): void {
+    this.negUntil.set(key, this.now() + NEGATIVE_TTL_MS);
   }
 
   /** Поиск песни по произвольной строке (напр. фрагменту лирики) → artist/title
    * верхнего подходящего результата. Genius индексирует тексты песен, поэтому
    * находит трек по одной лишь строке из него. */
   async searchSong(query: string): Promise<{ artist: string; title: string } | null> {
+    const h = (await this.searchHit(query)).value;
+    return h ? { artist: h.artist, title: h.title } : null;
+  }
+
+  private async searchHit(query: string): Promise<Step<Hit>> {
     const key = query.toLowerCase();
-    if (this.songCache.has(key)) {
-      const h = this.songCache.get(key) ?? null;
-      return h ? { artist: h.artist, title: h.title } : null;
-    }
+    const cached = this.songCache.get(key);
+    if (cached) return { value: cached, definitive: true };
+    if (this.isNeg(`s:${key}`)) return { value: null, definitive: true };
 
     let hit: Hit | null = null;
     try {
       hit = pickHit(await this.apiSearch(query));
     } catch (e) {
       log.warning(`[genius] поиск песни: ${errStr(e)}`);
+      return { value: null, definitive: false };
     }
-    this.songCache.set(key, hit);
+    if (hit) this.songCache.set(key, hit);
+    else this.setNeg(`s:${key}`);
     log.info(
       hit
         ? `[genius] песня найдена: ${JSON.stringify(query)} → ${hit.artist} — ${hit.title}`
         : `[genius] песня не найдена: ${JSON.stringify(query)}`,
     );
-    return hit ? { artist: hit.artist, title: hit.title } : null;
+    return { value: hit, definitive: true };
   }
 
   /** Лирика песни, найденной searchSong(phrase) — скрейп именно того результата.
@@ -66,47 +102,53 @@ export class GeniusClient {
   async lyricsForPhrase(phrase: string): Promise<string | null> {
     const key = phrase.toLowerCase();
     const cached = this.phraseLyrics.get(key);
-    if (cached !== undefined) return cached;
+    if (cached) return cached;
+    if (this.isNeg(`p:${key}`)) return null;
 
-    if (!this.songCache.has(key)) await this.searchSong(phrase);
-    const hit = this.songCache.get(key) ?? null;
-    const text = hit ? await this.scrapeLyrics(hit.url) : null;
+    const found = await this.searchHit(phrase);
+    const res: Step<string> = found.value
+      ? await this.scrapeLyrics(found.value.url)
+      : { value: null, definitive: found.definitive };
 
-    this.phraseLyrics.set(key, text);
+    if (res.value) this.phraseLyrics.set(key, res.value);
+    else if (res.definitive) this.setNeg(`p:${key}`);
     log.info(
-      text
-        ? `[genius] лирика по фразе ${JSON.stringify(phrase)} (${text.length} симв.)`
+      res.value
+        ? `[genius] лирика по фразе ${JSON.stringify(phrase)} (${res.value.length} симв.)`
         : `[genius] лирика по фразе не найдена: ${JSON.stringify(phrase)}`,
     );
-    return text;
+    return res.value;
   }
 
   /** Лирика по (артист, название) — фолбэк, когда нет фразы. */
   async getLyrics(artist: string, title: string): Promise<string | null> {
     const key = `${artist.toLowerCase()}|${title.toLowerCase()}`;
     const cached = this.byArtistTitle.get(key);
-    if (cached !== undefined) return cached;
+    if (cached) return cached;
+    if (this.isNeg(`a:${key}`)) return null;
 
-    let text: string | null = null;
+    let res: Step<string> = { value: null, definitive: true };
     try {
       const hit = pickHit(await this.apiSearch(`${title} ${artist}`));
-      if (hit) text = await this.scrapeLyrics(hit.url);
+      if (hit) res = await this.scrapeLyrics(hit.url);
     } catch (e) {
       log.warning(`[genius] ошибка: ${errStr(e)}`);
+      res = { value: null, definitive: false };
     }
-    this.byArtistTitle.set(key, text);
+    if (res.value) this.byArtistTitle.set(key, res.value);
+    else if (res.definitive) this.setNeg(`a:${key}`);
     log.info(
-      text
-        ? `[genius] лирика получена: ${JSON.stringify(artist)} — ${JSON.stringify(title)} (${text.length} симв.)`
+      res.value
+        ? `[genius] лирика получена: ${JSON.stringify(artist)} — ${JSON.stringify(title)} (${res.value.length} симв.)`
         : `[genius] текст не найден: ${JSON.stringify(artist)} — ${JSON.stringify(title)}`,
     );
-    return text;
+    return res.value;
   }
 
   /** GET /search — официальный Genius API (Bearer-токен), JSON с хитами. */
   private async apiSearch(query: string): Promise<Hit[]> {
     const url = `${API_BASE}/search?q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, {
+    const res = await this.fetchFn(url, {
       headers: { Authorization: `Bearer ${this.token}` },
       browser: BROWSER,
     });
@@ -124,13 +166,18 @@ export class GeniusClient {
   }
 
   /** GET страницы песни + извлечение текста из [data-lyrics-container]. */
-  private async scrapeLyrics(url: string): Promise<string | null> {
+  private async scrapeLyrics(url: string): Promise<Step<string>> {
     const cached = this.lyricsByUrl.get(url);
-    if (cached !== undefined) return cached;
+    if (cached) return { value: cached, definitive: true };
+    if (this.isNeg(`u:${url}`)) return { value: null, definitive: true };
 
     let text: string | null = null;
     try {
-      const res = await fetch(url, { browser: BROWSER });
+      const res = await this.fetchFn(url, { browser: BROWSER });
+      if (res.status === 404) {
+        this.setNeg(`u:${url}`);
+        return { value: null, definitive: true };
+      }
       if (!res.ok) throw new Error(`page HTTP ${res.status}`);
       const html = await res.text();
       const doc = parse(html);
@@ -150,9 +197,11 @@ export class GeniusClient {
       if (joined) text = stripSectionHeaders(joined).trim();
     } catch (e) {
       log.warning(`[genius] скрейп лирики: ${errStr(e)}`);
+      return { value: null, definitive: false };
     }
-    this.lyricsByUrl.set(url, text);
-    return text;
+    if (text) this.lyricsByUrl.set(url, text);
+    else this.setNeg(`u:${url}`);
+    return { value: text || null, definitive: true };
   }
 }
 

@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [gramio, main]
+    branches: ['**']
   pull_request:
-    branches: [gramio, main]
+
+permissions:
+  contents: read
 
 jobs:
   test:

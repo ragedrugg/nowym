@@ -89,4 +89,13 @@ export class UsersDb {
     const res = await usersPool.query<{ user_id: number }>("SELECT user_id FROM user_credentials LIMIT 1");
     return res.rows[0]?.user_id ?? null;
   }
+
+  /** до `limit` юзеров с токенами, свежие первыми (детерминированный порядок) — кандидаты для служебных запросов к CDN. */
+  async candidateUserIds(limit = 5): Promise<number[]> {
+    const res = await usersPool.query<{ user_id: number }>(
+      "SELECT user_id FROM user_credentials ORDER BY updated_at DESC, user_id DESC LIMIT $1",
+      [limit],
+    );
+    return res.rows.map((r) => r.user_id);
+  }
 }

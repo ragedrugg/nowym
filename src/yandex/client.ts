@@ -2,19 +2,30 @@
  * Поверх @dvxch/yandex-music (каталог/лайки/ynison/download). */
 import { performance } from "node:perf_hooks";
 import {
-  decryptEncraw,
   Client as LibClient,
+  type ClientOptions as LibClientOptions,
   type DownloadInfo as LibDownloadInfo,
   type LosslessDownloadInfo as LibLosslessDownloadInfo,
   NetworkError as LibNetworkError,
   NotFoundError as LibNotFoundError,
+  TooManyRequestsError as LibTooManyRequestsError,
   UnauthorizedError as LibUnauthorizedError,
 } from "@dvxch/yandex-music";
 import { sleep, withTimeout } from "../infra/async.ts";
+import type { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 import { AsyncTokenGate } from "../infra/rateLimit.ts";
 import { getSettings } from "../settings.ts";
+import { AUDIO_MAGIC_BYTES, assertAudioMagic } from "./audioMagic.ts";
+import {
+  errorDetail,
+  overallFromChecks,
+  sortHealthChecks,
+  type YandexHealthCheck,
+  type YandexHealthReport,
+  type YandexProbeTrack,
+} from "./health.ts";
 import { isLrc } from "./lrc.ts";
 import { normalizeCoverUrl } from "./media.ts";
 import type { AlbumShortProvider, LikeProvider, WaveColorProvider } from "./metadata.ts";
@@ -24,20 +35,135 @@ import { type CurrentTrack, YnisonService } from "./ynison.ts";
 
 const log = getLogger("yandex.client");
 
-/** Фабрика расшифровщика encraw-потока (FLAC) по hex-ключу из get-file-info, или
- * undefined для незашифрованных. */
-export function makeEncrawDecrypt(key: string | null | undefined): ((data: Buffer) => Buffer) | undefined {
-  if (!key) return undefined;
-  return (data: Buffer): Buffer => Buffer.from(decryptEncraw(data, key));
+/** Ретраи/таймаут транспорта библиотеки (GET и batch POST). Итог на вызов:
+ * (LIB_RETRIES + 1) запросов × (NOWYM_429_RETRIES + 1) попыток withRetry = 6. */
+const LIB_RETRIES = 1;
+const LIB_TIMEOUT_MS = 8_000;
+/** Сколько раз withRetry повторяет вызов после 429 (после ретраев библиотеки). */
+const NOWYM_429_RETRIES = 2;
+/** Верхняя граница паузы между 429-повторами. */
+const RETRY_DELAY_CAP_MS = 30_000;
+
+/** Ссылки get-file-info живут недолго; старше этого возраста список запрашиваем заново (один раз). */
+const LOSSLESS_URL_TTL_MS = 45_000;
+
+/** Выбор URL для racing-попыток: случайный из списка (спред по CDN); если список
+ * старше ttlMs — один раз перезапрашиваем info (при сбое остаёмся на старых ссылках). */
+export function losslessUrlPicker(
+  info: LibLosslessDownloadInfo,
+  refetch: () => Promise<LibLosslessDownloadInfo | null>,
+  opts: { now?: () => number; ttlMs?: number } = {},
+): () => Promise<string | null> {
+  const now = opts.now ?? Date.now;
+  const ttlMs = opts.ttlMs ?? LOSSLESS_URL_TTL_MS;
+  const startedAt = now();
+  let urls = info.links();
+  let refreshed = false;
+  return async () => {
+    if (!refreshed && now() - startedAt > ttlMs) {
+      refreshed = true;
+      try {
+        const fresh = await refetch();
+        const links = fresh?.links() ?? [];
+        if (links.length > 0) urls = links;
+      } catch (e) {
+        log.debug(`обновление lossless-ссылок не вышло: ${e}`);
+      }
+    }
+    return urls[Math.floor(Math.random() * urls.length)] ?? null;
+  };
 }
 
 /** async () → новый access_token или null. */
 export type RefreshCallback = () => Promise<string | null>;
 
+export interface ApiHealthProbeOptions {
+  /** HTTP-клиент бота — для Range-проверки CDN без скачивания файла. */
+  http: HttpClient;
+  /** id текущего/последнего трека; если нет — возьмём из поиска/истории. */
+  probeTrackId?: string | number | null;
+  /** таймаут одной проверки (не всего отчёта). */
+  timeoutMs?: number;
+}
+
+const HEALTH_DEPENDENT: Array<Pick<YandexHealthCheck, "key" | "label" | "critical">> = [
+  { key: "search", label: "поиск", critical: true },
+  { key: "catalog", label: "каталог / треки", critical: true },
+  { key: "download_lossy", label: "загрузка mp3/aac", critical: true },
+  { key: "download_lossless", label: "lossless / get-file-info", critical: true },
+  { key: "cdn", label: "CDN", critical: true },
+  { key: "lyrics", label: "лирика", critical: false },
+  { key: "likes", label: "лайки", critical: false },
+  { key: "history", label: "история", critical: false },
+];
+
+// Эталонные треки для проверок, которые нельзя делать на случайном текущем
+// треке: у него может не быть FLAC или текста. ID из официального каталога,
+// где lossless/лирика точно должны существовать.
+const LOSSLESS_PROBE_IDS = ["117708948", "51516485", "60292250"];
+const LYRICS_PROBE_IDS = ["51516485", "60292250", "330765"];
+
+type AccountAbout = { geoRegionIso?: string; userSessionRegionIso?: string };
+
+async function readAccountAbout(lib: LibClient): Promise<AccountAbout | null> {
+  try {
+    const raw = await lib.request.get("https://api.music.yandex.net/account/about");
+    if (!raw || typeof raw !== "object") return null;
+    const data = raw as Record<string, unknown>;
+    return {
+      geoRegionIso: typeof data.geoRegionIso === "string" ? data.geoRegionIso : undefined,
+      userSessionRegionIso: typeof data.userSessionRegionIso === "string" ? data.userSessionRegionIso : undefined,
+    };
+  } catch {
+    // /account/about не критичен для health: регион — только пояснение
+    return null;
+  }
+}
+
+export function isLosslessInfo(info: LibLosslessDownloadInfo): boolean {
+  if ((info as { isLossless?: boolean }).isLossless === true) return true;
+  return typeof info.codec === "string" && info.codec.startsWith("flac");
+}
+
+function firstHistoryTrackId(
+  history: {
+    historyTabs?: Array<{ items?: Array<{ tracks?: Array<{ data?: { itemId?: { trackId?: string } } }> }> }>;
+  } | null,
+): string | null {
+  for (const tab of history?.historyTabs ?? []) {
+    for (const group of tab.items ?? []) {
+      for (const item of group.tracks ?? []) {
+        const id = item.data?.itemId?.trackId;
+        if (id) return id;
+      }
+    }
+  }
+  return null;
+}
+
+function probeTrackFrom(track: {
+  id?: string | number;
+  title?: string;
+  artists?: Array<{ name?: string }>;
+}): YandexProbeTrack | null {
+  if (track.id === undefined || track.id === null) return null;
+  const artist = (track.artists ?? [])
+    .map((a) => a.name)
+    .filter((name): name is string => Boolean(name))
+    .join(", ");
+  return {
+    id: bareTrackId(track.id),
+    title: track.title || "без названия",
+    artist: artist || "неизвестен",
+  };
+}
+
 const CLIENT_INIT_TIMEOUT = 9_000;
 const NP_CACHE_TTL_MS = 5_000;
 const NP_FETCH_TIMEOUT_MS = 4_000;
 const LIKES_CACHE_TTL_MS = 30_000;
+// TTL definitive-негатива (нет лирики / нет wave-агента)
+const NEGATIVE_TTL_MS = 15 * 60_000;
 // сколько API-вызовов подряд можно сделать без rate-задержки (интерактивный burst)
 const RATE_BURST = 5;
 
@@ -59,20 +185,36 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   private npCache: CurrentTrack | null = null;
   private npCacheAt = 0;
   // кэш кураторских wave-цветов по album_id
-  private waveColorCache = new LRUMap<number, string | null>(500);
+  private waveColorCache = new LRUMap<number, string>(500);
   // кэш set лайкнутых трек-id (строки) с TTL
   private likesCache: Set<string> | null = null;
   private likesCacheAt = 0;
   // кэш лирики по track_id (null = нет лирики)
-  private lyricsCache = new LRUMap<string, string | null>(1000);
+  private lyricsCache = new LRUMap<string, string>(1000);
+  // definitive-негатив (нет лирики / нет wave-агента): ключ → момент (мс) истечения.
+  // Сбои (таймаут/429/5xx/сеть) не кэшируются вовсе.
+  private negUntil = new LRUMap<string, number>(2000);
+  private readonly now: () => number;
 
-  constructor(token: string, refreshCallback: RefreshCallback | null = null) {
+  private readonly libOptions: Partial<LibClientOptions>;
+  private readonly sleepFn: (ms: number) => Promise<void>;
+
+  constructor(
+    token: string,
+    refreshCallback: RefreshCallback | null = null,
+    libOptions: Partial<LibClientOptions> = {},
+    sleepFn: (ms: number) => Promise<void> = sleep,
+    now: () => number = Date.now,
+  ) {
+    this.now = now;
     if (!token || typeof token !== "string") throw new Error("токен должен быть непустой строкой");
     this.token = token;
     const s = getSettings();
     this.gate = new AsyncTokenGate(RATE_BURST, s.YANDEX_RATE_LIMIT_INTERVAL * 1000);
     this.maxRetries = s.YANDEX_MAX_RETRIES;
     this.refreshCb = refreshCallback;
+    this.libOptions = libOptions;
+    this.sleepFn = sleepFn;
   }
 
   /** явная инициализация (валидация токена через lib.init → account/status). */
@@ -83,7 +225,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   /** ленивый библиотечный клиент (init загружает аккаунт + валидирует токен). */
   private async getLib(): Promise<LibClient> {
     if (this.lib === null) {
-      const lib = new LibClient({ token: this.token });
+      const lib = new LibClient({
+        token: this.token,
+        retries: LIB_RETRIES,
+        timeout: LIB_TIMEOUT_MS,
+        ...this.libOptions,
+      });
       await withTimeout(lib.init(), CLIENT_INIT_TIMEOUT, "lib-init");
       this.lib = lib;
     }
@@ -142,14 +289,22 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
           throw e;
         }
 
-        // 429 у библиотеки не имеет своего класса — падает в generic
-        // NetworkError с текстом "... (429)" на конце (see request.ts). Матчим
-        // именно этот формат, привязанный к концу строки, а не голую подстроку.
-        const isRateLimit = e instanceof LibNetworkError && /\(429\)$/.test(e.message);
-        if (isRateLimit && attempt < this.maxRetries) {
-          const delay = baseDelayMs * 2 ** attempt + Math.random() * 1000;
-          log.warning(`rate limit, попытка ${attempt + 1}/${this.maxRetries + 1}, ждём ${(delay / 1000).toFixed(1)}с`);
-          await sleep(delay);
+        // 0.4.0: 429 -> TooManyRequestsError (status 429, retryAfterMs). Библиотека
+        // уже ретраила GET/batch-POST сама; Retry-After > её retryMaxMs она
+        // отдаёт сразу, поэтому ждём не меньше, чем просит сервер. 5xx/таймауты
+        // (ServerError/TimedOutError) библиотека тоже уже ретраила: не множим.
+        const isRateLimit = e instanceof LibTooManyRequestsError;
+        // Retry-After выше потолка паузы: ждать нечего, повтор сервер снова откажет
+        if (isRateLimit && (e.retryAfterMs ?? 0) > RETRY_DELAY_CAP_MS) throw e;
+        if (isRateLimit && attempt < Math.min(this.maxRetries, NOWYM_429_RETRIES)) {
+          const delay = Math.min(
+            Math.max(e.retryAfterMs ?? 0, baseDelayMs * 2 ** attempt) + Math.random() * 1000,
+            RETRY_DELAY_CAP_MS,
+          );
+          log.warning(
+            `rate limit, попытка ${attempt + 1}/${Math.min(this.maxRetries, NOWYM_429_RETRIES) + 1}, ждём ${(delay / 1000).toFixed(1)}с`,
+          );
+          await this.sleepFn(delay);
           lastError = e;
         } else {
           throw e;
@@ -229,16 +384,31 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     });
   }
 
-  /** кураторский hex-цвет wave-агента альбома. кэш вечный, на ошибке → null. */
+  private isNeg(key: string): boolean {
+    const until = this.negUntil.peek(key);
+    return until !== undefined && until > this.now();
+  }
+
+  private setNeg(key: string): void {
+    this.negUntil.set(key, this.now() + NEGATIVE_TTL_MS);
+  }
+
+  /** кураторский hex-цвет wave-агента альбома. цвет кэшируется вечно, «нет агента» —
+   *  на NEGATIVE_TTL_MS, на ошибке → null без кэша. */
   async getAlbumWaveColor(albumId: number): Promise<string | null> {
-    if (this.waveColorCache.has(albumId)) return this.waveColorCache.get(albumId)!;
-    let color: string | null = null;
+    const hit = this.waveColorCache.get(albumId);
+    if (hit) return hit;
+    const negKey = `wave:${albumId}`;
+    if (this.isNeg(negKey)) return null;
+    let color: string | null;
     try {
       color = await withTimeout(this.fetchAlbumWaveColor(albumId), 5_000, "wave-color");
     } catch (e) {
       log.debug(`wave-color ${albumId}: ${e}`);
+      return null;
     }
-    this.waveColorCache.set(albumId, color);
+    if (color) this.waveColorCache.set(albumId, color);
+    else this.setNeg(negKey);
     return color;
   }
 
@@ -271,7 +441,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       ids = await this.withRetry(async () => {
         const lib = await this.getLib();
         const library = await lib.usersLikesTracks();
-        return new Set((library?.tracks ?? []).map((t) => bareTrackId(t.id)));
+        return new Set((library?.tracks ?? []).map((t) => bareTrackId(t.id)).filter(Boolean));
       });
     } catch (e) {
       log.debug(`usersLikesTracks: ${e}`);
@@ -290,6 +460,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   /** ставит/снимает лайк; синхронит локальный likesCache (без лишнего фетча). */
   async setTrackLiked(trackId: number | string, liked: boolean): Promise<boolean> {
     const id = bareTrackId(trackId);
+    if (!id) return false;
     const ok = await this.withRetry(async () => {
       const lib = await this.getLib();
       return liked ? await lib.usersLikesTracksAdd(id) : await lib.usersLikesTracksRemove(id);
@@ -311,9 +482,11 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   async reportPlayback(track: YaTrack): Promise<void> {
     const albumId = track.albums?.[0]?.id;
     if (albumId === undefined) return; // playAudio требует albumId — без него нечего репортить
+    const trackId = bareTrackId(track.id);
+    if (!trackId) return;
     try {
       const lib = await this.getLib();
-      await lib.playAudio({ trackId: bareTrackId(track.id), albumId, from: "Мойва" });
+      await lib.playAudio({ trackId, albumId, from: "Мойва" });
     } catch (e) {
       log.debug(`playAudio: ${e}`);
     }
@@ -353,7 +526,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     const push = (raw: number | string | null | undefined) => {
       if (raw === undefined || raw === null) return;
       const id = bareTrackId(raw);
-      if (id && id !== "null" && !seen.has(id)) {
+      if (id && !seen.has(id)) {
         seen.add(id);
         ids.push(id);
       }
@@ -385,47 +558,16 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
     const ids: string[] = [];
     const seen = new Set<string>();
-    const pushRef = (t: { id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }) => {
-      const raw = t.trackId?.id ?? t.id ?? t.track_id;
-      if (raw === undefined || raw === null) return;
-      const id = bareTrackId(raw);
-      if (!seen.has(id)) {
-        seen.add(id);
-        ids.push(id);
-      }
-    };
     for (const block of landing?.blocks ?? []) {
-      const data = block.data as
-        | {
-            otherTracks?: Array<{
-              id?: number | string;
-              track_id?: number | string;
-              trackId?: { id?: number | string };
-            }>;
-            other_tracks?: Array<{
-              id?: number | string;
-              track_id?: number | string;
-              trackId?: { id?: number | string };
-            }>;
-            play_contexts?: Array<{
-              tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
-            }>;
-            playContexts?: Array<{
-              tracks?: Array<{ id?: number | string; track_id?: number | string; trackId?: { id?: number | string } }>;
-            }>;
-          }
-        | undefined;
-      if (!data) continue;
-      // основная форма блока play-contexts: data.otherTracks[].trackId
-      for (const t of data.otherTracks ?? data.other_tracks ?? []) {
-        pushRef(t);
-        if (ids.length >= limit) break;
-      }
-      // фолбэк-форма: data.play_contexts[].tracks[]
-      for (const ctx of data.play_contexts ?? data.playContexts ?? []) {
-        for (const t of ctx.tracks ?? []) {
-          pushRef(t);
-          if (ids.length >= limit) break;
+      // PlayContextsData мапит только otherTracks[].trackId.id (библиотека 0.4.0)
+      const data = block.data as { otherTracks?: Array<{ trackId?: { id?: number | string } }> } | undefined;
+      for (const t of data?.otherTracks ?? []) {
+        const raw = t.trackId?.id;
+        if (raw === undefined || raw === null) continue;
+        const id = bareTrackId(raw);
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
         }
         if (ids.length >= limit) break;
       }
@@ -435,25 +577,32 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     return ids;
   }
 
-  /** полный текст песни. кэш вечный, null = нет текста / API недоступен. */
+  /** полный текст песни. текст кэш вечный, «нет текста» — на NEGATIVE_TTL_MS,
+   *  null без кэша = сбой API. */
   async getTrackLyrics(trackId: number | string): Promise<string | null> {
     const key = bareTrackId(trackId);
-    if (this.lyricsCache.has(key)) return this.lyricsCache.get(key)!;
+    const hit = this.lyricsCache.get(key);
+    if (hit) return hit;
+    const negKey = `lyrics:${key}`;
+    if (this.isNeg(negKey)) return null;
     let text: string | null = null;
-    let apiOk = false;
+    let definitive = false;
     try {
       text = await this.withRetry(async () => {
         const lib = await this.getLib();
         const lyrics = await withTimeout(lib.tracksLyrics(key), 5_000, "lyrics");
-        apiOk = true;
-        return lyrics ? await withTimeout(lyrics.fetchLyrics(), 5_000, "lyrics-fetch") : null;
+        const t = lyrics ? await withTimeout(lyrics.fetchLyrics(), 5_000, "lyrics-fetch") : null;
+        definitive = true; // только после успешного fetchLyrics
+        return t;
       });
     } catch (e) {
-      // NotFoundError = у трека нет текста (валидный ответ) → кэшируем null
-      if (e instanceof LibNotFoundError) apiOk = true;
+      // NotFoundError = у трека нет текста (валидный ответ)
+      if (e instanceof LibNotFoundError) definitive = true;
       else log.debug(`getTrackLyrics(${key}): ${e}`);
     }
-    if (apiOk) this.lyricsCache.set(key, text);
+    if (!definitive) return text;
+    if (text) this.lyricsCache.set(key, text);
+    else this.setNeg(negKey);
     return text;
   }
 
@@ -505,6 +654,342 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
   }
 
+  /** health-проверка Ynison без требования играющего трека. */
+  async probeYnison(): Promise<{ latencyMs: number; detail: string }> {
+    const ynison = await this.getYnison();
+    return await ynison.probe();
+  }
+
+  /** Полный read-only health-отчёт Яндекс Музыки.
+   *
+   * Всё, что может сломаться в проде: OAuth/аккаунт, поиск, каталог,
+   * lossy/lossless-загрузка, CDN, лирика, лайки, история. Ynison проверяется
+   * отдельно в services/yandexHealth.ts (watcher или активный probe).
+   * Никаких мутаций (playAudio/like) — только чтение. */
+  async probeApiHealth(opts: ApiHealthProbeOptions): Promise<YandexHealthReport> {
+    const startedAt = performance.now();
+    const timeoutMs = opts.timeoutMs ?? 6_000;
+    const checks: YandexHealthCheck[] = [];
+    let probeTrack: YandexProbeTrack | null = null;
+    let accountGeo: string | null = null;
+
+    const finish = (): YandexHealthReport => {
+      const sorted = sortHealthChecks(checks);
+      return {
+        checkedAt: Date.now(),
+        durationMs: Math.round(performance.now() - startedAt),
+        overall: overallFromChecks(sorted),
+        probeTrack,
+        checks: sorted,
+      };
+    };
+
+    const addSkip = (key: string, label: string, critical: boolean, detail: string): void => {
+      checks.push({ key, label, critical, status: "skip", latencyMs: null, detail });
+    };
+
+    const probe = async <T>(
+      key: string,
+      label: string,
+      critical: boolean,
+      fn: () => Promise<T>,
+      describe: (value: T) => string,
+    ): Promise<T | null> => {
+      const checkStarted = performance.now();
+      let requestStarted = checkStarted;
+      try {
+        // ждём rate-gate отдельно: его очередь не должна съедать per-check
+        // таймаут реального запроса (иначе поздние проверки ложно падают)
+        await this.gate.acquire();
+        requestStarted = performance.now();
+        // без ретраев библиотеки: после таймаута проверки не должно оставаться
+        // висящих повторных запросов (число попыток читается при старте вызова)
+        const savedRetries = this.lib?.request.retries;
+        if (this.lib && savedRetries !== undefined) this.lib.request.retries = 0;
+        let value: T;
+        try {
+          value = await withTimeout(fn(), timeoutMs, key);
+        } finally {
+          if (this.lib && savedRetries !== undefined) this.lib.request.retries = savedRetries;
+        }
+        checks.push({
+          key,
+          label,
+          critical,
+          status: "ok",
+          latencyMs: Math.round(performance.now() - requestStarted),
+          detail: describe(value),
+        });
+        return value;
+      } catch (e) {
+        checks.push({
+          key,
+          label,
+          critical,
+          status: "fail",
+          latencyMs: Math.round(performance.now() - requestStarted),
+          detail: errorDetail(e),
+        });
+        return null;
+      }
+    };
+
+    const authStarted = performance.now();
+    let lib: LibClient;
+    try {
+      lib = await withTimeout(this.getLib(), timeoutMs, "health-auth");
+    } catch (e) {
+      checks.push({
+        key: "auth",
+        label: "аккаунт / OAuth",
+        critical: true,
+        status: "fail",
+        latencyMs: Math.round(performance.now() - authStarted),
+        detail: errorDetail(e),
+      });
+      for (const dep of HEALTH_DEPENDENT) addSkip(dep.key, dep.label, dep.critical, "не проверено: нет авторизации");
+      return finish();
+    }
+
+    try {
+      const [me, about] = await withTimeout(
+        Promise.all([lib.accountStatus(), readAccountAbout(lib)]),
+        timeoutMs,
+        "health-account",
+      );
+      const serviceAvailable = me !== null && me.account?.serviceAvailable !== false;
+      let detail = serviceAvailable ? `сервис доступен${me.plus?.hasPlus ? ", Plus активен" : ""}` : "токен не принят";
+      if (serviceAvailable && about?.geoRegionIso) {
+        const geo = about.geoRegionIso.toUpperCase();
+        accountGeo = geo;
+        const session = about.userSessionRegionIso?.toUpperCase();
+        detail += `; регион ${geo}${session && session !== geo ? `, сессия ${session}` : ""}`;
+      }
+      checks.push({
+        key: "auth",
+        label: "аккаунт / OAuth",
+        critical: true,
+        status: serviceAvailable ? "ok" : "fail",
+        latencyMs: Math.round(performance.now() - authStarted),
+        detail,
+      });
+      if (!serviceAvailable) {
+        for (const dep of HEALTH_DEPENDENT) addSkip(dep.key, dep.label, dep.critical, "не проверено: токен не принят");
+        return finish();
+      }
+    } catch (e) {
+      checks.push({
+        key: "auth",
+        label: "аккаунт / OAuth",
+        critical: true,
+        status: "fail",
+        latencyMs: Math.round(performance.now() - authStarted),
+        detail: errorDetail(e),
+      });
+      for (const dep of HEALTH_DEPENDENT)
+        addSkip(dep.key, dep.label, dep.critical, "не проверено: авторизация не прошла");
+      return finish();
+    }
+
+    const searchResult = await probe(
+      "search",
+      "поиск",
+      true,
+      async () => lib.search("Daft Punk", false, "track"),
+      (r) => {
+        const n = (r?.tracks?.results ?? []).length;
+        return n > 0 ? `поиск отвечает, найдено ${n}` : "поиск отвечает, результатов нет";
+      },
+    );
+
+    let catalogTrackId: string | null = null;
+    if (opts.probeTrackId != null) catalogTrackId = bareTrackId(opts.probeTrackId);
+    if (!catalogTrackId) {
+      const first = (searchResult?.tracks?.results ?? [])[0] as { id?: string | number } | undefined;
+      if (first?.id != null) catalogTrackId = bareTrackId(first.id);
+    }
+    if (!catalogTrackId) {
+      try {
+        const history = await lib.musicHistory(0);
+        catalogTrackId = firstHistoryTrackId(history as any);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    let catalogTrack: any = null;
+    if (catalogTrackId) {
+      catalogTrack = await probe(
+        "catalog",
+        "каталог / треки",
+        true,
+        async () => {
+          const tracks = await lib.tracks([catalogTrackId!]);
+          if (!tracks || tracks.length === 0) throw new Error("трек не найден");
+          return tracks[0];
+        },
+        (t) => {
+          probeTrack = probeTrackFrom(t as any);
+          return probeTrack ? `трек доступен: ${probeTrack.artist} — ${probeTrack.title}` : "трек доступен";
+        },
+      );
+    } else {
+      addSkip("catalog", "каталог / треки", true, "не удалось выбрать пробный трек");
+    }
+
+    // lossy download
+    let lossyLink: string | null = null;
+    const lossyTrackId = catalogTrackId;
+    if (lossyTrackId) {
+      const infos = await probe(
+        "download_lossy",
+        "загрузка mp3/aac",
+        true,
+        async () => {
+          const arr = (await lib.tracksDownloadInfo(lossyTrackId)) as unknown as LibDownloadInfo[];
+          if (!arr || arr.length === 0) throw new Error("нет вариантов загрузки");
+          return arr;
+        },
+        (arr) => {
+          const best = selectDownloadInfo(arr as any, "best");
+          return best ? `вариант: ${best.codec} ${best.bitrateInKbps}kbps` : `вариантов: ${arr.length}`;
+        },
+      );
+      if (infos) {
+        const chosen = selectDownloadInfo(infos as any, "best") as unknown as LibDownloadInfo | null;
+        if (chosen) {
+          try {
+            chosen.directLink = undefined;
+            lossyLink = await chosen.getDirectLink();
+          } catch {
+            lossyLink = null;
+          }
+        }
+      }
+    } else {
+      addSkip("download_lossy", "загрузка mp3/aac", true, "не удалось выбрать пробный трек");
+    }
+
+    // lossless: перебираем эталонные id, пока кто-то не отдаст настоящий lossless;
+    // lossy-ответ (нет Plus / нет lossless-источника) — degraded, а не ok
+    let losslessLink: string | null = null;
+    let losslessCodec: string | null = null;
+    const info = await probe(
+      "download_lossless",
+      "lossless / get-file-info",
+      true,
+      async () => {
+        let lossy: LibLosslessDownloadInfo | null = null;
+        let lastError: unknown = new Error("нет lossless-инфо");
+        for (const id of LOSSLESS_PROBE_IDS) {
+          try {
+            const i = (await lib.tracksFileInfo(id, { quality: "lossless" }))?.downloadInfo;
+            if (!i) continue;
+            if (isLosslessInfo(i)) return i;
+            lossy ??= i;
+          } catch (e) {
+            lastError = e;
+          }
+        }
+        if (lossy) return lossy;
+        throw lastError;
+      },
+      (i) => (isLosslessInfo(i) ? `lossless доступен: ${i.codec}` : `ответ получен: ${i.codec}`),
+    );
+    if (info) {
+      losslessLink = info.links()[0] ?? null;
+      losslessCodec = info.codec ?? null;
+      if (!isLosslessInfo(info)) {
+        // критичная проверка не должна быть ok при lossy-ответе: понижаем до некритичной ошибки → overall degraded
+        const check = checks.find((c) => c.key === "download_lossless");
+        if (check) {
+          check.status = "fail";
+          check.critical = false;
+          check.detail = `lossless недоступен, отдан ${info.codec ?? "?"}`;
+        }
+        losslessLink = null;
+      }
+    }
+
+    // CDN probe: для lossless — Range первых байт + проверка контейнера
+    const cdnUrl = losslessLink || lossyLink;
+    if (cdnUrl) {
+      await probe(
+        "cdn",
+        "CDN",
+        true,
+        async () => {
+          if (losslessLink) {
+            const res = await opts.http.request(losslessLink, {
+              headers: { Range: `bytes=0-${AUDIO_MAGIC_BYTES - 1}` },
+            });
+            let head: Buffer = Buffer.alloc(0);
+            try {
+              if (res.status >= 400) throw new Error(`CDN ответ ${res.status}`);
+              for await (const chunk of res.body) {
+                head = Buffer.from(chunk as Uint8Array);
+                break;
+              }
+            } finally {
+              res.body.destroy();
+            }
+            assertAudioMagic(head, losslessCodec);
+            return res;
+          }
+          const res = await opts.http.headOrRange(cdnUrl, 0, 0);
+          if (!res || res.status >= 400) throw new Error(`CDN ответ ${res?.status ?? "?"}`);
+          return res;
+        },
+        () => (losslessLink ? "lossless CDN отвечает, контейнер корректен" : "CDN отвечает"),
+      );
+    } else {
+      addSkip("cdn", "CDN", true, "нет ссылки для проверки");
+    }
+
+    // lyrics
+    const lyricsId = LYRICS_PROBE_IDS[0] || catalogTrackId;
+    if (lyricsId) {
+      await probe(
+        "lyrics",
+        "лирика",
+        false,
+        async () => {
+          const lyrics = await lib.tracksLyrics(lyricsId, "LRC");
+          if (!lyrics) throw new Error("нет лирики");
+          const text = await lyrics.fetchLyrics();
+          if (!text) throw new Error("пустой текст лирики");
+          return text;
+        },
+        (text) => `лирика доступна, ${String(text).length} символов`,
+      );
+    } else {
+      addSkip("lyrics", "лирика", false, "нет пробного трека");
+    }
+
+    // likes
+    await probe(
+      "likes",
+      "лайки",
+      false,
+      async () => lib.usersLikesTracks(),
+      (libRes) => `лайки доступны${(libRes as any)?.tracks ? `, ${(libRes as any).tracks.length} треков` : ""}`,
+    );
+
+    // history
+    await probe(
+      "history",
+      "история",
+      false,
+      async () => lib.musicHistory(0),
+      (h) => {
+        const tabs = (h as any)?.historyTabs?.length ?? 0;
+        return tabs > 0 ? `история доступна, вкладок ${tabs}` : "история доступна";
+      },
+    );
+
+    return finish();
+  }
+
   /** вариант загрузки по качеству (best — макс. битрейт, economy — ≤192). */
   async getBestDownloadInfo(track: YaTrack, quality: AudioQuality = "best"): Promise<DownloadInfo | null> {
     try {
@@ -523,18 +1008,28 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
   }
 
-  /** lossless/FLAC через /get-file-info. Возвращает LibLosslessDownloadInfo напрямую
-   * (несёт urls/key/codec/bitrate/links()/downloadBytes()). null, если эндпоинт не
-   * дал ссылок или трек недоступен. */
+  /** lossless через /get-file-info, transport raw (без шифрования; flac-mp4 = ftyp-контейнер).
+   * Возвращает LibLosslessDownloadInfo (urls/codec/bitrate/links()). null, если эндпоинт не
+   * дал ссылок, трек недоступен или отдал lossy (нет Plus / нет lossless-источника) —
+   * вызывающие тогда честно уходят в lossy-тир с пометкой degraded. */
   async getLosslessDownload(track: YaTrack): Promise<LibLosslessDownloadInfo | null> {
+    const id = bareTrackId(track.id);
+    if (!id) return null;
     try {
       return await this.withRetry(async () => {
         const lib = await this.getLib();
-        const info = await lib.tracksLosslessInfo(track.id!, "lossless");
+        const info = (await lib.tracksFileInfo(id, { quality: "lossless" }))?.downloadInfo;
         if (!info || info.links().length === 0) return null;
-        log.info(
-          `get-file-info ${track.id}: ${info.codec} ${info.bitrate}kbps enc=${Boolean(info.key)} urls=${info.links().length}`,
-        );
+        if (info.isEncrypted) {
+          // transports=raw проигнорирован: шифртекст иначе скачался бы целиком и отвергся по магии
+          log.warning(`[lossless] ${track.id}: сервер отдал encrypted-поток при transports=raw — пропуск`);
+          return null;
+        }
+        log.info(`get-file-info ${track.id}: ${info.codec} urls=${info.links().length}`);
+        if (!isLosslessInfo(info)) {
+          log.warning(`[lossless] ${track.id}: запрошен lossless, получен ${info.codec} — деградация в lossy`);
+          return null;
+        }
         return info;
       });
     } catch (e) {

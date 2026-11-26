@@ -63,6 +63,33 @@ export class HttpClient {
     return { status: res.statusCode, headers: res.headers, body: res.body };
   }
 
+  /** Лёгкая проверка доступности ресурса без скачивания тела (для health/CDN probe).
+   * Пытается HEAD, при неуспехе/405 — GET с Range bytes=start-end. */
+  async headOrRange(url: string, start = 0, end = 0): Promise<{ status: number } | null> {
+    try {
+      const head = await request(url, {
+        method: "HEAD",
+        headers: { "User-Agent": BROWSER_UA },
+        dispatcher: this.getAgent(),
+      });
+      await head.body.dump();
+      if (head.statusCode < 400 && head.statusCode !== 405) return { status: head.statusCode };
+    } catch {
+      /* fall through to range */
+    }
+    try {
+      const res = await request(url, {
+        method: "GET",
+        headers: { "User-Agent": BROWSER_UA, Range: `bytes=${start}-${end}` },
+        dispatcher: this.getAgent(),
+      });
+      await res.body.dump();
+      return { status: res.statusCode };
+    } catch {
+      return null;
+    }
+  }
+
   /** скачать аудио: свежий agent (force_close) на каждую попытку + ретраи.
    * signal — для racing-загрузки: отменяет проигравшие попытки. */
   async downloadAudio(url: string, maxRetries = 3, signal?: AbortSignal): Promise<Buffer> {

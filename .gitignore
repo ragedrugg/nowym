@@ -51,3 +51,11 @@ llms-full.txt
 /*.png
 !assets/**/*.png
 !assets/**/*.jpg
+
+# Секреты и дампы БД
+.env.*
+!.env.example
+*.dump
+
+# Тест-покрытие
+coverage/

@@ -15,6 +15,7 @@ import type { CacheDb } from "../storage/cache.ts";
 import type { TrackCacheResult } from "../storage/types.ts";
 import { createEmptyMp3, getFilename } from "../tagging/emptyMp3.ts";
 import type { AudioTransform, TaggingService } from "../tagging/service.ts";
+import { hasAudioMagic } from "../yandex/audioMagic.ts";
 import { fetchCover, origCoverUrl } from "../yandex/media.ts";
 import { estimateTrackBytes, HEAVY_TRACK_BYTES, MAX_TRACK_BYTES } from "../yandex/metadata.ts";
 import type { TrackMetadata } from "../yandex/types.ts";
@@ -90,7 +91,7 @@ export class CacheService {
   }
 
   /** полная качка + кэш в канал. дедупит параллельные запросы по (track_id, quality).
-   * decrypt — расшифровка скачанных байт (encraw/FLAC), применяется до тегов.
+   * Скачанные байты проверяются по магии контейнера кодека ДО тегов и кэша (мусор = неудачная попытка).
    * quality — тир кэша: 'lossy' (mp3/aac) | 'lossless' (FLAC) | 'nightcore' — разные file_id.
    * transform — перекодировка через -af фильтр (выход mp3); codec тогда = исходный (для декода). */
   async downloadAndCacheTrack(
@@ -98,12 +99,11 @@ export class CacheService {
     getUrl: UrlGetter,
     metadata: CacheMetadata | null = null,
     codec = "mp3",
-    decrypt?: (data: Buffer) => Buffer,
     quality = "lossy",
     transform?: AudioTransform,
   ): Promise<string | null> {
     const task = this.withDedup(this.downloadTasks, `${trackId}:${quality}`, () =>
-      this.downloadAndCacheFullTrack(trackId, getUrl, metadata, codec, decrypt, quality, transform),
+      this.downloadAndCacheFullTrack(trackId, getUrl, metadata, codec, quality, transform),
     );
     try {
       // таймаут растёт с размером: крупный файл дольше качается, тегируется и льётся в канал
@@ -117,17 +117,16 @@ export class CacheService {
   }
 
   /** audio+cover+теги. дедуп по (track_id, tier) — lossy и lossless тащатся
-   * раздельно. decrypt — расшифровка encraw/FLAC до тегов (для lossless-тира). */
+   * раздельно. Магия контейнера проверяется до тегов. */
   async prepareTrackPayload(
     trackId: string,
     getUrl: UrlGetter,
     metadata: CacheMetadata,
     codec = "mp3",
-    decrypt?: (data: Buffer) => Buffer,
     tier = "lossy",
   ): Promise<[Buffer, Buffer | null] | null> {
     const task = this.withDedup(this.payloadTasks, `${trackId}:${tier}`, () =>
-      this.downloadWithMetadata(getUrl, metadata, codec, decrypt),
+      this.downloadWithMetadata(getUrl, metadata, codec),
     );
     try {
       // тот же расчёт таймаута, что и в downloadAndCacheTrack — без него зависший
@@ -282,7 +281,6 @@ export class CacheService {
     getUrl: UrlGetter,
     metadata: CacheMetadata,
     codec = "mp3",
-    decrypt?: (data: Buffer) => Buffer,
     transform?: AudioTransform,
   ): Promise<[Buffer, Buffer | null] | null> {
     // preflight: оценка размера ДО скачивания. Двойной буфер (качка+теги) в RAM при
@@ -294,15 +292,14 @@ export class CacheService {
     }
     // тяжёлый → строго по одному (heavyLock) + одиночная качка без racing-параллелизма
     const heavy = estBytes > HEAVY_TRACK_BYTES;
-    if (heavy) return this.heavyLock.run(() => this.fetchAndTag(getUrl, metadata, codec, decrypt, transform, true));
-    return this.fetchAndTag(getUrl, metadata, codec, decrypt, transform, false);
+    if (heavy) return this.heavyLock.run(() => this.fetchAndTag(getUrl, metadata, codec, transform, true));
+    return this.fetchAndTag(getUrl, metadata, codec, transform, false);
   }
 
   private async fetchAndTag(
     getUrl: UrlGetter,
     metadata: CacheMetadata,
     codec: string,
-    decrypt: ((data: Buffer) => Buffer) | undefined,
     transform: AudioTransform | undefined,
     solo: boolean,
   ): Promise<[Buffer, Buffer | null] | null> {
@@ -313,7 +310,7 @@ export class CacheService {
     const coverUrl = metadata.cover_url || "";
     // solo: одиночная качка (тяжёлый трек) вместо racing — иначе до 3× файла в RAM
     const fetchAudio = (): Promise<Buffer | null> =>
-      solo ? this.soloDownload(getUrl) : this.racingDownloadWithRetry(getUrl);
+      solo ? this.soloDownload(getUrl, codec) : this.racingDownloadWithRetry(getUrl, codec);
 
     let audioData: Buffer | null;
     if (thumbData === null && coverUrl) {
@@ -336,8 +333,6 @@ export class CacheService {
       log.warning(`трек по факту ${mb(audioData.length)} > лимит — отказ до тегов/заливки`);
       return null;
     }
-    if (decrypt) audioData = decrypt(audioData); // encraw → расшифровка до тегов
-
     const audioWithMetadata = await this.tagging.addMetadata(
       audioData,
       { ...metadata, cover_data: embedData },
@@ -348,11 +343,16 @@ export class CacheService {
   }
 
   /** одиночная качка с последовательными ретраями — для тяжёлых треков (без racing-параллелизма). */
-  private async soloDownload(getUrl: UrlGetter): Promise<Buffer | null> {
+  private async soloDownload(getUrl: UrlGetter, codec: string): Promise<Buffer | null> {
     const url = await getUrl();
     if (!url) return null;
     try {
-      return await this.http.downloadAudio(url, 3);
+      const data = await this.http.downloadAudio(url, 3);
+      if (!hasAudioMagic(data, codec)) {
+        log.warning(`[solo] байты не похожи на контейнер ${codec} — отбрасываю`);
+        return null;
+      }
+      return data;
     } catch (e) {
       log.warning(`[solo] качка большого трека не вышла: ${e}`);
       return null;
@@ -377,9 +377,14 @@ export class CacheService {
   }
 
   /** несколько волн racing — узлы CDN иногда «отходят» за 2-3с. */
-  private async racingDownloadWithRetry(getUrl: UrlGetter, waves = 2, wavePauseMs = 3_000): Promise<Buffer | null> {
+  private async racingDownloadWithRetry(
+    getUrl: UrlGetter,
+    codec: string,
+    waves = 2,
+    wavePauseMs = 3_000,
+  ): Promise<Buffer | null> {
     for (let wave = 1; wave <= waves; wave++) {
-      const data = await this.racingDownload(getUrl);
+      const data = await this.racingDownload(getUrl, 3, 2_500, 90_000, codec);
       if (data !== null) return data;
       if (wave < waves) {
         log.info(`[racing] волна ${wave} проиграла, повтор через ${wavePauseMs / 1000}с`);
@@ -404,6 +409,7 @@ export class CacheService {
     maxAttempts = 3,
     staggerMs = 2_500,
     overallTimeoutMs = 90_000,
+    codec: string | null = null,
   ): Promise<Buffer | null> {
     let resolved = false;
     let winner: Buffer | null = null;
@@ -430,6 +436,8 @@ export class CacheService {
           return;
         }
         const data = await this.http.downloadAudio(url, 1, ctrl.signal);
+        // HTML/JSON-ошибка CDN или шифртекст — проваленная попытка, а не победитель
+        if (!hasAudioMagic(data, codec)) throw new Error(`байты не похожи на контейнер ${codec}`);
         if (!resolved) {
           winner = data;
           finish();
@@ -472,7 +480,6 @@ export class CacheService {
     getUrl: UrlGetter,
     metadata: CacheMetadata | null,
     codec = "mp3",
-    decrypt?: (data: Buffer) => Buffer,
     quality = "lossy",
     transform?: AudioTransform,
   ): Promise<string | null> {
@@ -504,7 +511,7 @@ export class CacheService {
       };
     }
 
-    const prepared = await this.downloadWithMetadata(getUrl, meta, codec, decrypt, transform);
+    const prepared = await this.downloadWithMetadata(getUrl, meta, codec, transform);
     if (prepared === null) {
       log.error(`трек ${trackId}: не скачался`);
       return null;

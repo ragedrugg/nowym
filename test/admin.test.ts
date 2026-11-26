@@ -8,12 +8,12 @@ import { test } from "node:test";
 // ADMIN_USER_ID вместо тестового. Fail-closed (без ADMIN_USER_ID) — отдельный
 // файл adminFailClosed.test.ts, там же почему.
 process.env.ADMIN_USER_ID = "12345";
-process.env.TELEGRAM_BOT_TOKEN ??= "test-token";
-process.env.TELEGRAM_CHANNEL_ID ??= "test-channel";
-process.env.TOKEN_ENCRYPTION_KEY ??= "test-key";
-process.env.POSTGRES_USERS_DSN ??= "postgres://test/test";
-process.env.POSTGRES_CACHE_DSN ??= "postgres://test/test";
-process.env.BOT_API_BASE_URL ??= "http://127.0.0.1:8081/bot";
+process.env.TELEGRAM_BOT_TOKEN = "test-token";
+process.env.TELEGRAM_CHANNEL_ID = "test-channel";
+process.env.TOKEN_ENCRYPTION_KEY = "test-key";
+process.env.POSTGRES_USERS_DSN = "postgres://test/test";
+process.env.POSTGRES_CACHE_DSN = "postgres://test/test";
+process.env.BOT_API_BASE_URL = "http://127.0.0.1:8081/bot";
 
 import { isAdmin } from "../src/bot/handlers/admin.ts";
 

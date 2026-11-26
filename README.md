@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/badge/node-%E2%89%A5%2022-339933?logo=node.js&logoColor=white"></a>
+  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/badge/node-%E2%89%A5%2022.19-339933?logo=node.js&logoColor=white"></a>
   <a href="https://www.typescriptlang.org"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.7-3178C6?logo=typescript&logoColor=white"></a>
   <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.12-2ea44f"></a>
   <img alt="stable" src="https://img.shields.io/badge/status-stable-2ea44f">
@@ -27,8 +27,8 @@
   замедление+реверб), реальный DSP через ffmpeg, результат кэшируется
   отдельно от оригинала;
 - ❤️ лайк/анлайк трека кнопкой под треком;
-- 🎚 выбор качества звука — `best` / `economy` / `lossless` (для lossless —
-  расшифровка CDN-ссылок на лету);
+- 🎚 выбор качества звука — `best` / `economy` / `lossless` (lossless берётся «сырым» потоком,
+  без расшифровки; если Яндекс отдал lossy — трек уходит в lossy-тир);
 - 📦 выгрузка альбома пачками (`sendMediaGroup`) — с прогрессом, отменой,
   повтором упавших треков, возобновлением после рестарта бота, без OOM даже
   на здоровенных аудиокнигах;
@@ -64,7 +64,9 @@
    ```
    Спросит токен/id канала/твой id (Enter — пропустить и дозаполнить в
    `.env` вручную), сам сгенерит секреты, при постгресе под рукой —
-   накатит роли и пропишет DSN сам.
+   накатит роли и пропишет DSN сам. `./install.sh --yes` — то же без
+   вопросов (в т.ч. из CI/пайпа): без `--yes` вне терминала шаги, требующие
+   подтверждения (например накат postgres-ролей), пропускаются.
 4. **Подключение к Telegram** — выбери один способ:
    - **self-hosted Bot API сервер** (рекомендуется — без домена и TLS,
      поднимается локально за пару минут):
@@ -80,7 +82,7 @@
      и т.п.): заполни `WEBHOOK_HOST`/`WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY` в
      `.env`, `BOT_API_BASE_URL` оставь пустым.
 5. **Запуск:** `npm run start` (или `pm2 start ecosystem.config.cjs` —
-   `install.sh` уже подогнал в нём пути под эту машину).
+   конфиг портативный: `cwd`/`interpreter` вычисляются на лету, править его не нужно).
 
 Если что-то не так — бот скажет прямо на старте (например явно укажет,
 какая переменная в `.env` не задана), падать молча со временем не должен.
@@ -124,7 +126,25 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 Качество звука (`best`/`economy`/`lossless`), формат ответа (кнопка/текст/
 всё/ничего — отдельно для трека и для карточки), какие поля показывать на
 карточке (альбом/тип/год/лейбл/номер трека/аватар), стиль прогресс-бара
-(`wavy`/`bar`), соотношение сторон карточки (`16:9`/`9:16`).
+(`wavy`/`bar`), соотношение сторон карточки (`16:9`/`9:16`), «Rich messages (карточка + трек)»
+(см. ниже).
+
+### Rich messages (карточка + трек)
+
+Настройка «карточка+трек», по умолчанию **выкл.** Если включить, карточка
+«что играет» (с позицией на момент команды) и сам трек приходят **одним
+сообщением**: в инлайне первым результатом, в `/np`, кнопках меню
+«что играет» / «карточка» и по ссылке «слушать в лс» (`track_<id>`; для
+трека, который сейчас не играет, карточка рисуется на 0:00). Если Bot API
+ответил на rich ошибкой, бот присылает карточку и трек по отдельности, как
+раньше (в логе одна строка `[rich]`). Если ответа не было вовсе (сеть/таймаут),
+исход неизвестен: сообщение могло дойти, поэтому бот ничего не досылает (иначе
+будет дубль) и пишет «не удалось подтвердить отправку — проверь чат»; 429
+повторяется автоматически. Выключено — поведение прежнее.
+
+Нужен Bot API >= 10.1 на сервере Bot API (в том числе на self-hosted) и свежий
+клиент Telegram: старые клиенты могут показать «сообщение не поддерживается».
+Новых фоновых задач нет; карточка рисуется только по запросу пользователя.
 
 ## Стек
 
@@ -154,17 +174,18 @@ sudo apt install postgresql redis-server ffmpeg
 ## Как поставить
 
 `./install.sh` из «Быстрого старта» выше делает всё это за один проход:
-проверит node, поставит зависимости, подготовит `.env` (секреты сгенерит
-сам; спросит токен/id канала/твой id и впишет их же), при доступном
-постгресе — накатит роли и пропишет `POSTGRES_*_DSN` сам (пароли
-сгенерены, руками синхронизировать не с чем), проверит redis/ffmpeg,
-подгонит `ecosystem.config.cjs` под текущую машину, прогонит typecheck
-как smoke-тест.
+проверит node, поставит зависимости (`npm ci` по `package-lock.json`),
+подготовит `.env` (секреты сгенерит сам; спросит токен/id канала/твой id и
+впишет их же), при доступном постгресе — накатит роли и пропишет
+`POSTGRES_*_DSN` сам (пароли сгенерены, руками синхронизировать не с чем),
+проверит redis/ffmpeg и pm2 (`ecosystem.config.cjs` портативен, его скрипт не
+правит), прогонит typecheck как smoke-тест. Если накат ролей упал, лог psql
+лежит во временном файле (`mktemp`), путь печатается в выводе.
 
 Руками — то же самое по шагам:
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 ```
 
@@ -179,10 +200,20 @@ cp .env.example .env
 # заполни .env: TELEGRAM_BOT_TOKEN/TELEGRAM_CHANNEL_ID/ADMIN_USER_ID,
 # POSTGRES_USERS_DSN/POSTGRES_CACHE_DSN (host — `postgres`, не 127.0.0.1),
 # NOWYM_USERS_PASSWORD/NOWYM_CACHE_PASSWORD (те же пароли, что в DSN),
-# REDIS_HOST=redis, TOKEN_ENCRYPTION_KEY/WEBHOOK_SECRET/NOW_PLAYING_TOKEN
+# POSTGRES_SUPERUSER_PASSWORD (обязателен — без него `docker compose` не стартует;
+# пароль суперпользователя postgres, дефолта нет),
+# REDIS_HOST=redis, WEBHOOK_SECRET/NOW_PLAYING_TOKEN
 # (сгенерить: node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')
+# TOKEN_ENCRYPTION_KEY — Fernet-ключ, base64url С паддингом (44 символа, как делает install.sh):
+# node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64").replace(/\+/g,"-").replace(/\//g,"_"))'
 docker compose up -d --build
 ```
+
+Порт `8443` публикуется только на loopback (`127.0.0.1`); для прямого
+публичного доступа задай `NOWYM_BIND_HOST=0.0.0.0`. У сервисов стоят
+лимиты памяти (`mem_limit`), бот в контейнере работает не от root. Пароль
+Redis (`REDIS_PASSWORD`) в compose опционален, но бот его пока не читает — с
+непустым значением бот к Redis не подключится, оставь пустым.
 
 Postgres-роли (`nowym_users_app`/`nowym_cache_app`) создаются автоматически
 при первом старте контейнера (`docs/sql/docker-init.sh`), схему таблиц
@@ -208,7 +239,14 @@ Bot API сервер удобнее поднять отдельным конте
 `ADMIN_USER_ID` — без него `/health`/`/broadcast` недоступны никому
 (гейт fail-closed) и алерты об ошибках в личку админу не шлются.
 
-Опционально: `GENIUS_TOKEN` (лирика точнее — ключ на genius.com/api-clients),
+`WEBHOOK_SECRET` в webhook-режиме обязателен по сути: пустой — все POST на
+webhook отвечают 401 (бот при этом стартует). Числовые переменные
+разбираются строго: мусор (`abc`, `1e3`, значение с инлайн-комментарием
+`60 # сек`) роняет старт с ошибкой, называющей переменную.
+
+Опционально: `METRICS_TOKEN` (если задан — `GET /metrics` и детали
+`/health` требуют `Authorization: Bearer ...`; пусто — открыто, как раньше),
+`GENIUS_TOKEN` (лирика точнее — ключ на genius.com/api-clients),
 `OWNER_ID` (кто в Ynison-наблюдателе, по умолчанию = `ADMIN_USER_ID`),
 `WEBHOOK_PATH`/`WEBHOOK_SECRET`/`WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY`
 (детали облачного webhook-режима), `NOW_PLAYING_TOKEN` (без него `GET
@@ -242,7 +280,7 @@ npm run start       # tsx src/main.ts — webhook (облако) или long-pol
 npm run dev         # то же самое, но tsx watch — авто-рестарт на изменениях
 npm run typecheck   # tsc --noEmit
 npm run lint         # biome check . (npm run lint:fix — почить автофиксом)
-npm test            # node --import tsx --test, ~154 теста, секунд 12
+npm test            # node --import tsx --test, 402 теста, секунд 30
 ```
 
 Режим выбирается сам: задан `BOT_API_BASE_URL` → self-hosted Bot API сервер +
@@ -253,7 +291,8 @@ http(s)-сокет с роутами: `WEBHOOK_PATH` (апдейты Telegram, �
 трекчейнджей вотчера, без похода в Yandex API), `Authorization: Bearer
 NOW_PLAYING_TOKEN`), `GET /health` и `GET /metrics` (Prometheus text —
 статус пулов Postgres, hit/miss in-memory кэшей, статус Ynison-вотчера,
-счётчики ошибок/rate-limit-реджектов; без авторизации, как и `/health`).
+счётчики ошибок/rate-limit-реджектов; без авторизации, пока не задан
+`METRICS_TOKEN`).
 TLS — если заданы `WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY`.
 
 ### Прод (pm2)
@@ -274,20 +313,48 @@ pm2 logs nowym-ts
 
 `nowym_users` хранит зашифрованные OAuth-токены — потеря базы означает,
 что все переавторизуются заново. `scripts/backup.sh` дампит обе базы
-(`pg_dump -Fc`), подчищает дампы старше 14 дней (`NOWYM_BACKUP_KEEP_DAYS`)
-и шлёт оба файла `ADMIN_USER_ID` в личку (`TELEGRAM_BOT_TOKEN`/
-`BOT_API_BASE_URL` из `.env`; на self-hosted Bot API сервере лимит на файл
-2ГБ, не 50МБ как в облаке). Отправка best-effort — сбой Telegram не роняет
-сам бэкап, дампы уже на диске.
+(`pg_dump -Fc`), проверяет каждый дамп через `pg_restore --list` и шлёт оба
+файла `ADMIN_USER_ID` в личку (`TELEGRAM_BOT_TOKEN`/`BOT_API_BASE_URL` из
+`.env`; `.env` скрипт не `source`-ит, токен в argv не светится; на
+self-hosted Bot API сервере лимит на файл 2ГБ, не 50МБ как в облаке).
+Параллельный запуск блокируется (`flock`), файлы создаются с `umask 077`.
+
+Ротация (дампы, `*.dump.unverified` и `env-*` старше
+`NOWYM_BACKUP_KEEP_DAYS`, по умолчанию 14 дней) выполняется **только после
+полностью успешного запуска** — иначе при постоянных сбоях старые хорошие
+бэкапы пропали бы. Дамп, не прошедший проверку, переименовывается в
+`*.dump.unverified`. Код возврата: `0` — дампы сняты и отправлены (или отправка
+не настроена); `1` — дамп не снялся/не прошёл проверку, отправка в Telegram не
+удалась или уже идёт другой запуск (локальные дампы остаются). Переменные:
+`NOWYM_BACKUP_DIR` (по умолчанию `/var/backups/nowym`),
+`NOWYM_BACKUP_KEEP_DAYS`, `NOWYM_PG_MODE=docker` (дампить через
+`docker compose exec -T postgres`), `NOWYM_BACKUP_ENV=1` (дополнительно
+положить локальную копию `.env` с `TOKEN_ENCRYPTION_KEY`, права 600, в
+Telegram не уходит; по умолчанию выключено — задаётся в окружении cron-задачи,
+не в `.env`).
 
 ```bash
 ./scripts/backup.sh                                    # разово, в /var/backups/nowym
 crontab -e                                              # раз в сутки:
-# 0 4 * * * /path/to/nowym/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1
-
-# восстановление:
-sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowym/nowym_users-*.dump
+# 59 20 * * * /path/to/nowym/scripts/backup.sh >> /var/log/nowym-backup.log 2>&1
 ```
+
+**Восстановление** — `scripts/restore.sh <stamp> [--db nowym_users|nowym_cache] [--yes]`.
+`<stamp>` — часть имени дампа между `nowym_users-`/`nowym_cache-` и `.dump`
+(например `20261126-205900`). Без `--yes` скрипт только проверяет, что дампы
+читаются, и печатает план. С `--yes` останавливает бота (pm2 или docker
+compose, определяется сам), делает `pg_restore --clean --if-exists`
+(**затирает** текущие данные) и бота обратно **не** запускает — запусти руками
+после проверки. Переменные: `NOWYM_BACKUP_DIR`, `NOWYM_PG_MODE=docker`,
+`NOWYM_PM2_NAME` (`nowym-ts`), `NOWYM_PM2_USER`.
+
+**Откат кода** — `sudo scripts/rollback.sh <STAMP>`. Нужна копия дерева,
+снятая перед деплоем: `$NOWYM_APP_DIR.prev-<STAMP>` (pm2; по умолчанию
+`/home/rage/nowym.prev-<STAMP>`) или образ `nowym-bot:prev-<STAMP>` (docker).
+Схема БД аддитивная, старый код работает на новой схеме; данные БД скрипт не
+трогает (для них `restore.sh`). Переменные: `NOWYM_APP_DIR`,
+`NOWYM_PM2_NAME`, `NOWYM_PM2_USER`, `NOWYM_HEALTH_URL` (по умолчанию
+`http://127.0.0.1:8443/health`), `NOWYM_HEALTH_CURL_OPTS`.
 
 ## Структура
 
@@ -300,12 +367,13 @@ sudo -u postgres pg_restore -d nowym_users --clean --if-exists /var/backups/nowy
 | `src/infra/` | http-клиент, шифрование, логирование, rate-limit, ретраи 429/5xx (`floodRetry.ts`), алертер об ошибках админу (`adminAlerter.ts`) |
 | `src/storage/` | пулы Postgres, схемы users/cache/settings |
 | `src/tagging/` | тегирование аудио (TagLib/ffmpeg) |
-| `test/` | `node:test`, ~123 штуки |
+| `test/` | `node:test`, 402 штуки; `npm test` не читает реальный `.env` (`NODE_ENV=test`) |
 | `install.sh` | установка в одну команду (см. выше) |
 | `docs/sql/init.sql` | создание Postgres-ролей и баз (bare-metal) |
 | `docs/sql/docker-init.sh` | то же самое, но для первого старта postgres-контейнера |
 | `Dockerfile`, `docker-compose.yml` | альтернатива `install.sh` — бот+Postgres+Redis в контейнерах |
 | `scripts/backup.sh` | pg_dump обеих баз + ротация, крон-скрипт |
+| `scripts/restore.sh`, `scripts/rollback.sh` | восстановление БД из дампа / откат кода на предыдущую копию (см. «Бэкапы») |
 | `biome.json` | конфиг линтера/форматтера (`npm run lint`) |
 
 ## Если что-то сломалось

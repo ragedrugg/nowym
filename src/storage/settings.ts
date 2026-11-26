@@ -21,6 +21,9 @@ const DEFAULT_CARD_STYLE = "ambient";
 const CARD_PROGRESS_STYLES = new Set(["wavy", "bar"]);
 const DEFAULT_CARD_PROGRESS = "wavy";
 
+// «карточка+трек» одним сообщением (rich messages); по умолчанию выкл.
+export const DEFAULT_RICH_MESSAGES = false;
+
 export const CARD_ASPECTS = new Set(["16:9", "9:16"]);
 const DEFAULT_CARD_ASPECT = "16:9";
 
@@ -46,6 +49,7 @@ export interface UserSettings {
   card_progress: string;
   card_toggles: Record<CardToggleName, boolean>;
   card_aspect: string;
+  rich_messages: boolean;
 }
 
 export function norm(v: string | null | undefined, valid: Set<string>, def: string): string {
@@ -101,11 +105,14 @@ export class SettingsDb {
     await usersPool.query(
       "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS card_aspect TEXT NOT NULL DEFAULT '16:9'",
     );
+    await usersPool.query(
+      "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS rich_messages BOOLEAN NOT NULL DEFAULT FALSE",
+    );
   }
 
   async get(userId: number): Promise<UserSettings> {
     const cols =
-      "track_layout, track_send_mode, track_quality, card_style, card_layout, card_progress, card_aspect, " +
+      "track_layout, track_send_mode, track_quality, card_style, card_layout, card_progress, card_aspect, rich_messages, " +
       toggleColumns().join(", ");
     const res = await usersPool.query<Record<string, unknown>>(`SELECT ${cols} FROM user_settings WHERE user_id = $1`, [
       userId,
@@ -121,6 +128,7 @@ export class SettingsDb {
         card_progress: DEFAULT_CARD_PROGRESS,
         card_toggles: { ...CARD_DEFAULT_TOGGLE },
         card_aspect: DEFAULT_CARD_ASPECT,
+        rich_messages: DEFAULT_RICH_MESSAGES,
       };
     }
     const toggles = {} as Record<CardToggleName, boolean>;
@@ -134,6 +142,7 @@ export class SettingsDb {
       card_progress: norm(row.card_progress as string, CARD_PROGRESS_STYLES, DEFAULT_CARD_PROGRESS),
       card_toggles: toggles,
       card_aspect: norm(row.card_aspect as string, CARD_ASPECTS, DEFAULT_CARD_ASPECT),
+      rich_messages: Boolean(row.rich_messages),
     };
   }
 
@@ -189,6 +198,13 @@ export class SettingsDb {
 
   setCardAspect(userId: number, aspect: string): Promise<string> {
     return this.setNormalized(userId, "card_aspect", aspect, CARD_ASPECTS, DEFAULT_CARD_ASPECT);
+  }
+
+  async setRichMessages(userId: number, value: boolean): Promise<boolean> {
+    // имя колонки — литерал; значение строго === true, мусор = выкл.
+    const v = value === true;
+    await this.setColumn(userId, "rich_messages", v);
+    return v;
   }
 
   async setCardToggle(userId: number, name: string, value: boolean): Promise<boolean> {

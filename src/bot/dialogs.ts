@@ -59,10 +59,15 @@ const toggleSummary = (t: Record<string, boolean>): string => {
   const on = CARD_TOGGLES.filter((n) => t[n]).map(cardFieldLabel);
   return on.length > 0 ? on.join(", ") : "ничего не выбрано";
 };
+const richLabel = (v: string): string => (v === "on" ? "вкл." : "выкл.");
+const richCurrent = (s: UserSettings): string => (s.rich_messages ? "on" : "off");
+const richSave = async (c: Container, userId: number, v: string): Promise<string> =>
+  (await c.settingsDb.setRichMessages(userId, v === "on")) ? "on" : "off";
 const settingsMainText = (s: UserSettings): FormattableString => format`${bold("настройки")}
 
 как слать трек: ${bold(trackLayoutLabel(s.track_layout))}
 тип отправки: ${bold(trackSendModeLabel(s.track_send_mode))}
+карточка+трек: ${bold(richLabel(richCurrent(s)))}
 качество: ${bold(trackQualityLabel(s.track_quality))}
 карточка: ${bold(cardLayoutLabel(s.card_layout))}, ${bold(cardProgressLabel(s.card_progress))}, ${italic(toggleSummary(s.card_toggles))}`;
 const layoutPickText = (): FormattableString => format`${bold("как слать трек")}
@@ -75,6 +80,12 @@ const sendModePickText = (): FormattableString => format`${bold("тип отпр
 
 ${bold("пустышка")} — сразу аудиофайл, который подменяется на трек
 ${bold("текст → медиа")} — сначала текст «гружу артист — название», потом он превращается в аудио`;
+const richPickText = (): FormattableString => format`${bold("Rich messages (карточка + трек)")}
+
+${bold("вкл.")} — карточка и трек приходят одним сообщением
+${bold("выкл.")} — как раньше, по отдельности
+
+${italic("если Telegram не поддерживает — отправляется как раньше")}`;
 const qualityPickText = (): FormattableString => format`${bold("качество звука")}
 
 ${bold("оптимальное")} — mp3 до 320
@@ -104,6 +115,18 @@ const cardProgressText = (): FormattableString => format`${bold("прогрес�
 
 ${bold("волна")} — волнистый
 ${bold("полоска")} — прямая`;
+
+/** onClick stateless Select: сохранить в БД, сбросить кэш настроек юзера, ре-рендер. */
+const radioOnClick =
+  (container: Container, label: (v: string) => string, save: (userId: number, v: string) => Promise<string>) =>
+  async (ctx: ClickCtx, id: string): Promise<void> => {
+    const applied = await save(ctx.from.id, id);
+    container.invalidateUserSettings(ctx.from.id);
+    await safeAnswerCb(ctx, `ок: ${label(applied)}`);
+    await ctx.show();
+  };
+
+export { radioOnClick, richCurrent, richLabel, richPickText, richSave, settingsMainText };
 
 type BtnStyle = "danger" | "primary" | "success";
 
@@ -270,12 +293,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       // selected → движок сам метит текущий пункт ✓; data — слитый render-бэг
       selected: (data) => opts.current((data as SettingsData).s),
       text: (st) => opts.label(st.item),
-      onClick: async (ctx: ClickCtx, id) => {
-        const applied = await opts.save(ctx.from.id, id);
-        container.invalidateUserSettings(ctx.from.id);
-        await safeAnswerCb(ctx, `ок: ${opts.label(applied)}`);
-        await ctx.show();
-      },
+      onClick: radioOnClick(container, opts.label, opts.save),
     });
 
   const fieldsSelect = (): Keyboard =>
@@ -346,6 +364,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       [
         navBtn("🗂", "✉", "как слать трек", "s_layout"),
         navBtn("📤", "↥", "тип отправки", "s_sendmode"),
+        navBtn("🧩", "▣", "карточка+трек", "s_rich"),
         navBtn("🎛", "☰", "качество", "s_quality"),
         navBtn("🖼", "◫", "карточка", "s_card"),
         navBtn("🏠", "⌂", "в меню", "main", "primary"),
@@ -385,6 +404,25 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
           label: trackSendModeLabel,
           current: (s) => s.track_send_mode,
           save: (u, v) => container.settingsDb.setTrackSendMode(u, v),
+        }),
+        back("settings"),
+      ],
+      { width: 1 },
+    ),
+  });
+
+  const sRich = new Window<SettingsData>({
+    state: "s_rich",
+    getter: settingsGetter,
+    text: () => richPickText(),
+    keyboard: Group(
+      [
+        radioSelect({
+          id: "rich_messages",
+          values: ["off", "on"],
+          label: richLabel,
+          current: richCurrent,
+          save: (u, v) => richSave(container, u, v),
         }),
         back("settings"),
       ],
@@ -546,6 +584,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       settings,
       sLayout,
       sSendMode,
+      sRich,
       sQuality,
       sCard,
       sCardLayout,

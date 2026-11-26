@@ -1,6 +1,5 @@
 import type { Bot } from "gramio";
-import { type FormattableString, format, InlineQueryResult, InputMessageContent, link, MediaUpload } from "gramio";
-import { floodRetry } from "../../infra/floodRetry.ts";
+import { type FormattableString, format, InlineQueryResult, InputMessageContent, link } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
 import type { LyricsBlock } from "../../services/card.ts";
@@ -9,13 +8,24 @@ import { bestLyricsLineIndex, buildCardMeta, formatTrackBasics, splitLyricsLines
 import type { CardMeta, YaTrack } from "../../yandex/types.ts";
 import { trackUrl } from "../../yandex/urls.ts";
 import { senderHandleOf } from "../captions.ts";
-import { buildCardImage } from "../cardBuilder.ts";
+import { buildCardImage, mintCardFileId } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
-import { nowPlayingMarkup, progressMarkup } from "../markup.ts";
+import { nowPlayingMarkup, progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
+import {
+  DEGRADED_NOTE,
+  type DeliverResult,
+  deliverCardAndTrack,
+  errText,
+  type FallbackInput,
+  type MintedCard,
+  makeRichSend,
+  type RichAudio,
+  richTrackMarkup,
+} from "../richMessage.ts";
 
 const log = getLogger("bot.inline_card");
 
-interface CardPayload {
+export interface CardPayload {
   trackId: number | string;
   title: string;
   artist: string;
@@ -41,12 +51,24 @@ function stashCardPending(resultId: string, payload: CardPayload): void {
 
 // peek, НЕ take: Telegram кэширует инлайн-выдачу у клиента на cache_time, поэтому
 // одну и ту же карточку можно отправить повторно — одноразовый стэш давал пустой рендер.
-function peekCardPending(resultId: string): CardPayload | null {
+export function peekCardPending(resultId: string): CardPayload | null {
   return cardPending.get(resultId) ?? null;
 }
 
 export function isCardResultId(resultId: string): boolean {
   return resultId.startsWith("npc:") || resultId.startsWith("lyc:");
+}
+
+/** id плейсхолдера «карточка+трек»: npr:<user>:<track>:<sec>. */
+export function isRichResultId(resultId: string): boolean {
+  return resultId.startsWith("npr:");
+}
+
+/** трек-id может содержать «:» (альбомный `123:456`) — берём жадно между user и sec. */
+export function parseRichResultId(resultId: string): { userId: number; trackId: string; sec: number } | null {
+  const m = /^npr:(\d+):(.+):(\d+)$/.exec(resultId);
+  if (!m) return null;
+  return { userId: Number(m[1]), trackId: m[2]!, sec: Number(m[3]) };
 }
 
 /** artist/title/обложки(две размерности)/handle — общий набор для обоих билдеров карточек. */
@@ -129,6 +151,43 @@ export function buildNowPlayingCardResult(
     title,
     thumb,
     markup: initialMarkup,
+  });
+}
+
+/** Плейсхолдер «карточка + трек» (первый вариант при включённом rich_messages).
+ * Позиция замораживается здесь, на inline_query; рендер и трек — после chosen
+ * (resolveRichCard). Без сетевых вызовов. */
+export function buildRichNowPlayingResult(
+  container: Container,
+  track: YaTrack,
+  current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
+  user: { id: number; username?: string | null; firstName?: string | null },
+): ReturnType<typeof InlineQueryResult.article> | null {
+  const { artist, title, coverUrl, thumb, senderHandle } = trackCardBasics(track, user);
+  const progressMs = current.progress_ms ?? 0;
+  const resultId = `npr:${user.id}:${track.id}:${Math.floor(progressMs / 1000)}`;
+  stashCardPending(resultId, {
+    trackId: track.id!,
+    title,
+    artist,
+    coverUrl,
+    progressMs,
+    durationMs: current.duration_ms ?? 0,
+    paused: Boolean(current.paused),
+    userId: user.id,
+    senderHandle,
+    meta: buildCardMeta(track),
+    cardLayout: "button",
+  });
+  return buildCardArticle({
+    resultId,
+    label: "карточка + трек",
+    placeholderText: "готовлю карточку и трек...",
+    artist,
+    title,
+    thumb,
+    // url-кнопки: reply_markup обязателен, иначе tg не отдаёт inline_message_id
+    markup: nowPlayingMarkup(track.id!, container.botUsername),
   });
 }
 
@@ -222,7 +281,7 @@ async function fetchLyricsWithFallback(
       const raw = await container.genius.lyricsForPhrase(phrase);
       if (raw) return raw;
     } catch (e) {
-      log.warning(`[chosen] genius-лирика track=${trackId}: ${e}`);
+      log.warning(`[chosen] genius-лирика track=${trackId}: ${errText(e)}`);
     }
   }
   if (token) {
@@ -234,10 +293,54 @@ async function fetchLyricsWithFallback(
         return raw;
       }
     } catch (e) {
-      log.warning(`[chosen] яндекс-лирика track=${trackId}: ${e}`);
+      log.warning(`[chosen] яндекс-лирика track=${trackId}: ${errText(e)}`);
     }
   }
   return null;
+}
+
+/** payload из стэша → JPEG (worker-пул) → file_id в служебном канале. */
+export async function renderPendingCard(
+  bot: Bot,
+  container: Container,
+  payload: CardPayload,
+  tag: string,
+): Promise<MintedCard> {
+  const [settings, token] = await Promise.all([
+    container.getUserSettings(payload.userId),
+    container.resolveToken(payload.userId),
+  ]);
+
+  // источник текста: сначала Genius (трек и так нашёлся через него), потом Яндекс —
+  // у Яндекса покрытие дырявое, андеграунд/рэп часто без текста.
+  let lyrics: LyricsBlock | null = null;
+  if (payload.lyricPhrase) {
+    const raw = await fetchLyricsWithFallback(container, token, payload.userId, payload.trackId, payload.lyricPhrase);
+    if (raw) {
+      const lines = splitLyricsLines(raw);
+      if (lines.length > 0) {
+        lyrics = { lines, activeIndex: bestLyricsLineIndex(payload.lyricPhrase, lines) };
+      }
+    }
+  }
+
+  const image = await buildCardImage({
+    bot,
+    container,
+    userId: payload.userId,
+    token,
+    coverUrl: payload.coverUrl,
+    title: payload.title,
+    artist: payload.artist,
+    progressMs: payload.progressMs,
+    durationMs: payload.durationMs,
+    paused: payload.paused,
+    senderHandle: payload.senderHandle,
+    meta: payload.meta,
+    settings,
+    lyrics,
+  });
+  return mintCardFileId(bot, container.channelId, image, tag);
 }
 
 /** ленивый рендер, подмена placeholder-текста на фото через editMessageMedia. */
@@ -254,61 +357,10 @@ export async function renderAndSwapCard(
   }
 
   try {
-    const [settings, token] = await Promise.all([
-      container.getUserSettings(payload.userId),
-      container.resolveToken(payload.userId),
-    ]);
-
-    // источник текста: сначала Genius (трек и так нашёлся через него), потом Яндекс —
-    // у Яндекса покрытие дырявое, андеграунд/рэп часто без текста.
-    let lyrics: LyricsBlock | null = null;
-    if (payload.lyricPhrase) {
-      const raw = await fetchLyricsWithFallback(container, token, payload.userId, payload.trackId, payload.lyricPhrase);
-      if (raw) {
-        const lines = splitLyricsLines(raw);
-        if (lines.length > 0) {
-          lyrics = { lines, activeIndex: bestLyricsLineIndex(payload.lyricPhrase, lines) };
-        }
-      }
-    }
-
-    const image = await buildCardImage({
-      bot,
-      container,
-      userId: payload.userId,
-      token,
-      coverUrl: payload.coverUrl,
-      title: payload.title,
-      artist: payload.artist,
-      progressMs: payload.progressMs,
-      durationMs: payload.durationMs,
-      paused: payload.paused,
-      senderHandle: payload.senderHandle,
-      meta: payload.meta,
-      settings,
-      lyrics,
-    });
-
-    // Telegram не даёт залить буфер напрямую в editMessageMedia по inline_message_id
-    // (только file_id/URL) — минтим file_id аплоадом в служебный чат, потом удаляем.
-    // Под бёрстом аплоад ловит 429 — ретраим по retry_after.
-    const msg = await floodRetry(
-      () =>
-        bot.api.sendPhoto({
-          chat_id: container.channelId,
-          photo: MediaUpload.buffer(image, "now_playing.jpg"),
-        }),
-      {
-        attempts: 3,
-        graceMs: 500,
-        onWait: (ra, n) => log.warning(`[chosen] карточка ${resultId}: 429, ждём ${ra}s (попытка ${n}/3)`),
-      },
-    );
-    const fileId = msg.photo?.at(-1)?.file_id ?? "";
-
+    const card = await renderPendingCard(bot, container, payload, resultId);
     try {
       const { media, markup } = cardMediaAndMarkup({
-        fileId,
+        fileId: card.fileId,
         trackId: payload.trackId,
         artist: payload.artist,
         title: payload.title,
@@ -324,10 +376,107 @@ export async function renderAndSwapCard(
     } finally {
       // finally, а не после await — иначе упавший editMessageMedia (протухший
       // inline_message_id, 429 сверх ретраев) оставлял бы фото в канале навсегда.
-      // file_id ссылается на файл в хранилище tg, не на сообщение — валиден и после удаления.
-      void bot.api.deleteMessage({ chat_id: container.channelId, message_id: msg.message_id }).catch(() => undefined);
+      card.release();
     }
   } catch (e) {
-    log.error(`[chosen] карточка ${resultId}: ${e}`);
+    log.error(`[chosen] карточка ${resultId}: ${errText(e)}`);
+  }
+}
+
+/** sendRich/fallback для inline-сообщения. Фолбэк: фото карточки (кнопка «слушать в лс»
+ * ведёт к треку), иначе аудио — в одном inline-сообщении может быть только одно медиа. */
+export function inlineRichSenders(
+  bot: Bot,
+  inlineMessageId: string,
+  o: {
+    trackId: string | number;
+    trackLayout: string;
+    cardLayout: string;
+    botUsername: string | null;
+    artist?: string;
+    title?: string;
+  },
+): {
+  sendRich: ReturnType<typeof makeRichSend>;
+  fallback: (got: FallbackInput) => Promise<void>;
+} {
+  return {
+    sendRich: makeRichSend(bot, { kind: "inline", inlineMessageId }, richTrackMarkup(String(o.trackId), o.trackLayout)),
+    fallback: async ({ cardFileId, audio }) => {
+      if (cardFileId) {
+        const { media, markup } = cardMediaAndMarkup({
+          fileId: cardFileId,
+          trackId: o.trackId,
+          artist: o.artist ?? "",
+          title: o.title ?? "",
+          cardLayout: o.cardLayout || "button",
+          botUsername: o.botUsername,
+        });
+        await bot.api.editMessageMedia({
+          inline_message_id: inlineMessageId,
+          media: media as never,
+          ...(markup ? { reply_markup: markup } : {}),
+        });
+      } else if (audio) {
+        await bot.api.editMessageMedia({
+          inline_message_id: inlineMessageId,
+          media: {
+            type: "audio",
+            media: audio.fileId,
+            ...(audio.degraded ? { caption: DEGRADED_NOTE } : {}),
+          } as never,
+          reply_markup: trackMarkup(o.trackId, true),
+        });
+      }
+    },
+  };
+}
+
+/** Разрешение `npr:` после chosen_inline_result: карточка (пул → канал) и трек
+ * (`getAudio` задаёт вызывающий: лимитер/ensureFileId) параллельно → rich_message в
+ * inline-сообщение; сбой → фолбэк из тех же file_id. "expired" (стэш вытеснен) и "none"
+ * ставят кнопку «загрузить снова» (load:<track>) вместо вечного плейсхолдера. Не бросает. */
+export async function resolveRichCard(
+  bot: Bot,
+  container: Container,
+  resultId: string,
+  inlineMsgId: string,
+  getAudio: (payload: CardPayload) => Promise<RichAudio | null>,
+): Promise<DeliverResult | "expired"> {
+  const payload = peekCardPending(resultId);
+  const setRetry = async (trackId: string | number): Promise<void> => {
+    try {
+      await bot.api.editMessageReplyMarkup({ inline_message_id: inlineMsgId, reply_markup: retryMarkup(trackId) });
+    } catch (e) {
+      log.warning(`[rich] ${resultId}: retry-разметка не встала: ${errText(e)}`);
+    }
+  };
+  if (payload === null) {
+    log.warning(`[chosen] нет pending payload для rich-карточки ${resultId}`);
+    const parsed = parseRichResultId(resultId);
+    if (parsed) await setRetry(parsed.trackId);
+    return "expired";
+  }
+  try {
+    const settings = await container.getUserSettings(payload.userId);
+    const res = await deliverCardAndTrack({
+      label: `inline user=${payload.userId} track=${payload.trackId}`,
+      card: () => renderPendingCard(bot, container, payload, resultId),
+      track: () => getAudio(payload),
+      ...inlineRichSenders(bot, inlineMsgId, {
+        trackId: payload.trackId,
+        trackLayout: settings.track_layout,
+        cardLayout: payload.cardLayout,
+        botUsername: container.botUsername,
+        artist: payload.artist,
+        title: payload.title,
+      }),
+    });
+    if (res === "none") await setRetry(payload.trackId);
+    return res;
+  } catch (e) {
+    log.error(`[chosen] rich ${resultId}: ${errText(e)}`);
+    await setRetry(payload.trackId);
+    return "none";
   }
 }

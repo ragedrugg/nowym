@@ -3,18 +3,31 @@ import { config as loadDotenv } from "dotenv";
 // pm2/ecosystem.config.cjs уже грузит .env через node --env-file — тут только
 // фолбэк на прямой запуск (npm run start без pm2). quiet — dotenv 17 иначе
 // печатает баннер в лог при каждом рестарте.
-loadDotenv({ quiet: true });
+// Под тестами (NODE_ENV=test, см. test/setup.ts) .env не читаем вообще: иначе
+// боевые значения из локального .env подменяют тестовые.
+if (process.env.NODE_ENV !== "test") loadDotenv({ quiet: true });
 
-function envInt(name: string, def: string): number {
-  return parseInt(process.env[name] ?? def, 10);
+type Env = NodeJS.ProcessEnv;
+
+// Пустая/пробельная переменная = не задана → дефолт. Мусор → ошибка с именем
+// переменной; значение в сообщение НЕ попадает (может оказаться секретом).
+function envInt(e: Env, name: string, def: string): number {
+  const raw = (e[name] ?? "").trim() || def;
+  if (!/^[+-]?\d+$/.test(raw)) throw new Error(`${name} должен быть целым числом (значение не показано)`);
+  return Number(raw);
 }
 
-function envFloat(name: string, def: string): number {
-  return parseFloat(process.env[name] ?? def);
+function envFloat(e: Env, name: string, def: string): number {
+  const raw = (e[name] ?? "").trim() || def;
+  const n = Number(raw);
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw) || !Number.isFinite(n)) {
+    throw new Error(`${name} должен быть числом (значение не показано)`);
+  }
+  return n;
 }
 
-function env(name: string, def = ""): string {
-  return process.env[name] ?? def;
+function env(e: Env, name: string, def = ""): string {
+  return e[name] ?? def;
 }
 
 const LOG_LEVELS = new Set(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]);
@@ -76,72 +89,82 @@ export interface Settings {
   GENIUS_TOKEN: string;
   OWNER_ID: number;
   ICON_SET_NAME: string;
+
+  /** webhook-режим (BOT_API_BASE_URL пуст) и WEBHOOK_SECRET пуст: бот стартует,
+   * но main.ts обязан логировать ERROR и отвечать 401 на webhook POST. */
+  webhookSecretMissing: boolean;
 }
 
-function build(): Settings {
-  const ADMIN_USER_ID = envInt("ADMIN_USER_ID", "0");
+/** Собирает и валидирует настройки из переданного env (для тестов). */
+export function buildSettings(e: Env): Settings {
+  const envInt_ = (n: string, d: string) => envInt(e, n, d);
+  const envFloat_ = (n: string, d: string) => envFloat(e, n, d);
+  const env_ = (n: string, d = "") => env(e, n, d);
+  const ADMIN_USER_ID = envInt_("ADMIN_USER_ID", "0");
 
   const s: Settings = {
-    API_TOKEN: env("TELEGRAM_BOT_TOKEN"),
-    TELEGRAM_CHANNEL_ID: env("TELEGRAM_CHANNEL_ID"),
+    API_TOKEN: env_("TELEGRAM_BOT_TOKEN"),
+    TELEGRAM_CHANNEL_ID: env_("TELEGRAM_CHANNEL_ID"),
     ADMIN_USER_ID,
 
-    POSTGRES_USERS_DSN: env("POSTGRES_USERS_DSN"),
-    POSTGRES_CACHE_DSN: env("POSTGRES_CACHE_DSN"),
-    DB_POOL_MIN: envInt("DB_POOL_MIN", "1"),
-    DB_POOL_MAX: envInt("DB_POOL_MAX", "5"),
+    POSTGRES_USERS_DSN: env_("POSTGRES_USERS_DSN"),
+    POSTGRES_CACHE_DSN: env_("POSTGRES_CACHE_DSN"),
+    DB_POOL_MIN: envInt_("DB_POOL_MIN", "1"),
+    DB_POOL_MAX: envInt_("DB_POOL_MAX", "5"),
 
-    TOKEN_ENCRYPTION_KEY: env("TOKEN_ENCRYPTION_KEY"),
+    TOKEN_ENCRYPTION_KEY: env_("TOKEN_ENCRYPTION_KEY"),
 
-    REDIS_HOST: env("REDIS_HOST"),
-    REDIS_PORT: envInt("REDIS_PORT", "6379"),
+    REDIS_HOST: env_("REDIS_HOST"),
+    REDIS_PORT: envInt_("REDIS_PORT", "6379"),
 
-    LOG_LEVEL: env("LOG_LEVEL", "INFO").toUpperCase(),
-    LOG_FORMAT: env("LOG_FORMAT", "human").toLowerCase(),
+    LOG_LEVEL: env_("LOG_LEVEL", "INFO").toUpperCase(),
+    LOG_FORMAT: env_("LOG_FORMAT", "human").toLowerCase(),
 
     // старые имена ADVANCED_CACHE_* — backward-compat с уже заполненными .env
-    MEMORY_CACHE_SIZE: envInt("MEMORY_CACHE_SIZE", env("ADVANCED_CACHE_SIZE", "500")),
-    MEMORY_CACHE_TTL: envInt("MEMORY_CACHE_TTL", env("ADVANCED_CACHE_TTL", "600")),
-    CACHE_CLEANUP_INTERVAL: envInt("CACHE_CLEANUP_INTERVAL", "60"),
+    MEMORY_CACHE_SIZE: envInt_("MEMORY_CACHE_SIZE", env_("ADVANCED_CACHE_SIZE", "500")),
+    MEMORY_CACHE_TTL: envInt_("MEMORY_CACHE_TTL", env_("ADVANCED_CACHE_TTL", "600")),
+    CACHE_CLEANUP_INTERVAL: envInt_("CACHE_CLEANUP_INTERVAL", "60"),
 
-    MAX_SEARCH_RESULTS: envInt("MAX_SEARCH_RESULTS", "5"),
+    MAX_SEARCH_RESULTS: envInt_("MAX_SEARCH_RESULTS", "5"),
 
-    HTTP_CONNECTION_LIMIT: envInt("HTTP_CONNECTION_LIMIT", "100"),
-    HTTP_LIMIT_PER_HOST: envInt("HTTP_LIMIT_PER_HOST", "30"),
+    HTTP_CONNECTION_LIMIT: envInt_("HTTP_CONNECTION_LIMIT", "100"),
+    HTTP_LIMIT_PER_HOST: envInt_("HTTP_LIMIT_PER_HOST", "30"),
 
-    YANDEX_RATE_LIMIT_INTERVAL: envFloat("YANDEX_RATE_LIMIT_INTERVAL", "1.0"),
-    YANDEX_MAX_RETRIES: envInt("YANDEX_MAX_RETRIES", "3"),
-    YANDEX_OAUTH_CLIENT_ID: env("YANDEX_OAUTH_CLIENT_ID", "23cabbbdc6cd418abb4b39c32c41195d"),
-    YANDEX_OAUTH_CLIENT_SECRET: env("YANDEX_OAUTH_CLIENT_SECRET", "53bc75238f0c4d08a118e51fe9203300"),
+    YANDEX_RATE_LIMIT_INTERVAL: envFloat_("YANDEX_RATE_LIMIT_INTERVAL", "1.0"),
+    YANDEX_MAX_RETRIES: envInt_("YANDEX_MAX_RETRIES", "3"),
+    YANDEX_OAUTH_CLIENT_ID: env_("YANDEX_OAUTH_CLIENT_ID", "23cabbbdc6cd418abb4b39c32c41195d"),
+    YANDEX_OAUTH_CLIENT_SECRET: env_("YANDEX_OAUTH_CLIENT_SECRET", "53bc75238f0c4d08a118e51fe9203300"),
 
-    DOWNLOAD_QUEUE_CONCURRENCY: envInt("DOWNLOAD_QUEUE_CONCURRENCY", "6"),
-    ALBUM_PARALLEL_TRACKS: envInt("ALBUM_PARALLEL_TRACKS", "4"),
+    DOWNLOAD_QUEUE_CONCURRENCY: envInt_("DOWNLOAD_QUEUE_CONCURRENCY", "6"),
+    ALBUM_PARALLEL_TRACKS: envInt_("ALBUM_PARALLEL_TRACKS", "4"),
 
-    RATE_INLINE_MAX_TOKENS: envFloat("RATE_INLINE_MAX_TOKENS", "20.0"),
-    RATE_INLINE_RATE_PER_SEC: envFloat("RATE_INLINE_RATE_PER_SEC", "2.0"),
-    RATE_DOWNLOAD_MAX_TOKENS: envFloat("RATE_DOWNLOAD_MAX_TOKENS", "3.0"),
-    RATE_DOWNLOAD_RATE_PER_SEC: envFloat("RATE_DOWNLOAD_RATE_PER_SEC", "0.1"),
+    RATE_INLINE_MAX_TOKENS: envFloat_("RATE_INLINE_MAX_TOKENS", "20.0"),
+    RATE_INLINE_RATE_PER_SEC: envFloat_("RATE_INLINE_RATE_PER_SEC", "2.0"),
+    RATE_DOWNLOAD_MAX_TOKENS: envFloat_("RATE_DOWNLOAD_MAX_TOKENS", "3.0"),
+    RATE_DOWNLOAD_RATE_PER_SEC: envFloat_("RATE_DOWNLOAD_RATE_PER_SEC", "0.1"),
 
-    BOT_API_BASE_URL: env("BOT_API_BASE_URL"),
-    WEBHOOK_HOST: env("WEBHOOK_HOST"),
-    WEBHOOK_PATH: env("WEBHOOK_PATH", "/webhook/nowym"),
-    WEBAPP_HOST: env("WEBAPP_HOST", "0.0.0.0"),
-    WEBAPP_PORT: envInt("WEBAPP_PORT", "8443"),
-    WEBHOOK_SSL_CERT: env("WEBHOOK_SSL_CERT"),
-    WEBHOOK_SSL_KEY: env("WEBHOOK_SSL_KEY"),
-    WEBHOOK_SECRET: env("WEBHOOK_SECRET"),
+    BOT_API_BASE_URL: env_("BOT_API_BASE_URL"),
+    WEBHOOK_HOST: env_("WEBHOOK_HOST"),
+    WEBHOOK_PATH: env_("WEBHOOK_PATH", "/webhook/nowym"),
+    WEBAPP_HOST: env_("WEBAPP_HOST", "0.0.0.0"),
+    WEBAPP_PORT: envInt_("WEBAPP_PORT", "8443"),
+    WEBHOOK_SSL_CERT: env_("WEBHOOK_SSL_CERT"),
+    WEBHOOK_SSL_KEY: env_("WEBHOOK_SSL_KEY"),
+    WEBHOOK_SECRET: env_("WEBHOOK_SECRET"),
 
-    NOW_PLAYING_TOKEN: env("NOW_PLAYING_TOKEN"),
-    GENIUS_TOKEN: env("GENIUS_TOKEN"),
-    OWNER_ID: envInt("OWNER_ID", String(ADMIN_USER_ID)),
+    NOW_PLAYING_TOKEN: env_("NOW_PLAYING_TOKEN"),
+    GENIUS_TOKEN: env_("GENIUS_TOKEN"),
+    OWNER_ID: envInt_("OWNER_ID", String(ADMIN_USER_ID)),
     // Имя Telegram custom-emoji стикерпака для иконок кнопок (iconFor() в
     // bot/iconSet.ts резолвит эмодзи кнопки → custom_emoji_id из набора).
     // Дефолт "tgiosicons" — публичный пак, доступен любому боту без
     // настройки. Свой пак делается через @Stickers в Telegram (пункт
     // «Custom emoji» → создать/привязать к своему боту); непокрытые
     // эмодзи молча откатываются на обычный текстовый глиф.
-    ICON_SET_NAME: env("ICON_SET_NAME", "tgiosicons"),
+    ICON_SET_NAME: env_("ICON_SET_NAME", "tgiosicons"),
+    webhookSecretMissing: false,
   };
+  s.webhookSecretMissing = !s.BOT_API_BASE_URL && !s.WEBHOOK_SECRET;
 
   validate(s);
   return s;
@@ -184,8 +207,15 @@ function validate(s: Settings): void {
     ["ALBUM_PARALLEL_TRACKS", s.ALBUM_PARALLEL_TRACKS],
   ];
   for (const [name, val] of positive) {
-    if (val <= 0) throw new Error(`${name} должен быть > 0`);
+    if (!(val > 0)) throw new Error(`${name} должен быть > 0`);
   }
+  for (const [name, val] of [
+    ["WEBAPP_PORT", s.WEBAPP_PORT],
+    ["REDIS_PORT", s.REDIS_PORT],
+  ] as const) {
+    if (!(val >= 1 && val <= 65535)) throw new Error(`${name} должен быть в диапазоне 1..65535`);
+  }
+  if (s.ADMIN_USER_ID < 0 || s.OWNER_ID < 0) throw new Error("ADMIN_USER_ID/OWNER_ID не могут быть отрицательными");
 }
 
 /** Ленивая инициализация — settings собираются и валидируются при первом
@@ -194,6 +224,6 @@ function validate(s: Settings): void {
 let _cached: Settings | null = null;
 
 export function getSettings(): Settings {
-  if (_cached === null) _cached = build();
+  if (_cached === null) _cached = buildSettings(process.env);
   return _cached;
 }
