@@ -33,6 +33,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+/** Держит event loop живым на время теста с реальными таймерами: таймер сторожа unref'd, а висящий
+ * fetch/long-poll (мок) сам цикл не держит — на Node 22 цикл пустеет и node:test отменяет всё как
+ * «Promise resolution is still pending but the event loop has already resolved». */
+function keepAlive(): () => void {
+  const t = setInterval(() => {}, 1000);
+  return () => clearInterval(t);
+}
+
 const flush = () => new Promise<void>((r) => setImmediate(r));
 
 /** промотать время шагами по CHECK, чтобы каждый тик setInterval видел своё Date.now(). */
@@ -208,6 +216,7 @@ test("stop() снимает таймер", () => {
 
 test("с настоящим yaebal Bot + @yaebal/runner: висящий getUpdates обрывается (fetch абортится), раннер шлёт новый", async () => {
   mock.timers.reset(); // здесь реальные таймеры: крутится настоящий цикл раннера
+  const releaseLoop = keepAlive();
   let getUpdatesCalls = 0;
   let firstAborted = false;
   let resolveSecond!: () => void;
@@ -257,6 +266,7 @@ test("с настоящим yaebal Bot + @yaebal/runner: висящий getUpdat
   } finally {
     wd.stop();
     await handle.stop();
+    releaseLoop();
   }
 });
 
@@ -307,6 +317,7 @@ test("ниже потолка отсутствие getUpdates по-прежне�
 
 test("shutdown: confirmPolledOffset подтверждает max update_id полученных пачек, не дожидаясь дренажа", async () => {
   mock.timers.reset(); // настоящий цикл раннера
+  const releaseLoop = keepAlive();
   const polls: Record<string, unknown>[] = [];
   let batch = true;
   let release!: () => void;
@@ -343,6 +354,7 @@ test("shutdown: confirmPolledOffset подтверждает max update_id по�
   }
   release();
   await Promise.all(stops);
+  releaseLoop();
 });
 
 test("confirmPolledOffset: ничего не получали — запроса нет", async () => {
