@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
-import { registerInline } from "../src/bot/handlers/inline.ts";
+import { registerInline } from "../src/bot/handlers/inline/index.ts";
 
 type Answer = { results: unknown[]; params: Record<string, unknown> };
 

@@ -1,7 +1,7 @@
 /** Воркер рендера карточки — снимает CPU-тяжёлый canvas.encode() (~50-100мс на
  * кадр, блокирует весь event loop) с основного потока. Один джоб за раз на воркер. */
 import { parentPort } from "node:worker_threads";
-import { type RenderCardArgs, renderNowPlayingCard } from "./card.ts";
+import { type RenderCardArgs, renderNowPlayingCard } from "./card/index.ts";
 
 if (!parentPort) throw new Error("cardRenderWorker должен запускаться как worker_thread");
 

@@ -3,7 +3,7 @@ import { type FormattableString, InlineQueryResult, InputMessageContent } from "
 import { withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
-import type { LyricsBlock } from "../../services/card.ts";
+import type { LyricsBlock } from "../../services/card/index.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { bestLyricsLineIndex, buildCardMeta, formatTrackBasics, splitLyricsLines } from "../../yandex/metadata.ts";
 import type { CardMeta, YaTrack } from "../../yandex/types.ts";
@@ -26,6 +26,7 @@ import {
 } from "../richMessage.ts";
 import { safeEditMedia } from "../safeApi.ts";
 import { BTN_PREPARING, CARD_RESULT, cardCaptionText, LYRICS_RESULT, RICH_RESULT } from "../texts.ts";
+import type { TgUser } from "../types.ts";
 
 const log = getLogger("bot.inline_card");
 
@@ -121,7 +122,7 @@ export function buildNowPlayingCardResult(
   container: Container,
   track: YaTrack,
   current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
-  user: { id: number; username?: string | null; firstName?: string | null },
+  user: TgUser,
   cardLayout = "button",
   hideProgress = false,
 ): ReturnType<typeof InlineQueryResult.article> | null {
@@ -170,7 +171,7 @@ export function buildRichNowPlayingResult(
   container: Container,
   track: YaTrack,
   current: { progress_ms?: number; duration_ms?: number; paused?: boolean },
-  user: { id: number; username?: string | null; firstName?: string | null },
+  user: TgUser,
   hideProgress = false,
 ): ReturnType<typeof InlineQueryResult.article> | null {
   const { artist, title, coverUrl, thumb, senderHandle } = trackCardBasics(track, user);
@@ -208,7 +209,7 @@ export function buildLyricsCardResult(
   container: Container,
   track: YaTrack,
   lyricPhrase: string,
-  user: { id: number; username?: string | null; firstName?: string | null },
+  user: TgUser,
 ): ReturnType<typeof InlineQueryResult.article> | null {
   const { artist, title, coverUrl, thumb, senderHandle } = trackCardBasics(track, user);
 
@@ -275,7 +276,7 @@ export function cardMediaAndMarkup(args: {
 
 /** текст трека для лирик-карточки: Genius по фразе → (если пусто) Яндекс.
  * Genius уже искал эту песню на inline-запросе, так что скрейп обычно из кэша.
- * Таймауты те же, что у fetchLyricsForQuery (inline.ts): зависший источник
+ * Таймауты те же, что у fetchLyricsForQuery (inline/chosen.ts): зависший источник
  * не должен держать плейсхолдер карточки бесконечно. */
 export async function fetchLyricsWithFallback(
   container: Container,

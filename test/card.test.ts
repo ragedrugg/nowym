@@ -8,7 +8,7 @@ import {
   drawBackground,
   fmtMmss,
   renderNowPlayingCard,
-} from "../src/services/card.ts";
+} from "../src/services/card/index.ts";
 
 test("cleanTrackTitle — режет prod/feat/видео-теги", () => {
   assert.equal(cleanTrackTitle("Song (prod. by X)"), "Song");

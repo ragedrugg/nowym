@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
-import { ensureFileId } from "../src/bot/handlers/inline.ts";
+import { ensureFileId } from "../src/bot/handlers/inline/index.ts";
 import type { CachedTrack } from "../src/storage/types.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 

@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
-import { onChosenResult, registerInline, sendTrackToChat } from "../src/bot/handlers/inline.ts";
+import { onChosenResult, registerInline, sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
 import { SearchService } from "../src/services/search.ts";
 import { YandexClient, YandexUnavailableError } from "../src/yandex/client.ts";
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildChosenEditPayload, parseTrackResultId } from "../src/bot/handlers/inline.ts";
+import { buildChosenEditPayload, parseTrackResultId } from "../src/bot/handlers/inline/index.ts";
 
 test("parseTrackResultId", () => {
   assert.equal(parseTrackResultId("123456"), "123456");

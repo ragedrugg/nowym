@@ -23,8 +23,9 @@ import {
   privateHint,
   tooOften,
 } from "../texts.ts";
+import type { TgUser } from "../types.ts";
 import { startAlbumUpload } from "./albums.ts";
-import { type CardPosition, sendTrackToChat } from "./inline.ts";
+import { type CardPosition, sendTrackToChat } from "./inline/chat.ts";
 import { startPlaylistUpload } from "./playlists.ts";
 
 /** ResetStack: дефолтный Normal пушил бы новый диалог на стек на каждый /start|/help|/settings,
@@ -41,12 +42,6 @@ const START_TRACK_RE = /^track_(\d+)$/;
 // отдаёт ровно последнюю группу цифр). Точка в owner в payload не пролезает —
 // телеграм разрешает только [A-Za-z0-9_-] (см. createPlaylistResult).
 export const START_PLAYLIST_RE = /^playlist_([\w-]+)_(\d+)$/;
-
-export interface TgUser {
-  id: number;
-  username?: string | null;
-  firstName?: string | null;
-}
 
 /** общий гейт для карточки и аудио: statusMsgId отличается у каждого вызывающего. */
 async function checkLimitAndToken(

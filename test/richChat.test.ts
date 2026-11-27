@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { TelegramError } from "gramio";
 import type { Container } from "../src/bot/container.ts";
 import { deepLinkCardPosition, renderNowPlaying, sendCurrentTrack } from "../src/bot/handlers/common.ts";
-import { sendTrackToChat } from "../src/bot/handlers/inline.ts";
+import { sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };

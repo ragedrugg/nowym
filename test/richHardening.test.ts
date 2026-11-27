@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { TelegramError } from "gramio";
 import type { Container } from "../src/bot/container.ts";
 import { renderNowPlaying } from "../src/bot/handlers/common.ts";
-import { chosenRichCardTrack, sendTrackToChat } from "../src/bot/handlers/inline.ts";
+import { chosenRichCardTrack, sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
 import { buildRichNowPlayingResult, resolveRichCard } from "../src/bot/handlers/inlineCard.ts";
 import * as rich from "../src/bot/richMessage.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
@@ -218,7 +218,7 @@ test("логи resolveRichCard (retry-разметка, общий catch) не �
 
 test("лог rich-плейсхолдера (buildEmptyResults) и /np не содержат токен", async (t) => {
   const lines = captureLog(t);
-  const { buildEmptyResults } = await import("../src/bot/handlers/inline.ts");
+  const { buildEmptyResults } = await import("../src/bot/handlers/inline/index.ts");
   const container = {
     botUsername: "nowymbot",
     npWatcher: {

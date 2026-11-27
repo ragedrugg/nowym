@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TelegramError } from "gramio";
 import type { Container } from "../src/bot/container.ts";
-import { buildEmptyResults, chosenRichCardTrack, onChosenResult } from "../src/bot/handlers/inline.ts";
+import { buildEmptyResults, chosenRichCardTrack, onChosenResult } from "../src/bot/handlers/inline/index.ts";
 import { buildRichNowPlayingResult } from "../src/bot/handlers/inlineCard.ts";
 import { tooOftenButton } from "../src/bot/texts.ts";
 import { YandexUnavailableError } from "../src/yandex/client.ts";

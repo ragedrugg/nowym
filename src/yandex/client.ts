@@ -12,23 +12,17 @@ import {
   UnauthorizedError as LibUnauthorizedError,
 } from "@dvxch/yandex-music";
 import { sleep, withTimeout } from "../infra/async.ts";
-import type { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { AsyncTokenGate } from "../infra/rateLimit.ts";
 import { getSettings } from "../settings.ts";
-import { AUDIO_MAGIC_BYTES, assertAudioMagic } from "./audioMagic.ts";
-import {
-  errorDetail,
-  overallFromChecks,
-  sortHealthChecks,
-  type YandexHealthCheck,
-  type YandexHealthReport,
-  type YandexProbeTrack,
-} from "./health.ts";
+import { isLosslessInfo } from "./download.ts";
+import type { YandexHealthReport } from "./health.ts";
+import { type ApiHealthProbeOptions, probeApiHealth } from "./healthProbe.ts";
 import { isLrc } from "./lrc.ts";
 import { normalizeCoverUrl } from "./media.ts";
 import type { AlbumShortProvider, LikeProvider, WaveColorProvider } from "./metadata.ts";
 import { type AudioQuality, bareTrackId, formatArtists, selectDownloadInfo, waveColorFromLottie } from "./metadata.ts";
+import { getPlaylist, getPlaylistShort, type LibRunners, resolvePlaylistUuid } from "./playlist.ts";
 import { type YandexSharedCaches, yandexSharedCaches } from "./sharedCaches.ts";
 import type { AlbumData, DownloadInfo, YaAlbum, YaTrack } from "./types.ts";
 import { type CurrentTrack, YnisonService } from "./ynison.ts";
@@ -62,119 +56,12 @@ function isYandexUnavailable(e: unknown): boolean {
   return e instanceof Error && e.message.startsWith("превышено число попыток");
 }
 
-/** Ссылки get-file-info живут недолго; старше этого возраста список запрашиваем заново (один раз). */
-const LOSSLESS_URL_TTL_MS = 45_000;
-
-/** Выбор URL для racing-попыток: случайный из списка (спред по CDN); если список
- * старше ttlMs — один раз перезапрашиваем info (при сбое остаёмся на старых ссылках). */
-export function losslessUrlPicker(
-  info: LibLosslessDownloadInfo,
-  refetch: () => Promise<LibLosslessDownloadInfo | null>,
-  opts: { now?: () => number; ttlMs?: number } = {},
-): () => Promise<string | null> {
-  const now = opts.now ?? Date.now;
-  const ttlMs = opts.ttlMs ?? LOSSLESS_URL_TTL_MS;
-  const startedAt = now();
-  let urls = info.links();
-  let refreshed = false;
-  return async () => {
-    if (!refreshed && now() - startedAt > ttlMs) {
-      refreshed = true;
-      try {
-        const fresh = await refetch();
-        const links = fresh?.links() ?? [];
-        if (links.length > 0) urls = links;
-      } catch (e) {
-        log.debug(`обновление lossless-ссылок не вышло: ${e}`);
-      }
-    }
-    return urls[Math.floor(Math.random() * urls.length)] ?? null;
-  };
-}
+export { isLosslessInfo, losslessUrlPicker } from "./download.ts";
+export type { ApiHealthProbeOptions } from "./healthProbe.ts";
+export { buildPlaylistAlbumData } from "./playlist.ts";
 
 /** async () → новый access_token или null. */
 export type RefreshCallback = () => Promise<string | null>;
-
-export interface ApiHealthProbeOptions {
-  /** HTTP-клиент бота — для Range-проверки CDN без скачивания файла. */
-  http: HttpClient;
-  /** id текущего/последнего трека; если нет — возьмём из поиска/истории. */
-  probeTrackId?: string | number | null;
-  /** таймаут одной проверки (не всего отчёта). */
-  timeoutMs?: number;
-}
-
-const HEALTH_DEPENDENT: Array<Pick<YandexHealthCheck, "key" | "label" | "critical">> = [
-  { key: "search", label: "поиск", critical: true },
-  { key: "catalog", label: "каталог / треки", critical: true },
-  { key: "download_lossy", label: "загрузка mp3/aac", critical: true },
-  { key: "download_lossless", label: "lossless / get-file-info", critical: true },
-  { key: "cdn", label: "CDN", critical: true },
-  { key: "lyrics", label: "лирика", critical: false },
-  { key: "likes", label: "лайки", critical: false },
-  { key: "history", label: "история", critical: false },
-];
-
-// Эталонные треки для проверок, которые нельзя делать на случайном текущем
-// треке: у него может не быть FLAC или текста. ID из официального каталога,
-// где lossless/лирика точно должны существовать.
-const LOSSLESS_PROBE_IDS = ["117708948", "51516485", "60292250"];
-const LYRICS_PROBE_IDS = ["51516485", "60292250", "330765"];
-
-type AccountAbout = { geoRegionIso?: string; userSessionRegionIso?: string };
-
-async function readAccountAbout(lib: LibClient): Promise<AccountAbout | null> {
-  try {
-    const raw = await lib.request.get("https://api.music.yandex.net/account/about");
-    if (!raw || typeof raw !== "object") return null;
-    const data = raw as Record<string, unknown>;
-    return {
-      geoRegionIso: typeof data.geoRegionIso === "string" ? data.geoRegionIso : undefined,
-      userSessionRegionIso: typeof data.userSessionRegionIso === "string" ? data.userSessionRegionIso : undefined,
-    };
-  } catch {
-    // /account/about не критичен для health: регион — только пояснение
-    return null;
-  }
-}
-
-export function isLosslessInfo(info: LibLosslessDownloadInfo): boolean {
-  if ((info as { isLossless?: boolean }).isLossless === true) return true;
-  return typeof info.codec === "string" && info.codec.startsWith("flac");
-}
-
-function firstHistoryTrackId(
-  history: {
-    historyTabs?: Array<{ items?: Array<{ tracks?: Array<{ data?: { itemId?: { trackId?: string } } }> }> }>;
-  } | null,
-): string | null {
-  for (const tab of history?.historyTabs ?? []) {
-    for (const group of tab.items ?? []) {
-      for (const item of group.tracks ?? []) {
-        const id = item.data?.itemId?.trackId;
-        if (id) return id;
-      }
-    }
-  }
-  return null;
-}
-
-function probeTrackFrom(track: {
-  id?: string | number;
-  title?: string;
-  artists?: Array<{ name?: string }>;
-}): YandexProbeTrack | null {
-  if (track.id === undefined || track.id === null) return null;
-  const artist = (track.artists ?? [])
-    .map((a) => a.name)
-    .filter((name): name is string => Boolean(name))
-    .join(", ");
-  return {
-    id: bareTrackId(track.id),
-    title: track.title || "без названия",
-    artist: artist || "неизвестен",
-  };
-}
 
 const CLIENT_INIT_TIMEOUT = 9_000;
 const NP_CACHE_TTL_MS = 5_000;
@@ -214,6 +101,11 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
 
   private readonly libOptions: Partial<LibClientOptions>;
   private readonly sleepFn: (ms: number) => Promise<void>;
+  /** withLib/withLibStrict для free-функций playlist.ts. */
+  private readonly libRunners: LibRunners = {
+    withLib: (label, fallback, func) => this.withLib(label, fallback, func),
+    withLibStrict: (label, fallback, func) => this.withLibStrict(label, fallback, func),
+  };
 
   constructor(
     token: string,
@@ -720,322 +612,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     return await ynison.probe();
   }
 
-  /** Полный read-only health-отчёт Яндекс Музыки.
-   *
-   * Всё, что может сломаться в проде: OAuth/аккаунт, поиск, каталог,
-   * lossy/lossless-загрузка, CDN, лирика, лайки, история. Ynison проверяется
-   * отдельно в services/yandexHealth.ts (watcher или активный probe).
-   * Никаких мутаций (playAudio/like) — только чтение. */
+  /** Полный read-only health-отчёт Яндекс Музыки — см. healthProbe.ts. */
   async probeApiHealth(opts: ApiHealthProbeOptions): Promise<YandexHealthReport> {
-    const startedAt = performance.now();
-    const timeoutMs = opts.timeoutMs ?? 6_000;
-    const checks: YandexHealthCheck[] = [];
-    let probeTrack: YandexProbeTrack | null = null;
-
-    const finish = (): YandexHealthReport => {
-      const sorted = sortHealthChecks(checks);
-      return {
-        checkedAt: Date.now(),
-        durationMs: Math.round(performance.now() - startedAt),
-        overall: overallFromChecks(sorted),
-        probeTrack,
-        checks: sorted,
-      };
-    };
-
-    const addSkip = (key: string, label: string, critical: boolean, detail: string): void => {
-      checks.push({ key, label, critical, status: "skip", latencyMs: null, detail });
-    };
-
-    const probe = async <T>(
-      key: string,
-      label: string,
-      critical: boolean,
-      fn: () => Promise<T>,
-      describe: (value: T) => string,
-    ): Promise<T | null> => {
-      const checkStarted = performance.now();
-      let requestStarted = checkStarted;
-      try {
-        // ждём rate-gate отдельно: его очередь не должна съедать per-check
-        // таймаут реального запроса (иначе поздние проверки ложно падают)
-        await this.gate.acquire();
-        requestStarted = performance.now();
-        const value = await withTimeout(fn(), timeoutMs, key);
-        checks.push({
-          key,
-          label,
-          critical,
-          status: "ok",
-          latencyMs: Math.round(performance.now() - requestStarted),
-          detail: describe(value),
-        });
-        return value;
-      } catch (e) {
-        checks.push({
-          key,
-          label,
-          critical,
-          status: "fail",
-          latencyMs: Math.round(performance.now() - requestStarted),
-          detail: errorDetail(e),
-        });
-        return null;
-      }
-    };
-
-    const authStarted = performance.now();
-    let lib: LibClient;
-    try {
-      lib = this.healthLibFor(await withTimeout(this.getLib(), timeoutMs, "health-auth"));
-    } catch (e) {
-      checks.push({
-        key: "auth",
-        label: "аккаунт / OAuth",
-        critical: true,
-        status: "fail",
-        latencyMs: Math.round(performance.now() - authStarted),
-        detail: errorDetail(e),
-      });
-      for (const dep of HEALTH_DEPENDENT) addSkip(dep.key, dep.label, dep.critical, "не проверено: нет авторизации");
-      return finish();
-    }
-
-    try {
-      const [me, about] = await withTimeout(
-        Promise.all([lib.accountStatus(), readAccountAbout(lib)]),
-        timeoutMs,
-        "health-account",
-      );
-      const serviceAvailable = me !== null && me.account?.serviceAvailable !== false;
-      let detail = serviceAvailable ? `сервис доступен${me.plus?.hasPlus ? ", Plus активен" : ""}` : "токен не принят";
-      if (serviceAvailable && about?.geoRegionIso) {
-        const geo = about.geoRegionIso.toUpperCase();
-        const session = about.userSessionRegionIso?.toUpperCase();
-        detail += `; регион ${geo}${session && session !== geo ? `, сессия ${session}` : ""}`;
-      }
-      checks.push({
-        key: "auth",
-        label: "аккаунт / OAuth",
-        critical: true,
-        status: serviceAvailable ? "ok" : "fail",
-        latencyMs: Math.round(performance.now() - authStarted),
-        detail,
-      });
-      if (!serviceAvailable) {
-        for (const dep of HEALTH_DEPENDENT) addSkip(dep.key, dep.label, dep.critical, "не проверено: токен не принят");
-        return finish();
-      }
-    } catch (e) {
-      checks.push({
-        key: "auth",
-        label: "аккаунт / OAuth",
-        critical: true,
-        status: "fail",
-        latencyMs: Math.round(performance.now() - authStarted),
-        detail: errorDetail(e),
-      });
-      for (const dep of HEALTH_DEPENDENT)
-        addSkip(dep.key, dep.label, dep.critical, "не проверено: авторизация не прошла");
-      return finish();
-    }
-
-    const searchResult = await probe(
-      "search",
-      "поиск",
-      true,
-      async () => lib.search("Daft Punk", false, "track"),
-      (r) => {
-        const n = (r?.tracks?.results ?? []).length;
-        return n > 0 ? `поиск отвечает, найдено ${n}` : "поиск отвечает, результатов нет";
-      },
+    return probeApiHealth(
+      { gate: this.gate, getLib: () => this.getLib(), healthLibFor: (lib) => this.healthLibFor(lib) },
+      opts,
     );
-
-    let catalogTrackId: string | null = null;
-    if (opts.probeTrackId != null) catalogTrackId = bareTrackId(opts.probeTrackId);
-    if (!catalogTrackId) {
-      const first = (searchResult?.tracks?.results ?? [])[0] as { id?: string | number } | undefined;
-      if (first?.id != null) catalogTrackId = bareTrackId(first.id);
-    }
-    if (!catalogTrackId) {
-      try {
-        const history = await lib.musicHistory(0);
-        catalogTrackId = firstHistoryTrackId(history as any);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (catalogTrackId) {
-      await probe(
-        "catalog",
-        "каталог / треки",
-        true,
-        async () => {
-          const tracks = await lib.tracks([catalogTrackId!]);
-          if (!tracks || tracks.length === 0) throw new Error("трек не найден");
-          return tracks[0];
-        },
-        (t) => {
-          probeTrack = probeTrackFrom(t as any);
-          return probeTrack ? `трек доступен: ${probeTrack.artist} — ${probeTrack.title}` : "трек доступен";
-        },
-      );
-    } else {
-      addSkip("catalog", "каталог / треки", true, "не удалось выбрать пробный трек");
-    }
-
-    // lossy download
-    let lossyLink: string | null = null;
-    const lossyTrackId = catalogTrackId;
-    if (lossyTrackId) {
-      const infos = await probe(
-        "download_lossy",
-        "загрузка mp3/aac",
-        true,
-        async () => {
-          const arr = (await lib.tracksDownloadInfo(lossyTrackId)) as unknown as LibDownloadInfo[];
-          if (!arr || arr.length === 0) throw new Error("нет вариантов загрузки");
-          return arr;
-        },
-        (arr) => {
-          const best = selectDownloadInfo(arr as any, "best");
-          return best ? `вариант: ${best.codec} ${best.bitrateInKbps}kbps` : `вариантов: ${arr.length}`;
-        },
-      );
-      if (infos) {
-        const chosen = selectDownloadInfo(infos as any, "best") as unknown as LibDownloadInfo | null;
-        if (chosen) {
-          try {
-            chosen.directLink = undefined;
-            lossyLink = await chosen.getDirectLink();
-          } catch {
-            lossyLink = null;
-          }
-        }
-      }
-    } else {
-      addSkip("download_lossy", "загрузка mp3/aac", true, "не удалось выбрать пробный трек");
-    }
-
-    // lossless: перебираем эталонные id, пока кто-то не отдаст настоящий lossless;
-    // lossy-ответ (нет Plus / нет lossless-источника) — degraded, а не ok
-    let losslessLink: string | null = null;
-    let losslessCodec: string | null = null;
-    const info = await probe(
-      "download_lossless",
-      "lossless / get-file-info",
-      true,
-      async () => {
-        let lossy: LibLosslessDownloadInfo | null = null;
-        let lastError: unknown = new Error("нет lossless-инфо");
-        for (const id of LOSSLESS_PROBE_IDS) {
-          try {
-            const i = (await lib.tracksFileInfo(id, { quality: "lossless" }))?.downloadInfo;
-            if (!i) continue;
-            if (isLosslessInfo(i)) return i;
-            lossy ??= i;
-          } catch (e) {
-            lastError = e;
-          }
-        }
-        if (lossy) return lossy;
-        throw lastError;
-      },
-      (i) => (isLosslessInfo(i) ? `lossless доступен: ${i.codec}` : `ответ получен: ${i.codec}`),
-    );
-    if (info) {
-      losslessLink = info.links()[0] ?? null;
-      losslessCodec = info.codec ?? null;
-      if (!isLosslessInfo(info)) {
-        // критичная проверка не должна быть ok при lossy-ответе: понижаем до некритичной ошибки → overall degraded
-        const check = checks.find((c) => c.key === "download_lossless");
-        if (check) {
-          check.status = "fail";
-          check.critical = false;
-          check.detail = `lossless недоступен, отдан ${info.codec ?? "?"}`;
-        }
-        losslessLink = null;
-      }
-    }
-
-    // CDN probe: для lossless — Range первых байт + проверка контейнера
-    const cdnUrl = losslessLink || lossyLink;
-    if (cdnUrl) {
-      await probe(
-        "cdn",
-        "CDN",
-        true,
-        async () => {
-          if (losslessLink) {
-            const res = await opts.http.request(losslessLink, {
-              headers: { Range: `bytes=0-${AUDIO_MAGIC_BYTES - 1}` },
-            });
-            let head: Buffer = Buffer.alloc(0);
-            try {
-              if (res.status >= 400) throw new Error(`CDN ответ ${res.status}`);
-              for await (const chunk of res.body) {
-                head = Buffer.from(chunk as Uint8Array);
-                break;
-              }
-            } finally {
-              res.body.destroy();
-            }
-            assertAudioMagic(head, losslessCodec);
-            return res;
-          }
-          const res = await opts.http.headOrRange(cdnUrl, 0, 0);
-          if (!res || res.status >= 400) throw new Error(`CDN ответ ${res?.status ?? "?"}`);
-          return res;
-        },
-        () => (losslessLink ? "lossless CDN отвечает, контейнер корректен" : "CDN отвечает"),
-      );
-    } else {
-      addSkip("cdn", "CDN", true, "нет ссылки для проверки");
-    }
-
-    // lyrics
-    const lyricsId = LYRICS_PROBE_IDS[0] || catalogTrackId;
-    if (lyricsId) {
-      await probe(
-        "lyrics",
-        "лирика",
-        false,
-        async () => {
-          const lyrics = await lib.tracksLyrics(lyricsId, "LRC");
-          if (!lyrics) throw new Error("нет лирики");
-          const text = await lyrics.fetchLyrics();
-          if (!text) throw new Error("пустой текст лирики");
-          return text;
-        },
-        (text) => `лирика доступна, ${String(text).length} символов`,
-      );
-    } else {
-      addSkip("lyrics", "лирика", false, "нет пробного трека");
-    }
-
-    // likes
-    await probe(
-      "likes",
-      "лайки",
-      false,
-      async () => lib.usersLikesTracks(),
-      (libRes) => `лайки доступны${(libRes as any)?.tracks ? `, ${(libRes as any).tracks.length} треков` : ""}`,
-    );
-
-    // history
-    await probe(
-      "history",
-      "история",
-      false,
-      async () => lib.musicHistory(0),
-      (h) => {
-        const tabs = (h as any)?.historyTabs?.length ?? 0;
-        return tabs > 0 ? `история доступна, вкладок ${tabs}` : "история доступна";
-      },
-    );
-
-    return finish();
   }
 
   /** вариант загрузки по качеству (best — макс. битрейт, economy — ≤192). */
@@ -1161,36 +743,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     };
   }
 
-  /** сырой ответ usersPlaylists: треки тут — «короткие» (часто только id). */
-  private async fetchPlaylist(owner: string, kind: number, strict = false) {
-    const run = strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
-    return run(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
-      return (await lib.usersPlaylists(kind, owner)) as unknown as {
-        title?: string;
-        cover?: { uri?: string };
-        tracks?: Array<{ id?: string | number; track?: YaTrack }>;
-      } | null;
-    });
-  }
-
-  /** ссылка «поделиться» (/playlists/<uuid>) → (owner=uid, kind) для обычного пути плейлиста.
-   * uid числовой — годится и для deep-link'а, и для resume. */
+  /** ссылка «поделиться» (/playlists/<uuid>) → (owner=uid, kind) — см. playlist.ts. */
   async resolvePlaylistUuid(
     uuid: string,
     opts: { strict?: boolean } = {},
   ): Promise<{ owner: string; kind: number } | null> {
-    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
-    return run(`resolvePlaylistUuid(${uuid})`, null, async (lib) => {
-      const pl = (await lib.playlist(uuid)) as unknown as {
-        uid?: number;
-        owner?: { uid?: number };
-        kind?: number;
-      } | null;
-      const uid = pl?.owner?.uid ?? pl?.uid;
-      const kind = pl?.kind;
-      if (uid === undefined || kind === undefined || !Number.isFinite(kind) || kind <= 0) return null;
-      return { owner: String(uid), kind };
-    });
+    return resolvePlaylistUuid(this.libRunners, uuid, opts);
   }
 
   /** шапка плейлиста без резолва треков — для inline-результата (одним запросом). */
@@ -1199,84 +757,18 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     kind: number,
     opts: { strict?: boolean } = {},
   ): Promise<{ title: string; coverUri: string; trackCount: number } | null> {
-    const playlist = await this.fetchPlaylist(owner, kind, opts.strict);
-    if (!playlist) return null;
-    return {
-      title: playlist.title || "",
-      coverUri: playlist.cover?.uri || "",
-      trackCount: playlist.tracks?.length ?? 0,
-    };
+    return getPlaylistShort(this.libRunners, owner, kind, opts);
   }
 
-  /** плейлист как AlbumData (переиспользует всю инфру AlbumService: chunked
-   *  download/send/retry/resume) — owner из URL, kind = id плейлиста внутри owner. */
-  /** strict — только для шапки плейлиста (лс): сбой Яндекса ≠ «плейлист не найден». */
+  /** плейлист как AlbumData (owner из URL, kind = id плейлиста внутри owner) — см. playlist.ts. */
   async getPlaylist(owner: string, kind: number, opts: { strict?: boolean } = {}): Promise<AlbumData | null> {
-    const playlist = await this.fetchPlaylist(owner, kind, opts.strict);
-    if (!playlist) return null;
-
-    const shorts = playlist.tracks ?? [];
-    const byId = new Map<string, YaTrack>();
-    const idsToFetch: (string | number)[] = [];
-    for (const s of shorts) {
-      if (s.track) byId.set(String(s.id), s.track);
-      else if (s.id !== undefined) idsToFetch.push(s.id);
-    }
-
-    if (idsToFetch.length > 0) {
-      // POST с телом (не query) — id одним запросом, без постраничного чанкинга.
-      // ponytail: для плейлистов в тысячи треков стоит бить на пачки, если
-      // вообще станет проблемой — для личной библиотеки это не размер.
-      const fetched = await this.withLib(`getPlaylist tracks(${idsToFetch.length})`, [] as YaTrack[], async (lib) => {
-        return (await lib.tracks(idsToFetch)) as unknown as YaTrack[];
-      });
-      for (const t of fetched) if (t?.id !== undefined) byId.set(String(t.id), t);
-    }
-
-    const orderedTracks: YaTrack[] = [];
-    for (const s of shorts) {
-      const t = s.id !== undefined ? byId.get(String(s.id)) : undefined;
-      if (t) orderedTracks.push(t);
-    }
-
-    const data = buildPlaylistAlbumData(kind, playlist.title || "", playlist.cover?.uri || "", orderedTracks);
-    // owner нужен resume: по одному kind плейлист не перезапросить.
-    if (data) data.playlist_owner = owner;
-    return data;
+    return getPlaylist(this.libRunners, owner, kind, opts);
   }
 
   async close(): Promise<void> {
     this.lib = null;
     this.ynison = null;
   }
-}
-
-/** треки плейлиста → AlbumData (переиспользует карточку/выгрузку альбома).
- *  Чистая функция — сеть уже отработала, тут только форма и фильтр available. */
-export function buildPlaylistAlbumData(
-  kind: number,
-  title: string,
-  coverUri: string,
-  tracks: YaTrack[],
-): AlbumData | null {
-  const available = tracks.filter((t) => t && t.available);
-  if (available.length === 0) return null;
-  available.forEach((t, i) => {
-    t._trackNumber = i + 1;
-    t._discNumber = 1;
-  });
-  return {
-    id: kind,
-    title,
-    artist: "Плейлист",
-    year: "",
-    label: "",
-    cover_url: coverUri ? normalizeCoverUrl(coverUri, "orig") : "",
-    genre: "",
-    album_type: "playlist",
-    tracks: available,
-    volumes: [available],
-  };
 }
 
 export class YandexClientFactory {

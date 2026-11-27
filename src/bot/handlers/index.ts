@@ -4,7 +4,7 @@ import { registerAdmin } from "./admin.ts";
 import { registerAlbums } from "./albums.ts";
 import { registerAuth } from "./auth.ts";
 import { registerCommon, registerPrivateFallback } from "./common.ts";
-import { registerInline } from "./inline.ts";
+import { registerInline } from "./inline/index.ts";
 import { registerPlaylists } from "./playlists.ts";
 
 /** порядок важен: команды и точечные callback'и раньше catch-all'ов

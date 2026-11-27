@@ -15,7 +15,7 @@
  * после простоя. */
 import { Worker } from "node:worker_threads";
 import { getLogger } from "../infra/logging.ts";
-import type { RenderCardArgs } from "./card.ts";
+import type { RenderCardArgs } from "./card/index.ts";
 
 const log = getLogger("services.card_render_pool");
 

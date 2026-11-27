@@ -4,7 +4,7 @@
 import { type Bot, MediaUpload } from "gramio";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
-import type { LyricsBlock } from "../services/card.ts";
+import type { LyricsBlock } from "../services/card/index.ts";
 import type { UserSettings } from "../storage/settings.ts";
 import { fetchCover } from "../yandex/media.ts";
 import { enrichCardMetaColor, metaNeedsWaveColor } from "../yandex/metadata.ts";

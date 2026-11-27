@@ -8,7 +8,7 @@ import {
   injectTrackLinkCards,
   onChosenResult,
   registerInline,
-} from "../src/bot/handlers/inline.ts";
+} from "../src/bot/handlers/inline/index.ts";
 import { buildNowPlayingCardResult, renderAndSwapCard } from "../src/bot/handlers/inlineCard.ts";
 import { chatRichSenders, deliverCardAndTrack, PartialDeliveryError } from "../src/bot/richMessage.ts";
 import { TTLCache } from "../src/infra/memoryCache.ts";

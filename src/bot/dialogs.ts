@@ -25,7 +25,7 @@ import { getLogger } from "../infra/logging.ts";
 import type { DeviceAuthState } from "../services/auth.ts";
 import { CARD_ASPECTS, CARD_TOGGLES, type CardToggleName, type UserSettings } from "../storage/settings.ts";
 import type { Container } from "./container.ts";
-import { renderNowPlaying, sendCurrentTrack, type TgUser } from "./handlers/common.ts";
+import { renderNowPlaying, sendCurrentTrack } from "./handlers/common.ts";
 import { iconFor } from "./iconSet.ts";
 import { safeAnswerCb } from "./safeApi.ts";
 import {
@@ -71,6 +71,7 @@ import {
   trackRootText,
   trackSendModeLabel,
 } from "./texts.ts";
+import type { TgUser } from "./types.ts";
 
 const log = getLogger("bot.dialogs");
 

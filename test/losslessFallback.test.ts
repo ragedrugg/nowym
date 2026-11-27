@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { Client as LibClient } from "@dvxch/yandex-music";
 import type { Container } from "../src/bot/container.ts";
-import { ensureFileId } from "../src/bot/handlers/inline.ts";
+import { ensureFileId } from "../src/bot/handlers/inline/index.ts";
 import type { HttpClient } from "../src/infra/http.ts";
 import { CacheService, type TelegramSender } from "../src/services/cache.ts";
 import type { CacheDb } from "../src/storage/cache.ts";

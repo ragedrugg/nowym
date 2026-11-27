@@ -446,7 +446,7 @@ export class AlbumService {
 
       // режим качества юзера: lossless → весь альбом во FLAC (отдельный тир кэша),
       // с пофайловым фолбэком на lossy, если у трека нет lossless; economy (≤192) — свой тир,
-      // как у одиночного трека (inline.ts lossyTier), оптимальное не подменяет.
+      // как у одиночного трека (inline/ensure.ts lossyTier), оптимальное не подменяет.
       const quality = (await this.getUserSettings(userId)).track_quality as AudioQuality;
       const losslessMode = quality === "lossless";
       const economyMode = quality === "economy";

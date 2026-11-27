@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
-import { chatAudioExtras, sendTrackToChat } from "../src/bot/handlers/inline.ts";
+import { chatAudioExtras, sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
 import { chatRichSenders, DEGRADED_NOTE } from "../src/bot/richMessage.ts";
 import type { CachedTrack } from "../src/storage/types.ts";
 import type { YaTrack } from "../src/yandex/types.ts";

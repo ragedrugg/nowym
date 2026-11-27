@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { RenderCardArgs } from "../src/services/card.ts";
+import type { RenderCardArgs } from "../src/services/card/index.ts";
 import { CardRenderPool } from "../src/services/cardRenderPool.ts";
 
 const workerUrl = new URL("./fixtures/echoRenderWorker.ts", import.meta.url);

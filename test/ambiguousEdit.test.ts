@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TelegramError } from "gramio";
 import type { Container } from "../src/bot/container.ts";
-import { onChosenResult, registerInline } from "../src/bot/handlers/inline.ts";
+import { onChosenResult, registerInline } from "../src/bot/handlers/inline/index.ts";
 import { buildNowPlayingCardResult, renderAndSwapCard } from "../src/bot/handlers/inlineCard.ts";
 import { isApiError } from "../src/bot/richMessage.ts";
 import type { CachedTrack } from "../src/storage/types.ts";
