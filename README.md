@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="nowym — yandex music × telegram, gramio edition" width="100%">
+  <img src="assets/banner.png" alt="nowym — yandex music × telegram, yaebal edition" width="100%">
 </p>
 
 <p align="center">
