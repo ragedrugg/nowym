@@ -17,7 +17,9 @@
  *     нужно.
  *   - --env-file тоже через __dirname, не абсолютным путём.
  *
- * Запуск .ts напрямую через node + tsx-лоадер (как в старом ExecStart).
+ * Запуск .ts напрямую через node: встроенный type stripping (по умолчанию с
+ * Node 22.18; tsconfig держит erasableSyntaxOnly), без tsx-лоадера — воркеры
+ * рендера карточки наследуют execArgv и тоже не тянут транспилятор.
  * pm2 по умолчанию шлёт SIGINT на stop — main.ts ловит его для graceful
  * shutdown (delete_webhook + закрытие пулов).
  *
@@ -41,7 +43,7 @@ module.exports = {
       // --expose-gc: backfill FLAC качает большие буферы; они внешние и не давят
       // на JS-heap → V8 не GC'ит вовремя, RSS пухнет. Цикл зовёт global.gc() между
       // треками, освобождая их принудительно (см. bot/handlers/admin.ts).
-      interpreter_args: `--import tsx --expose-gc --env-file=${path.join(__dirname, ".env")}`,
+      interpreter_args: `--expose-gc --env-file=${path.join(__dirname, ".env")}`,
 
       // ── жизненный цикл ────────────────────────────────────────────────
       autorestart: true,

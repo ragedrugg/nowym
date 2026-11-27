@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const settingsUrl = new URL("../src/settings.ts", import.meta.url).href;
-const tsxUrl = import.meta.resolve("tsx");
 
 function probe(nodeEnv: string | undefined): string {
   const dir = mkdtempSync(join(tmpdir(), "nowym-envtest-"));
@@ -20,8 +19,7 @@ function probe(nodeEnv: string | undefined): string {
     return execFileSync(
       process.execPath,
       [
-        "--import",
-        tsxUrl,
+        "--input-type=module",
         "-e",
         `await import(${JSON.stringify(settingsUrl)}); console.log(process.env.NOWYM_ENV_SENTINEL ?? "absent")`,
       ],

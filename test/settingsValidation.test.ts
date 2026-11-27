@@ -69,6 +69,7 @@ const numericVars = [
   "RATE_DOWNLOAD_MAX_TOKENS",
   "RATE_DOWNLOAD_RATE_PER_SEC",
   "WEBAPP_PORT",
+  "POLLING_STALL_SEC",
 ];
 
 for (const name of numericVars) {
@@ -86,6 +87,17 @@ for (const name of numericVars) {
     assert.doesNotThrow(() => buildSettings(e));
   });
 }
+
+test("POLLING_STALL_SEC: дефолт 90, 0 — выкл, 1..59 отклоняется", () => {
+  assert.equal(buildSettings(prodEnv()).POLLING_STALL_SEC, 90);
+  const e = prodEnv();
+  e.POLLING_STALL_SEC = "0";
+  assert.equal(buildSettings(e).POLLING_STALL_SEC, 0);
+  e.POLLING_STALL_SEC = "30";
+  assert.throws(() => buildSettings(e), /POLLING_STALL_SEC/);
+  e.POLLING_STALL_SEC = "120";
+  assert.equal(buildSettings(e).POLLING_STALL_SEC, 120);
+});
 
 test("ADMIN_USER_ID=NaN не отключает admin-гейт молча", () => {
   const e = prodEnv();

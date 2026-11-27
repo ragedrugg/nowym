@@ -9,10 +9,10 @@
     "node": ">=22.19"
   },
   "scripts": {
-    "start": "tsx src/main.ts",
-    "dev": "tsx watch src/main.ts",
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --import ./test/setup.ts --test \"test/**/*.test.ts\"",
+    "test": "node --import ./test/setup.ts --test \"test/**/*.test.ts\"",
     "lint": "biome check .",
     "lint:fix": "biome check --write ."
   },
@@ -20,21 +20,19 @@
     "@dvxch/yandex-music": "^0.4.0",
     "@gramio/dialogs": "^0.3.1",
     "@gramio/storage-redis": "^1.0.5",
-    "@napi-rs/canvas": "~1.0.3",
-    "dotenv": "^17.4.2",
-    "gramio": "^0.12.0",
+    "@napi-rs/canvas": "~1.0.13",
+    "gramio": "^0.15.3",
     "ioredis": "^5.11.1",
     "node-html-parser": "^9.0.7",
     "node-wreq": "^3.2.2",
     "pg": "^8.23.1",
     "taglib-wasm": "~1.6.1",
-    "tsx": "^4.23.15",
     "undici": "^8.13.1",
     "ws": "^8.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
-    "@types/node": "^26.6.10",
+    "@types/node": "^22.20.7",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "typescript": "~7.0.2"

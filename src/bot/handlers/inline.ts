@@ -45,8 +45,11 @@ const TOO_LONG_TEXT = "трек слишком длинный для телег�
 
 /** лимитер скачивания сработал уже на старте закачки (см. ensureFileId.onDownloadStart). */
 class DownloadRateLimited extends Error {
-  constructor(readonly retryAfterSec: number) {
+  readonly retryAfterSec: number;
+
+  constructor(retryAfterSec: number) {
     super("download rate limited");
+    this.retryAfterSec = retryAfterSec;
   }
 }
 

@@ -1,11 +1,15 @@
-import { config as loadDotenv } from "dotenv";
-
 // pm2/ecosystem.config.cjs уже грузит .env через node --env-file — тут только
-// фолбэк на прямой запуск (npm run start без pm2). quiet — dotenv 17 иначе
-// печатает баннер в лог при каждом рестарте.
+// фолбэк на прямой запуск (npm run start без pm2). process.loadEnvFile, как и
+// dotenv, не перезаписывает уже заданные переменные; нет .env — не ошибка.
 // Под тестами (NODE_ENV=test, см. test/setup.ts) .env не читаем вообще: иначе
 // боевые значения из локального .env подменяют тестовые.
-if (process.env.NODE_ENV !== "test") loadDotenv({ quiet: true });
+if (process.env.NODE_ENV !== "test") {
+  try {
+    process.loadEnvFile();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+}
 
 type Env = NodeJS.ProcessEnv;
 
@@ -77,6 +81,9 @@ export interface Settings {
   /** baseURL self-hosted Bot API server (напр. http://127.0.0.1:8081/bot).
    *  Пусто → облако api.telegram.org + webhook. Задано → local server + long-polling. */
   BOT_API_BASE_URL: string;
+  /** long-polling: сколько секунд без завершённого getUpdates до вмешательства
+   *  сторожа (bot/pollingWatchdog.ts); 0 — сторож выключен. */
+  POLLING_STALL_SEC: number;
   WEBHOOK_HOST: string;
   WEBHOOK_PATH: string;
   WEBAPP_HOST: string;
@@ -144,6 +151,7 @@ export function buildSettings(e: Env): Settings {
     RATE_DOWNLOAD_RATE_PER_SEC: envFloat_("RATE_DOWNLOAD_RATE_PER_SEC", "0.1"),
 
     BOT_API_BASE_URL: env_("BOT_API_BASE_URL"),
+    POLLING_STALL_SEC: envInt_("POLLING_STALL_SEC", "90"),
     WEBHOOK_HOST: env_("WEBHOOK_HOST"),
     WEBHOOK_PATH: env_("WEBHOOK_PATH", "/webhook/nowym"),
     WEBAPP_HOST: env_("WEBAPP_HOST", "0.0.0.0"),
@@ -214,6 +222,10 @@ function validate(s: Settings): void {
     ["REDIS_PORT", s.REDIS_PORT],
   ] as const) {
     if (!(val >= 1 && val <= 65535)) throw new Error(`${name} должен быть в диапазоне 1..65535`);
+  }
+  // getUpdates штатно висит до timeout(30s)+allowance(15s): порог ниже 60s рвал бы здоровый long-poll
+  if (s.POLLING_STALL_SEC !== 0 && s.POLLING_STALL_SEC < 60) {
+    throw new Error("POLLING_STALL_SEC должен быть 0 (выкл) или >= 60");
   }
   if (s.ADMIN_USER_ID < 0 || s.OWNER_ID < 0) throw new Error("ADMIN_USER_ID/OWNER_ID не могут быть отрицательными");
 }

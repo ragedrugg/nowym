@@ -31,7 +31,11 @@ export class StaleRefresher {
   // будит спящий interval досрочно при stop() — иначе shutdown ждёт весь час.
   private readonly sleeper = createInterruptibleSleep();
 
-  constructor(private deps: StaleDeps) {}
+  private deps: StaleDeps;
+
+  constructor(deps: StaleDeps) {
+    this.deps = deps;
+  }
 
   start(intervalMs = 3_600_000): void {
     if (this.runPromise !== null) return;

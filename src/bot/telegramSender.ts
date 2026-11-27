@@ -21,10 +21,13 @@ const flood = <T>(build: () => Promise<T>): Promise<T> =>
   });
 
 export class ChannelSender implements TelegramSender {
-  constructor(
-    private bot: Bot,
-    private channelId: string,
-  ) {}
+  private bot: Bot;
+  private channelId: string;
+
+  constructor(bot: Bot, channelId: string) {
+    this.bot = bot;
+    this.channelId = channelId;
+  }
 
   async sendAudioToChannel(audio: Buffer, opts: SendAudioOpts): Promise<SentAudio> {
     const msg = await flood(() =>

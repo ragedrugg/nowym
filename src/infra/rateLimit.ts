@@ -24,10 +24,12 @@ export class AsyncTokenGate {
   private tokens: number;
   private lastRefill = performance.now();
 
-  constructor(
-    private readonly burst: number,
-    private readonly refillMs: number,
-  ) {
+  private readonly burst: number;
+  private readonly refillMs: number;
+
+  constructor(burst: number, refillMs: number) {
+    this.burst = burst;
+    this.refillMs = refillMs;
     this.tokens = burst;
   }
 

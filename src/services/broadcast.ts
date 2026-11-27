@@ -51,10 +51,13 @@ function isUnreachable(e: unknown): boolean {
 export class BroadcastService {
   private state = new Map<number, BroadcastState>();
 
-  constructor(
-    private knownChatsDb: KnownChatsDb,
-    private bot: Bot,
-  ) {}
+  private knownChatsDb: KnownChatsDb;
+  private bot: Bot;
+
+  constructor(knownChatsDb: KnownChatsDb, bot: Bot) {
+    this.knownChatsDb = knownChatsDb;
+    this.bot = bot;
+  }
 
   private getFresh(adminId: number): BroadcastState | null {
     const s = this.state.get(adminId);

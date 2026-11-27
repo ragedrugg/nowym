@@ -27,8 +27,11 @@ class FakeRt extends EventEmitter {
   nowPlaying = null;
   lastStateAgeMs = null;
   private release: (() => void) | null = null;
-  constructor(private readonly script: FakeRtScript) {
+  private readonly script: FakeRtScript;
+
+  constructor(script: FakeRtScript) {
     super();
+    this.script = script;
   }
   async start(): Promise<void> {
     if (this.script.open) this.emit("open");

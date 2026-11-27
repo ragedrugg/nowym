@@ -41,16 +41,28 @@ export class SearchService {
   // короткоживущий кэш пула истории — чтобы листание inline-«недавнего» не дёргало API.
   private recentPool: { tracks: YaTrack[]; at: number } | null = null;
 
+  public yandexService: YandexClient;
+  private resultsCache: TTLCache<InlineResult[]>;
+  private cacheService: CacheService | null;
+  private botUsername: string | null;
+  private userId: number | null;
+
   constructor(
-    public yandexService: YandexClient,
-    private resultsCache: TTLCache<InlineResult[]>,
-    private cacheService: CacheService | null,
-    private botUsername: string | null,
+    yandexService: YandexClient,
+    resultsCache: TTLCache<InlineResult[]>,
+    cacheService: CacheService | null,
+    botUsername: string | null,
     // resultsCache — container.trackCache, общий на всех пользователей (SearchService
     // хоть и per-user, кэш инжектится один и тот же). "недавнее" — приватная история
     // прослушиваний, без соли userId юзер B словил бы кэш юзера A по тому же ключу.
-    private userId: number | null = null,
-  ) {}
+    userId: number | null = null,
+  ) {
+    this.yandexService = yandexService;
+    this.resultsCache = resultsCache;
+    this.cacheService = cacheService;
+    this.botUsername = botUsername;
+    this.userId = userId;
+  }
 
   cacheTrackObject(track: YaTrack): void {
     this.trackObjects.set(String(track.id), track);

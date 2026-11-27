@@ -4,7 +4,11 @@
 export class LRUMap<K, V> {
   private readonly map = new Map<K, V>();
 
-  constructor(private readonly capacity: number) {}
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
 
   get size(): number {
     return this.map.size;

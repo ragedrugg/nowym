@@ -1,5 +1,6 @@
-# Никакого build-шага — бот гоняется прямо из TS через tsx (tsx в dependencies,
-# см. package.json), поэтому один стейдж и `npm ci --omit=dev` без devDependencies.
+# Никакого build-шага — бот гоняется прямо из TS через встроенный в node type
+# stripping (по умолчанию с 22.18; tsconfig: erasableSyntaxOnly), поэтому один стейдж
+# и `npm ci --omit=dev` без devDependencies.
 # Нужен node >= 22.19 (engines; undici). Тег — минорный, без digest.
 FROM node:22.21-slim
 
@@ -26,4 +27,4 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=15s \
   CMD ["node", "-e", "require('http').get('http://localhost:8443/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
 
 # без npm-обёртки — SIGTERM от docker stop доходит прямо до node (graceful shutdown)
-CMD ["node", "--import", "tsx", "src/main.ts"]
+CMD ["node", "src/main.ts"]

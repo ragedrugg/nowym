@@ -172,6 +172,8 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   // библиотечный клиент @dvxch/yandex-music — единый транспорт (каталог/лайки/
   // ynison/download/lyrics/history/landing).
   private lib: LibClient | null = null;
+  /** клиент health-проб без ретраев, производный от текущего lib (см. healthLibFor). */
+  private health: { source: LibClient; lib: LibClient } | null = null;
   private ynison: YnisonService | null = null;
 
   // token-bucket: burst мгновенных вызовов + долив 1/minInterval. Интерактивные
@@ -235,6 +237,20 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       this.lib = lib;
     }
     return this.lib;
+  }
+
+  /** Health-пробы идут через отдельный клиент с retries: 0 — после таймаута проверки не
+   * должно оставаться висящих повторов. Общий транспорт не трогаем: временный
+   * retries = 0 на нём отнимал ретраи у параллельных пользовательских запросов.
+   * Аккаунт копируем из уже инициализированного lib — без второго init. */
+  private healthLibFor(lib: LibClient): LibClient {
+    if (this.health?.source !== lib) {
+      const h = new LibClient({ token: this.token, timeout: LIB_TIMEOUT_MS, ...this.libOptions, retries: 0 });
+      h.me = lib.me;
+      h.accountUid = lib.accountUid;
+      this.health = { source: lib, lib: h };
+    }
+    return this.health.lib;
   }
 
   private async getYnison(): Promise<YnisonService> {
@@ -703,16 +719,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
         // таймаут реального запроса (иначе поздние проверки ложно падают)
         await this.gate.acquire();
         requestStarted = performance.now();
-        // без ретраев библиотеки: после таймаута проверки не должно оставаться
-        // висящих повторных запросов (число попыток читается при старте вызова)
-        const savedRetries = this.lib?.request.retries;
-        if (this.lib && savedRetries !== undefined) this.lib.request.retries = 0;
-        let value: T;
-        try {
-          value = await withTimeout(fn(), timeoutMs, key);
-        } finally {
-          if (this.lib && savedRetries !== undefined) this.lib.request.retries = savedRetries;
-        }
+        const value = await withTimeout(fn(), timeoutMs, key);
         checks.push({
           key,
           label,
@@ -738,7 +745,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     const authStarted = performance.now();
     let lib: LibClient;
     try {
-      lib = await withTimeout(this.getLib(), timeoutMs, "health-auth");
+      lib = this.healthLibFor(await withTimeout(this.getLib(), timeoutMs, "health-auth"));
     } catch (e) {
       checks.push({
         key: "auth",

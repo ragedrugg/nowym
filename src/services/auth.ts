@@ -47,12 +47,20 @@ export interface AuthClock {
 export class AuthService {
   private active = new Map<number, ActiveAuth>();
 
+  private usersDb: UsersDb;
+  private lib: DeviceAuthTransport;
+  private clock: AuthClock;
+
   constructor(
-    private usersDb: UsersDb,
+    usersDb: UsersDb,
     // без токена: только device-flow эндпоинты, не привязаны к аккаунту.
-    private lib: DeviceAuthTransport = new LibClient(),
-    private clock: AuthClock = { sleepFn: (ms) => sleep(ms), now: Date.now },
-  ) {}
+    lib: DeviceAuthTransport = new LibClient(),
+    clock: AuthClock = { sleepFn: (ms) => sleep(ms), now: Date.now },
+  ) {
+    this.usersDb = usersDb;
+    this.lib = lib;
+    this.clock = clock;
+  }
 
   /** запустить device flow. если уже идёт — отменит старую и стартанёт новую. */
   async startDeviceAuth(userId: number, onSuccess: OnSuccess, onFailure: OnFailure): Promise<DeviceAuthState | null> {

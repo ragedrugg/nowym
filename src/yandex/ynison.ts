@@ -74,11 +74,15 @@ function isTerminal(e: YnisonError): boolean {
 export class YnisonService {
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(
-    private lib: LibClient,
-    private token: string,
-    private opts: YnisonServiceOptions = {},
-  ) {}
+  private lib: LibClient;
+  private token: string;
+  private opts: YnisonServiceOptions;
+
+  constructor(lib: LibClient, token: string, opts: YnisonServiceOptions = {}) {
+    this.lib = lib;
+    this.token = token;
+    this.opts = opts;
+  }
 
   /** один retry на транзиентный YnisonError. Не ретраим то, что повтор не лечит:
    * протухший токен (Unauthorized), вытеснение устройства (DeviceDisplaced) и

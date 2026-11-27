@@ -13,6 +13,7 @@ import { Container } from "./bot/container.ts";
 import { buildMenuDialog } from "./bot/dialogs.ts";
 import { registerHandlers } from "./bot/handlers/index.ts";
 import { resolveIconSet } from "./bot/iconSet.ts";
+import { PollingWatchdog } from "./bot/pollingWatchdog.ts";
 import { safeAnswerCb } from "./bot/safeApi.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
 import { sleep } from "./infra/async.ts";
@@ -57,12 +58,12 @@ async function main(): Promise<void> {
 
   // extend ДО registerHandlers: derive ctx.dialog должен стоять раньше хендлеров команд.
   // Хранилище стека диалогов (кнопки) — Redis (localhost:6379), keyPrefix изолирует ключи.
+  // $ttl: без него storage-redis пишет SET без срока и ключи копятся вечно. SETEX
+  // продлевает срок на каждой записи; кнопки меню, не трогавшегося неделю, просто
+  // гасят спиннер (стека нет) — меню открывается заново через /start.
+  const dialogStorage = { keyPrefix: "nowym:dialogs:", $ttl: 7 * 24 * 3600 };
   const { plugin: dialogsPlugin, background } = createDialogs([buildMenuDialog(bot, container)], {
-    storage: redisStorage(
-      s.REDIS_HOST
-        ? { host: s.REDIS_HOST, port: s.REDIS_PORT, keyPrefix: "nowym:dialogs:" }
-        : { keyPrefix: "nowym:dialogs:" },
-    ),
+    storage: redisStorage(s.REDIS_HOST ? { ...dialogStorage, host: s.REDIS_HOST, port: s.REDIS_PORT } : dialogStorage),
     events: {
       // DialogEventCtx = CallbackCtx | MessageCtx: answer только на callback-ветке → каст
       onStale: (ctx) => safeAnswerCb(ctx as never, "это меню устарело — открой заново через /start"),
@@ -172,10 +173,26 @@ async function main(): Promise<void> {
   }
 
   await withRetry("register_commands", () => registerCommands(bot));
+  let watchdog: PollingWatchdog | null = null;
   if (localApi) {
+    if (s.POLLING_STALL_SEC > 0) {
+      // защита от зависшего long-polling (local Bot API server уходил в connect-timeout,
+      // и цикл getUpdates молча вставал): обрыв запроса, при повторе — выход, pm2 поднимет
+      const wd = new PollingWatchdog({
+        stallMs: s.POLLING_STALL_SEC * 1000,
+        onFatal: (reason) => {
+          incCounter("errors_total");
+          alerter?.report(`polling завис: ${reason} — рестарт процесса`);
+          setTimeout(() => process.exit(1), 1000).unref();
+        },
+      });
+      bot.onApiCall("getUpdates", wd.hook);
+      watchdog = wd;
+    }
     // long-polling: deleteWebhook снимает облачный вебхук (на случай переезда),
     // allowedUpdates=all — чтобы inline_query/chosen/callback точно доходили
     await bot.start({ deleteWebhook: true, allowedUpdates: AllowedUpdatesFilter.all });
+    watchdog?.start();
     log.info(`старт ок, long-polling через ${s.BOT_API_BASE_URL}`);
   } else {
     await withRetry("set_webhook", async () => {
@@ -224,6 +241,7 @@ async function main(): Promise<void> {
   // ── graceful shutdown ───────────────────────────────────────────────
   const shutdown = async (): Promise<void> => {
     log.info("остановка...");
+    watchdog?.stop();
     if (npWatcher) await npWatcher.stop();
     // трек, уже начатый до stopped-флага, может тянуться до таймаута скачивания
     // (минимум 10 минут) — не ждём его, чтобы не словить pm2 SIGKILL по kill_timeout.

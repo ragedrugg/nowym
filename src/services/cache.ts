@@ -57,12 +57,17 @@ export class CacheService {
   // тяжёлые треки (>HEAVY_TRACK_BYTES) — строго по одному: иначе N×файл в RAM при 7.8гб
   private heavyLock = new Semaphore(1);
 
-  constructor(
-    private sender: TelegramSender,
-    private cache: CacheDb,
-    private http: HttpClient,
-    private tagging: TaggingService,
-  ) {}
+  private sender: TelegramSender;
+  private cache: CacheDb;
+  private http: HttpClient;
+  private tagging: TaggingService;
+
+  constructor(sender: TelegramSender, cache: CacheDb, http: HttpClient, tagging: TaggingService) {
+    this.sender = sender;
+    this.cache = cache;
+    this.http = http;
+    this.tagging = tagging;
+  }
 
   get cacheDb(): CacheDb {
     return this.cache;

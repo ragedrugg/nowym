@@ -11,10 +11,13 @@ export class AdminAlerter {
   private flushing = false;
   private scheduled = false;
 
-  constructor(
-    private readonly send: (text: string) => Promise<void>,
-    private readonly cooldownMs = 5 * 60 * 1000,
-  ) {}
+  private readonly send: (text: string) => Promise<void>;
+  private readonly cooldownMs: number;
+
+  constructor(send: (text: string) => Promise<void>, cooldownMs: number = 5 * 60 * 1000) {
+    this.send = send;
+    this.cooldownMs = cooldownMs;
+  }
 
   report(msg: string): void {
     this.pending += 1;

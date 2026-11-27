@@ -69,11 +69,15 @@ export function formatEta(seconds: number): string {
 /** обёртка над editMessageText по chat_id+message_id — работает и для resume,
  * где известен только id сообщения. */
 export class ProgressMessage {
-  constructor(
-    private bot: Bot,
-    public chatId: number,
-    public messageId: number,
-  ) {}
+  private bot: Bot;
+  public chatId: number;
+  public messageId: number;
+
+  constructor(bot: Bot, chatId: number, messageId: number) {
+    this.bot = bot;
+    this.chatId = chatId;
+    this.messageId = messageId;
+  }
 
   async edit(text: FormattableString, markup?: ReturnType<typeof cancelAlbumMarkup>): Promise<void> {
     try {
@@ -135,14 +139,28 @@ export class AlbumService {
   // LRU-cap + TTL-свип старых записей
   private retryBuffer = new LRUMap<number, { ts: number; buf: RetryBuf }>(RETRY_BUFFER_MAX);
 
+  private db: CacheDb;
+  private cache: CacheService;
+  private downloadQueue: DownloadConcurrency;
+  private http: HttpClient;
+  private bot: Bot;
+  private getUserSettings: (userId: number) => Promise<UserSettings>;
+
   constructor(
-    private db: CacheDb,
-    private cache: CacheService,
-    private downloadQueue: DownloadConcurrency,
-    private http: HttpClient,
-    private bot: Bot,
-    private getUserSettings: (userId: number) => Promise<UserSettings>,
-  ) {}
+    db: CacheDb,
+    cache: CacheService,
+    downloadQueue: DownloadConcurrency,
+    http: HttpClient,
+    bot: Bot,
+    getUserSettings: (userId: number) => Promise<UserSettings>,
+  ) {
+    this.db = db;
+    this.cache = cache;
+    this.downloadQueue = downloadQueue;
+    this.http = http;
+    this.bot = bot;
+    this.getUserSettings = getUserSettings;
+  }
 
   cancel(userId: number): boolean {
     const state = this.active.get(userId);

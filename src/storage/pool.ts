@@ -18,12 +18,17 @@ const log = getLogger("storage.pool");
 export class DatabasePool {
   private pool: pg.Pool | null = null;
 
-  constructor(
-    private readonly dsnFactory: () => string,
-    private readonly name: string,
-    private readonly minSize: number,
-    private readonly maxSize: number,
-  ) {}
+  private readonly dsnFactory: () => string;
+  private readonly name: string;
+  private readonly minSize: number;
+  private readonly maxSize: number;
+
+  constructor(dsnFactory: () => string, name: string, minSize: number, maxSize: number) {
+    this.dsnFactory = dsnFactory;
+    this.name = name;
+    this.minSize = minSize;
+    this.maxSize = maxSize;
+  }
 
   async initialize(): Promise<void> {
     if (this.pool !== null) return;

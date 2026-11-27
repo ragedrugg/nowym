@@ -2,8 +2,9 @@
  * (Rust-ядро, browser-impersonation) вместо undici-based клиентов — undici
  * конфликтует по версиям под tsx. */
 
-import { parse, TextNode } from "node-html-parser";
-import { fetch as wreqFetch } from "node-wreq";
+// node-wreq (нативный аддон) и node-html-parser грузятся лениво при первом запросе:
+// Genius нужен редко, а статический импорт держал бы их в памяти с самого старта.
+import type { fetch as wreqFetch } from "node-wreq";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
 
@@ -53,7 +54,7 @@ export class GeniusClient {
 
   constructor(token: string, deps: GeniusDeps = {}) {
     this.token = token;
-    this.fetchFn = deps.fetch ?? wreqFetch;
+    this.fetchFn = deps.fetch ?? (async (...args) => (await import("node-wreq")).fetch(...args));
     this.now = deps.now ?? Date.now;
   }
 
@@ -180,6 +181,7 @@ export class GeniusClient {
       }
       if (!res.ok) throw new Error(`page HTTP ${res.status}`);
       const html = await res.text();
+      const { parse, TextNode } = await import("node-html-parser");
       const doc = parse(html);
       const root = doc.getElementById("lyrics-root") ?? doc;
       const containers = root.querySelectorAll("[data-lyrics-container='true']");

@@ -4,6 +4,7 @@
 import { strict as assert } from "node:assert";
 import { Readable } from "node:stream";
 import { test } from "node:test";
+import { Client as LibClient } from "@dvxch/yandex-music";
 import type { Container } from "../src/bot/container.ts";
 import { ensureFileId } from "../src/bot/handlers/inline.ts";
 import type { HttpClient } from "../src/infra/http.ts";
@@ -31,7 +32,9 @@ const fileInfo = (codec: string) => ({
 
 function withLib(lib: unknown): YandexClient {
   const client = new YandexClient("t");
+  // health-пробы ходят через производный клиент без ретраев — подменяем и его
   (client as unknown as { lib: unknown }).lib = lib;
+  (client as unknown as { health: unknown }).health = { source: lib, lib };
   return client;
 }
 
@@ -245,4 +248,35 @@ test("health: CDN-проба lossless читает первые байты Range
   const good = withLib(healthLib(async () => fileInfo("flac-mp4"), []));
   const rGood = await good.probeApiHealth({ http: httpWith(FTYP) });
   assert.equal(rGood.checks.find((x) => x.key === "cdn")?.status, "ok");
+});
+
+test("health: пробы идут через отдельный клиент без ретраев, общий транспорт не меняется", async () => {
+  const shared = { ...healthLib(async () => fileInfo("flac-mp4"), []), request: { get: async () => ({}), retries: 1 } };
+  let sharedSearches = 0;
+  shared.search = async () => {
+    sharedSearches++;
+    return { tracks: { results: [{ id: "9" }] } };
+  };
+  const probeLib = healthLib(async () => fileInfo("flac-mp4"), []);
+  const client = new YandexClient("t");
+  (client as unknown as { lib: unknown }).lib = shared;
+  (client as unknown as { health: unknown }).health = { source: shared, lib: probeLib };
+  const report = await client.probeApiHealth({ http: httpWith(FTYP) });
+  assert.equal(report.checks.find((x) => x.key === "search")?.status, "ok");
+  assert.equal(sharedSearches, 0);
+  assert.equal(shared.request.retries, 1);
+});
+
+test("health: производный клиент — retries 0, аккаунт из общего, пересоздаётся при смене lib", () => {
+  const client = new YandexClient("t");
+  const derive = (lib: LibClient) => (client as unknown as { healthLibFor(l: LibClient): LibClient }).healthLibFor(lib);
+  const shared = new LibClient({ token: "t", retries: 2 });
+  shared.accountUid = 42;
+  const h = derive(shared);
+  assert.notEqual(h, shared);
+  assert.equal(h.request.retries, 0);
+  assert.equal(h.accountUid, 42);
+  assert.equal(shared.request.retries, 2);
+  assert.equal(derive(shared), h);
+  assert.notEqual(derive(new LibClient({ token: "t2" })), h);
 });
