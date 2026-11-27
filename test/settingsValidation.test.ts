@@ -19,7 +19,6 @@ const prodEnv = (): NodeJS.ProcessEnv => ({
   MEMORY_CACHE_TTL: "600",
   CACHE_CLEANUP_INTERVAL: "60",
   MAX_SEARCH_RESULTS: "5",
-  HTTP_CONNECTION_LIMIT: "100",
   HTTP_LIMIT_PER_HOST: "30",
   YANDEX_RATE_LIMIT_INTERVAL: "1.0",
   YANDEX_MAX_RETRIES: "3",
@@ -58,7 +57,6 @@ const numericVars = [
   "MEMORY_CACHE_TTL",
   "CACHE_CLEANUP_INTERVAL",
   "MAX_SEARCH_RESULTS",
-  "HTTP_CONNECTION_LIMIT",
   "HTTP_LIMIT_PER_HOST",
   "YANDEX_RATE_LIMIT_INTERVAL",
   "YANDEX_MAX_RETRIES",
@@ -70,6 +68,7 @@ const numericVars = [
   "RATE_DOWNLOAD_RATE_PER_SEC",
   "WEBAPP_PORT",
   "POLLING_STALL_SEC",
+  "STALE_REFRESH_LIMIT",
 ];
 
 for (const name of numericVars) {
@@ -97,6 +96,15 @@ test("POLLING_STALL_SEC: дефолт 90, 0 — выкл, 1..59 отклоняе
   assert.throws(() => buildSettings(e), /POLLING_STALL_SEC/);
   e.POLLING_STALL_SEC = "120";
   assert.equal(buildSettings(e).POLLING_STALL_SEC, 120);
+});
+
+test("R7: STALE_REFRESH_LIMIT: дефолт 50, 0 — выкл, отрицательное отклоняется", () => {
+  assert.equal(buildSettings(prodEnv()).STALE_REFRESH_LIMIT, 50);
+  const e = prodEnv();
+  e.STALE_REFRESH_LIMIT = "0";
+  assert.equal(buildSettings(e).STALE_REFRESH_LIMIT, 0);
+  e.STALE_REFRESH_LIMIT = "-1";
+  assert.throws(() => buildSettings(e), /STALE_REFRESH_LIMIT/);
 });
 
 test("ADMIN_USER_ID=NaN не отключает admin-гейт молча", () => {

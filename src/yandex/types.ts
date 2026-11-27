@@ -138,7 +138,6 @@ export interface CardMeta {
   colors: CardColors;
   album_id: number | null;
   track_id: number | string | null;
-  liked: boolean | null;
 }
 
 export interface CardColors {

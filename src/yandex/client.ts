@@ -6,7 +6,6 @@ import {
   type ClientOptions as LibClientOptions,
   type DownloadInfo as LibDownloadInfo,
   type LosslessDownloadInfo as LibLosslessDownloadInfo,
-  NetworkError as LibNetworkError,
   NotFoundError as LibNotFoundError,
   TooManyRequestsError as LibTooManyRequestsError,
   UnauthorizedError as LibUnauthorizedError,
@@ -14,7 +13,6 @@ import {
 import { sleep, withTimeout } from "../infra/async.ts";
 import type { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
-import { LRUMap } from "../infra/lruMap.ts";
 import { AsyncTokenGate } from "../infra/rateLimit.ts";
 import { getSettings } from "../settings.ts";
 import { AUDIO_MAGIC_BYTES, assertAudioMagic } from "./audioMagic.ts";
@@ -30,6 +28,7 @@ import { isLrc } from "./lrc.ts";
 import { normalizeCoverUrl } from "./media.ts";
 import type { AlbumShortProvider, LikeProvider, WaveColorProvider } from "./metadata.ts";
 import { type AudioQuality, bareTrackId, formatArtists, selectDownloadInfo, waveColorFromLottie } from "./metadata.ts";
+import { type YandexSharedCaches, yandexSharedCaches } from "./sharedCaches.ts";
 import type { AlbumData, DownloadInfo, YaAlbum, YaTrack } from "./types.ts";
 import { type CurrentTrack, YnisonService } from "./ynison.ts";
 
@@ -186,16 +185,12 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   private npInflight: Promise<CurrentTrack> | null = null;
   private npCache: CurrentTrack | null = null;
   private npCacheAt = 0;
-  // кэш кураторских wave-цветов по album_id
-  private waveColorCache = new LRUMap<number, string>(500);
   // кэш set лайкнутых трек-id (строки) с TTL
   private likesCache: Set<string> | null = null;
   private likesCacheAt = 0;
-  // кэш лирики по track_id (null = нет лирики)
-  private lyricsCache = new LRUMap<string, string>(1000);
-  // definitive-негатив (нет лирики / нет wave-агента): ключ → момент (мс) истечения.
+  // лирика / wave-цвета / definitive-негатив — общие на процесс (sharedCaches.ts).
   // Сбои (таймаут/429/5xx/сеть) не кэшируются вовсе.
-  private negUntil = new LRUMap<string, number>(2000);
+  private readonly caches: YandexSharedCaches;
   private readonly now: () => number;
 
   private readonly libOptions: Partial<LibClientOptions>;
@@ -207,8 +202,10 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     libOptions: Partial<LibClientOptions> = {},
     sleepFn: (ms: number) => Promise<void> = sleep,
     now: () => number = Date.now,
+    caches: YandexSharedCaches = yandexSharedCaches,
   ) {
     this.now = now;
+    this.caches = caches;
     if (!token || typeof token !== "string") throw new Error("токен должен быть непустой строкой");
     this.token = token;
     const s = getSettings();
@@ -404,18 +401,18 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   private isNeg(key: string): boolean {
-    const until = this.negUntil.peek(key);
+    const until = this.caches.negUntil.peek(key);
     return until !== undefined && until > this.now();
   }
 
   private setNeg(key: string): void {
-    this.negUntil.set(key, this.now() + NEGATIVE_TTL_MS);
+    this.caches.negUntil.set(key, this.now() + NEGATIVE_TTL_MS);
   }
 
   /** кураторский hex-цвет wave-агента альбома. цвет кэшируется вечно, «нет агента» —
    *  на NEGATIVE_TTL_MS, на ошибке → null без кэша. */
   async getAlbumWaveColor(albumId: number): Promise<string | null> {
-    const hit = this.waveColorCache.get(albumId);
+    const hit = this.caches.waveColor.get(albumId);
     if (hit) return hit;
     const negKey = `wave:${albumId}`;
     if (this.isNeg(negKey)) return null;
@@ -426,7 +423,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       log.debug(`wave-color ${albumId}: ${e}`);
       return null;
     }
-    if (color) this.waveColorCache.set(albumId, color);
+    if (color) this.caches.waveColor.set(albumId, color);
     else this.setNeg(negKey);
     return color;
   }
@@ -601,7 +598,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
    *  null без кэша = сбой API. */
   async getTrackLyrics(trackId: number | string): Promise<string | null> {
     const key = bareTrackId(trackId);
-    const hit = this.lyricsCache.get(key);
+    const hit = this.caches.lyrics.get(key);
     if (hit) return hit;
     const negKey = `lyrics:${key}`;
     if (this.isNeg(negKey)) return null;
@@ -621,7 +618,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       else log.debug(`getTrackLyrics(${key}): ${e}`);
     }
     if (!definitive) return text;
-    if (text) this.lyricsCache.set(key, text);
+    if (text) this.caches.lyrics.set(key, text);
     else this.setNeg(negKey);
     return text;
   }
@@ -691,7 +688,6 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     const timeoutMs = opts.timeoutMs ?? 6_000;
     const checks: YandexHealthCheck[] = [];
     let probeTrack: YandexProbeTrack | null = null;
-    let accountGeo: string | null = null;
 
     const finish = (): YandexHealthReport => {
       const sorted = sortHealthChecks(checks);
@@ -772,7 +768,6 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       let detail = serviceAvailable ? `сервис доступен${me.plus?.hasPlus ? ", Plus активен" : ""}` : "токен не принят";
       if (serviceAvailable && about?.geoRegionIso) {
         const geo = about.geoRegionIso.toUpperCase();
-        accountGeo = geo;
         const session = about.userSessionRegionIso?.toUpperCase();
         detail += `; регион ${geo}${session && session !== geo ? `, сессия ${session}` : ""}`;
       }
@@ -828,9 +823,8 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       }
     }
 
-    let catalogTrack: any = null;
     if (catalogTrackId) {
-      catalogTrack = await probe(
+      await probe(
         "catalog",
         "каталог / треки",
         true,
@@ -1047,12 +1041,6 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       log.error(`ошибка getLosslessDownload(${track.id}): ${e}`);
       return null;
     }
-  }
-
-  async getDownloadUrl(track: YaTrack, quality: AudioQuality = "best"): Promise<string | null> {
-    const info = await this.getBestDownloadInfo(track, quality);
-    if (info === null) return null;
-    return this.directLinkFromInfo(info);
   }
 
   /** свежая прямая ссылка из готового DownloadInfo (пере-подписывается каждый вызов). */

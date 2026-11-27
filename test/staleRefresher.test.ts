@@ -15,7 +15,9 @@ function build(opts: {
   candidates: number[];
   tokens: Record<number, string | null | "throw">;
   stale: { track_id: string; quality: string }[];
+  limit?: number;
 }) {
+  const staleQueries: [number, number][] = [];
   const touched: [string, string | undefined][] = [];
   const downloads: { id: string; quality: unknown }[] = [];
   const clientUsers: number[] = [];
@@ -28,14 +30,16 @@ function build(opts: {
   };
   const deps = {
     cacheDb: {
-      getStaleUncached: async () => opts.stale,
+      getStaleUncached: async (hours: number, limit: number) => {
+        staleQueries.push([hours, limit]);
+        return opts.stale;
+      },
       touchStale: async (id: string, q?: string) => {
         touched.push([id, q]);
       },
     },
     usersDb: {
       candidateUserIds: async () => opts.candidates,
-      anyUserId: async () => opts.candidates[0] ?? null,
     },
     cacheService: {
       downloadAndCacheTrack: async (id: string, _u: unknown, _m: unknown, _c: unknown, q: unknown) => {
@@ -55,7 +59,7 @@ function build(opts: {
     },
   };
   // biome-ignore lint/suspicious/noExplicitAny: частичные фейки зависимостей
-  return { r: new StaleRefresher(deps as any), touched, downloads, clientUsers, resolved };
+  return { r: new StaleRefresher(deps as any, opts.limit), touched, downloads, clientUsers, resolved, staleQueries };
 }
 
 test("мёртвый первый юзер → берётся следующий кандидат", async () => {
@@ -106,4 +110,24 @@ test("touchStale получает quality строки при неудаче", a
   (h.r as any).deps.getYandexClient = async () => ({ getTrackById: async () => null });
   await h.r.refreshOnce();
   assert.deepEqual(h.touched, [["5", "lossless"]]);
+});
+
+test("R7: STALE_REFRESH_LIMIT уходит в выборку протухших (дефолт 50)", async () => {
+  const def = build({ candidates: [1], tokens: { 1: "tok" }, stale: [] });
+  await def.r.refreshOnce();
+  assert.deepEqual(def.staleQueries, [[24, 50]]);
+  const lim = build({ candidates: [1], tokens: { 1: "tok" }, stale: [], limit: 7 });
+  await lim.r.refreshOnce();
+  assert.deepEqual(lim.staleQueries, [[24, 7]]);
+});
+
+test("R7: STALE_REFRESH_LIMIT=0 — ни выборки, ни перекачек, start() не заводит цикл", async () => {
+  const h = build({ candidates: [1], tokens: { 1: "tok" }, stale: [{ track_id: "1", quality: "lossy" }], limit: 0 });
+  await h.r.refreshOnce();
+  h.r.start(1);
+  await new Promise((r) => setTimeout(r, 20));
+  await h.r.stop();
+  assert.deepEqual(h.staleQueries, []);
+  assert.equal(h.downloads.length, 0);
+  assert.deepEqual(h.resolved, []);
 });

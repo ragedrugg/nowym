@@ -4,7 +4,6 @@ import { format, MediaUpload } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
-import type { YaTrack } from "../../yandex/types.ts";
 import type { CurrentTrack } from "../../yandex/ynison.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";

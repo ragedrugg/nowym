@@ -184,10 +184,6 @@ export class SettingsDb {
     return this.setNormalized(userId, "track_quality", quality, TRACK_QUALITIES, DEFAULT_TRACK_QUALITY);
   }
 
-  setCardStyle(userId: number, style: string): Promise<string> {
-    return this.setNormalized(userId, "card_style", style, CARD_STYLES, DEFAULT_CARD_STYLE);
-  }
-
   setCardLayout(userId: number, layout: string): Promise<string> {
     return this.setNormalized(userId, "card_layout", layout, CARD_LAYOUTS, DEFAULT_CARD_LAYOUT);
   }

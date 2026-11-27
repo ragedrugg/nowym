@@ -32,13 +32,20 @@ export class StaleRefresher {
   private readonly sleeper = createInterruptibleSleep();
 
   private deps: StaleDeps;
+  // R7: потолок перекачек за прогон (STALE_REFRESH_LIMIT); 0 — фоновая задача выключена
+  private readonly limit: number;
 
-  constructor(deps: StaleDeps) {
+  constructor(deps: StaleDeps, limit = 50) {
     this.deps = deps;
+    this.limit = Math.max(0, limit);
   }
 
   start(intervalMs = 3_600_000): void {
     if (this.runPromise !== null) return;
+    if (this.limit === 0) {
+      log.info("[stale] выключен (STALE_REFRESH_LIMIT=0)");
+      return;
+    }
     this.stopped = false;
     this.runPromise = this.runForever(intervalMs);
   }
@@ -63,8 +70,9 @@ export class StaleRefresher {
   }
 
   async refreshOnce(): Promise<void> {
+    if (this.limit === 0) return;
     log.info("[stale] проверка устаревших...");
-    const stale = await this.deps.cacheDb.getStaleUncached(24, 50);
+    const stale = await this.deps.cacheDb.getStaleUncached(24, this.limit);
     if (stale.length === 0) {
       log.info("[stale] устаревших нет");
       return;

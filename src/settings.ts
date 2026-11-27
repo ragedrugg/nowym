@@ -59,10 +59,11 @@ export interface Settings {
   MEMORY_CACHE_SIZE: number;
   MEMORY_CACHE_TTL: number;
   CACHE_CLEANUP_INTERVAL: number;
+  /** сколько протухших пустышек перекачивать за ежечасный прогон (services/stale.ts); 0 — выкл. */
+  STALE_REFRESH_LIMIT: number;
 
   MAX_SEARCH_RESULTS: number;
 
-  HTTP_CONNECTION_LIMIT: number;
   HTTP_LIMIT_PER_HOST: number;
 
   YANDEX_RATE_LIMIT_INTERVAL: number;
@@ -133,10 +134,10 @@ export function buildSettings(e: Env): Settings {
     MEMORY_CACHE_SIZE: envInt_("MEMORY_CACHE_SIZE", env_("ADVANCED_CACHE_SIZE", "500")),
     MEMORY_CACHE_TTL: envInt_("MEMORY_CACHE_TTL", env_("ADVANCED_CACHE_TTL", "600")),
     CACHE_CLEANUP_INTERVAL: envInt_("CACHE_CLEANUP_INTERVAL", "60"),
+    STALE_REFRESH_LIMIT: envInt_("STALE_REFRESH_LIMIT", "50"),
 
     MAX_SEARCH_RESULTS: envInt_("MAX_SEARCH_RESULTS", "5"),
 
-    HTTP_CONNECTION_LIMIT: envInt_("HTTP_CONNECTION_LIMIT", "100"),
     HTTP_LIMIT_PER_HOST: envInt_("HTTP_LIMIT_PER_HOST", "30"),
 
     YANDEX_RATE_LIMIT_INTERVAL: envFloat_("YANDEX_RATE_LIMIT_INTERVAL", "1.0"),
@@ -230,6 +231,7 @@ function validate(s: Settings): void {
   if (s.POLLING_STALL_SEC !== 0 && s.POLLING_STALL_SEC < 60) {
     throw new Error("POLLING_STALL_SEC должен быть 0 (выкл) или >= 60");
   }
+  if (s.STALE_REFRESH_LIMIT < 0) throw new Error("STALE_REFRESH_LIMIT должен быть >= 0 (0 — выкл)");
   if (s.ADMIN_USER_ID < 0 || s.OWNER_ID < 0) throw new Error("ADMIN_USER_ID/OWNER_ID не могут быть отрицательными");
 }
 

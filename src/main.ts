@@ -119,13 +119,16 @@ async function main(): Promise<void> {
   await container.start(bot);
 
   // ── фоновые задачи ──────────────────────────────────────────────────
-  const staleRefresher = new StaleRefresher({
-    cacheDb: container.cacheDb,
-    usersDb: container.usersDb,
-    cacheService: container.cacheService,
-    resolveToken: (uid) => container.resolveToken(uid),
-    getYandexClient: (token, uid) => container.getYandexService(token, uid),
-  });
+  const staleRefresher = new StaleRefresher(
+    {
+      cacheDb: container.cacheDb,
+      usersDb: container.usersDb,
+      cacheService: container.cacheService,
+      resolveToken: (uid) => container.resolveToken(uid),
+      getYandexClient: (token, uid) => container.getYandexService(token, uid),
+    },
+    s.STALE_REFRESH_LIMIT,
+  );
   staleRefresher.start();
 
   // первый прогон через 5 мин, а не через 24ч: при рестартах чаще раза в сутки

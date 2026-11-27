@@ -8,7 +8,6 @@ import {
   buildCardMeta,
   findBestLyricsLine,
   formatArtists,
-  formatDurationHuman,
   isSingle,
   LABELED_ALBUM_TYPES,
   metaNeedsWaveColor,
@@ -22,13 +21,6 @@ test("formatArtists", () => {
   assert.equal(formatArtists([]), "Unknown");
   assert.equal(formatArtists(null, "—"), "—");
   assert.equal(formatArtists([{ id: 1 }]), "Unknown"); // нет name
-});
-
-test("formatDurationHuman", () => {
-  assert.equal(formatDurationHuman(185_000), "3:05");
-  assert.equal(formatDurationHuman(3_725_000), "1:02:05");
-  assert.equal(formatDurationHuman(0), "0:00");
-  assert.equal(formatDurationHuman(null), "0:00");
 });
 
 test("albumTypeRu — словарь + fallback по track_count", () => {
@@ -95,7 +87,6 @@ test("buildCardMeta — извлекает поля без сети", () => {
   assert.equal(m.album_id, 7);
   assert.equal(m.track_id, 42);
   assert.equal(m.colors.accent, "#aabbcc");
-  assert.equal(m.liked, null);
 });
 
 test("metaNeedsWaveColor — серый accent требует wave-цвет", () => {
@@ -140,6 +131,5 @@ function baseMeta(): CardMeta {
     colors: {},
     album_id: null,
     track_id: null,
-    liked: null,
   };
 }

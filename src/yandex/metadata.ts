@@ -56,14 +56,6 @@ export function trackIsTooLong(track: YaTrack): boolean {
   return ms > MAX_TRACK_DURATION_MS;
 }
 
-/** ms → '30:45' / '1:23:45'. */
-export function formatDurationHuman(durationMs: number | null | undefined): string {
-  const s = Math.max(0, Math.floor((durationMs || 0) / 1000));
-  const pad = (n: number) => String(n).padStart(2, "0");
-  if (s >= 3600) return `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
-  return `${Math.floor(s / 60)}:${pad(s % 60)}`;
-}
-
 /** "123:456" | 123 → "123" (отбрасываем album-часть составного trackId); null/undefined → "". */
 export function bareTrackId(id: number | string | null | undefined): string {
   if (id === null || id === undefined) return "";
@@ -220,7 +212,6 @@ export function buildCardMeta(track: YaTrack): CardMeta {
     colors: derivedColors(track),
     album_id: album ? (album.id ?? null) : null,
     track_id: track.id ?? null,
-    liked: null, // лайк-статус на карточке не показывается (см. bot/cardBuilder.ts) — не заполняется
   };
 }
 

@@ -22,19 +22,19 @@ import {
 } from "../bot/texts.ts";
 import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
-import { LRUMap } from "../infra/lruMap.ts";
+import type { LRUMap } from "../infra/lruMap.ts";
 import type { TTLCache } from "../infra/memoryCache.ts";
 import { parseSearchQuery } from "../infra/parsers.ts";
 import type { YandexClient } from "../yandex/client.ts";
 import { normalizeCoverUrl } from "../yandex/media.ts";
 import { formatArtists } from "../yandex/metadata.ts";
+import { detachClient, sharedTrackObjects } from "../yandex/sharedCaches.ts";
 import type { YaAlbum, YaTrack } from "../yandex/types.ts";
 import { albumUrl, playlistUrl } from "../yandex/urls.ts";
 import type { CacheService } from "./cache.ts";
 
 const log = getLogger("services.search");
 
-const TRACK_LRU_MAX = 200;
 // пул истории для пагинируемого «недавнего» в inline — фетчим раз и листаем из него.
 const RECENT_POOL_SIZE = 48;
 const RECENT_POOL_TTL_MS = 120_000;
@@ -52,7 +52,8 @@ interface TrackMeta {
 }
 
 export class SearchService {
-  private trackObjects = new LRUMap<string, YaTrack>(TRACK_LRU_MAX);
+  // Track-объекты — общий на процесс LRU (sharedCaches.ts), а не 200 × на юзера
+  private readonly trackObjects: LRUMap<string, YaTrack>;
   // короткоживущий кэш пула истории — чтобы листание inline-«недавнего» не дёргало API.
   private recentPool: { tracks: YaTrack[]; at: number } | null = null;
 
@@ -71,7 +72,9 @@ export class SearchService {
     // хоть и per-user, кэш инжектится один и тот же). "недавнее" — приватная история
     // прослушиваний, без соли userId юзер B словил бы кэш юзера A по тому же ключу.
     userId: number | null = null,
+    trackObjects: LRUMap<string, YaTrack> = sharedTrackObjects,
   ) {
+    this.trackObjects = trackObjects;
     this.yandexService = yandexService;
     this.resultsCache = resultsCache;
     this.cacheService = cacheService;
@@ -80,7 +83,9 @@ export class SearchService {
   }
 
   cacheTrackObject(track: YaTrack): void {
-    this.trackObjects.set(String(track.id), track);
+    const id = String(track.id);
+    // тот же трек уже лежит — не копируем заново (detach на каждом показе в inline)
+    if (this.trackObjects.get(id) === undefined) this.trackObjects.set(id, detachClient(track));
   }
 
   getTrackObject(trackId: string): YaTrack | null {
@@ -125,8 +130,9 @@ export class SearchService {
       }
       return this.createTextMediaResult(track, meta);
     }
-    if (this.cacheService) return this.createCachedResult(track, meta, layout, signal);
-    return this.createFallbackResult(track, meta);
+    // прод всегда передаёт cacheService (container.ts); без него — только text_media
+    if (!this.cacheService) throw new Error("SearchService без cacheService: доступен только text_media");
+    return this.createCachedResult(track, meta, layout, signal);
   }
 
   /** Article «гружу X — Y», на choose заменяется на аудио через editMessageMedia. */
@@ -146,15 +152,6 @@ export class SearchService {
         reply_markup: progressMarkup(trackId, BTN_DOWNLOADING),
       },
     );
-  }
-
-  private async createFallbackResult(track: YaTrack, meta: TrackMeta): Promise<InlineResult> {
-    const audioUrl = await this.yandexService.getDownloadUrl(track);
-    if (!audioUrl) throw new Error("нет вариантов скачивания для трека");
-    return InlineQueryResult.audio(String(track.id), audioUrl, track.title || "—", {
-      performer: meta.artistNames,
-      audio_duration: meta.duration,
-    });
   }
 
   private async createCachedResult(

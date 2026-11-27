@@ -537,8 +537,11 @@ function drawCoverWithShadow(
   ctx.restore();
 }
 
-/** размытая cover-fit обложка фоном + затемнение + направленный градиент. */
-function drawBackground(
+const BG_BLUR_PX = 28;
+const BG_DOWNSCALE = 4;
+
+/** размытая cover-fit обложка фоном + затемнение + направленный градиент (export — для теста R5). */
+export function drawBackground(
   ctx: SKRSContext2D,
   cover: Image,
   W: number,
@@ -558,9 +561,20 @@ function drawBackground(
   const dx = (W - dw) / 2;
   const dy = (H - dh) / 2;
 
+  // R5: blur(28px) на полном размере — самый дорогой шаг фона (~8 из ~11 мс).
+  // Размываем на канвасе 1/BG_DOWNSCALE с пропорциональным радиусом и растягиваем:
+  // после такого блюра высоких частот нет, разница с полноразмерным в пределах
+  // 6/255 на канал (сверка до/после на 8 эталонах — progress.md, Phase 2).
+  const sw = Math.ceil(W / BG_DOWNSCALE);
+  const sh = Math.ceil(H / BG_DOWNSCALE);
+  const small = createCanvas(sw, sh);
+  const sctx = small.getContext("2d");
+  sctx.filter = `blur(${BG_BLUR_PX / BG_DOWNSCALE}px)`;
+  sctx.drawImage(cover, dx / BG_DOWNSCALE, dy / BG_DOWNSCALE, dw / BG_DOWNSCALE, dh / BG_DOWNSCALE);
   ctx.save();
-  ctx.filter = "blur(28px)";
-  ctx.drawImage(cover, dx, dy, dw, dh);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "low";
+  ctx.drawImage(small, 0, 0, sw * BG_DOWNSCALE, sh * BG_DOWNSCALE);
   ctx.restore();
 
   ctx.fillStyle = "rgba(0, 0, 0, 0.373)";
@@ -1144,7 +1158,7 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   const canvas = createCanvas(lay.W, lay.H);
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  ctx.imageSmoothingQuality = "low";
 
   drawBackground(ctx, cover, lay.W, lay.H, lay.bgGradDir);
   drawCoverWithShadow(ctx, cover, lay.coverX, lay.coverY, lay.coverSize, lay.coverRadius);

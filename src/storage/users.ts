@@ -1,6 +1,7 @@
 /** БД пользователей — токены зашифрованы через infra/crypto. */
 import { crypto } from "../infra/crypto.ts";
 import { getLogger } from "../infra/logging.ts";
+import { LRUMap } from "../infra/lruMap.ts";
 import { usersPool } from "./pool.ts";
 
 const log = getLogger("storage.users");
@@ -11,7 +12,28 @@ export interface UserCreds {
   expires_at: number | null;
 }
 
+// R6: resolveToken на каждое нажатие в inline делал SELECT + 2 расшифровки.
+// Короткий кэш расшифрованных creds; save/delete сбрасывают его сразу (процесс
+// один, других писателей user_credentials нет).
+const CREDS_TTL_MS = 60_000;
+const CREDS_LRU_MAX = 2000;
+
 export class UsersDb {
+  private readonly credsCache = new LRUMap<number, { creds: UserCreds | null; at: number }>(CREDS_LRU_MAX);
+  // счётчик записей на юзера (растёт только у тех, кто логинился/выходил):
+  // get, начавшийся до save/delete, не кладёт в кэш старое
+  private readonly writeGen = new Map<number, number>();
+  private readonly now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
+  }
+
+  private invalidate(userId: number): void {
+    this.credsCache.delete(userId);
+    this.writeGen.set(userId, (this.writeGen.get(userId) ?? 0) + 1);
+  }
+
   async initSchema(): Promise<void> {
     await usersPool.query(`
       CREATE TABLE IF NOT EXISTS user_credentials (
@@ -34,6 +56,7 @@ export class UsersDb {
     // != null, а не truthy: expiresIn=0 ("уже истёк") иначе схлопывался бы
     // с "срок не задан" и токен считался бы вечным
     const expiresAt = expiresIn != null ? Math.floor(Date.now() / 1000) + expiresIn : null;
+    this.invalidate(userId);
     await usersPool.query(
       `
       INSERT INTO user_credentials
@@ -47,10 +70,20 @@ export class UsersDb {
       `,
       [userId, crypto.encrypt(accessToken), crypto.encrypt(refreshToken), expiresAt],
     );
+    this.invalidate(userId);
     log.debug(`creds сохранены для ${userId}`);
   }
 
   async get(userId: number): Promise<UserCreds | null> {
+    const hit = this.credsCache.get(userId);
+    if (hit !== undefined && this.now() - hit.at < CREDS_TTL_MS) return hit.creds && { ...hit.creds };
+    const gen = this.writeGen.get(userId) ?? 0;
+    const creds = await this.load(userId);
+    if ((this.writeGen.get(userId) ?? 0) === gen) this.credsCache.set(userId, { creds, at: this.now() });
+    return creds && { ...creds };
+  }
+
+  private async load(userId: number): Promise<UserCreds | null> {
     const res = await usersPool.query<{
       access_token: string;
       refresh_token: string | null;
@@ -70,7 +103,9 @@ export class UsersDb {
   }
 
   async delete(userId: number): Promise<boolean> {
+    this.invalidate(userId);
     const res = await usersPool.query("DELETE FROM user_credentials WHERE user_id = $1", [userId]);
+    this.invalidate(userId);
     return (res.rowCount ?? 0) > 0;
   }
 
@@ -82,12 +117,6 @@ export class UsersDb {
   async dbSizeBytes(): Promise<number> {
     const res = await usersPool.query<{ pg_database_size: number }>("SELECT pg_database_size(current_database())");
     return res.rows[0]?.pg_database_size ?? 0;
-  }
-
-  /** произвольный существующий юзер — нужен один валидный токен для служебных запросов к CDN. */
-  async anyUserId(): Promise<number | null> {
-    const res = await usersPool.query<{ user_id: number }>("SELECT user_id FROM user_credentials LIMIT 1");
-    return res.rows[0]?.user_id ?? null;
   }
 
   /** до `limit` юзеров с токенами, свежие первыми (детерминированный порядок) — кандидаты для служебных запросов к CDN. */

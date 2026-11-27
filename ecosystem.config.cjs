@@ -41,7 +41,7 @@ module.exports = {
       cwd: __dirname,
       interpreter: process.execPath,
       // --expose-gc: backfill FLAC качает большие буферы; они внешние и не давят
-      // на JS-heap → V8 не GC'ит вовремя, RSS пухнет. Цикл зовёт global.gc() между
+      // на JS-heap → V8 не GC'ит вовремя, RSS пухнет. После альбома зовём global.gc() (infra/gc.ts) между
       // треками, освобождая их принудительно (см. bot/handlers/admin.ts).
       interpreter_args: `--expose-gc --env-file=${path.join(__dirname, ".env")}`,
 
@@ -62,6 +62,9 @@ module.exports = {
       // ── окружение / логи ──────────────────────────────────────────────
       env: {
         NODE_ENV: "production",
+        // glibc: меньше malloc-арен → освобождённые FLAC-буферы реально возвращаются ОС,
+        // а не висят в RSS (по умолчанию 8×ядер арен, каждая держит свою фрагментацию)
+        MALLOC_ARENA_MAX: "2",
       },
       time: true, // таймстемпы в pm2-логах (у нас свой формат, но pm2 не мешает)
       merge_logs: true,

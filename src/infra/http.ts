@@ -26,6 +26,29 @@ export interface HttpResponse {
   body: Dispatcher.ResponseData["body"];
 }
 
+/** тело больше лимита (по content-length или по факту чтения) — ретраить бессмысленно. */
+export class ResponseTooLargeError extends Error {
+  constructor(bytes: number, limit: number) {
+    super(`ответ ${bytes} байт > лимит ${limit}`);
+    this.name = "ResponseTooLargeError";
+  }
+}
+
+/** читает тело, обрывая его, как только набралось больше maxBytes. */
+async function readBodyLimited(body: Dispatcher.ResponseData["body"], maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of body as AsyncIterable<Buffer>) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      body.destroy();
+      throw new ResponseTooLargeError(total, maxBytes);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+}
+
 export class HttpClient {
   private agent: Agent | null = null;
 
@@ -91,8 +114,15 @@ export class HttpClient {
   }
 
   /** скачать аудио: свежий agent (force_close) на каждую попытку + ретраи.
-   * signal — для racing-загрузки: отменяет проигравшие попытки. */
-  async downloadAudio(url: string, maxRetries = 3, signal?: AbortSignal): Promise<Buffer> {
+   * signal — для racing-загрузки: отменяет проигравшие попытки.
+   * maxBytes (R8): content-length больше лимита — отказ до чтения тела, без
+   * ретраев; без content-length тело обрывается, как только перевалит лимит. */
+  async downloadAudio(
+    url: string,
+    maxRetries = 3,
+    signal?: AbortSignal,
+    maxBytes = Number.POSITIVE_INFINITY,
+  ): Promise<Buffer> {
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -118,7 +148,12 @@ export class HttpClient {
           await res.body.dump();
           throw new Error(`HTTP ${res.statusCode}`);
         }
-        const data = Buffer.from(await res.body.arrayBuffer());
+        const declared = Number(res.headers["content-length"]);
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          res.body.destroy();
+          throw new ResponseTooLargeError(declared, maxBytes);
+        }
+        const data = await readBodyLimited(res.body, maxBytes);
         if (attempt > 1) {
           log.info(`аудио скачано ${(data.length / 1024).toFixed(1)} KB (попытка ${attempt}/${maxRetries})`);
         } else {
@@ -126,7 +161,13 @@ export class HttpClient {
         }
         return data;
       } catch (e) {
+        if (e instanceof ResponseTooLargeError) throw e;
         lastError = e;
+        // отмена извне (проигравшая racing-попытка) — штатно, не warning
+        if (signal?.aborted) {
+          log.debug(`аудио: попытка отменена (${attempt}/${maxRetries})`);
+          throw e;
+        }
         log.warning(`ошибка аудио (попытка ${attempt}/${maxRetries}): ${e}`);
         if (attempt < maxRetries) {
           const delay = attempt * 3000 + Math.random() * 2000;

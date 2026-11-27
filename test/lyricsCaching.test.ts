@@ -6,10 +6,11 @@ import { test } from "node:test";
 import { NotFoundError } from "@dvxch/yandex-music";
 
 import { YandexClient } from "../src/yandex/client.ts";
+import { createYandexSharedCaches, type YandexSharedCaches } from "../src/yandex/sharedCaches.ts";
 
 const TTL_MS = 15 * 60_000;
 
-function make() {
+function make(caches: YandexSharedCaches = createYandexSharedCaches()) {
   const clock = { t: 1_000_000 };
   const client = new YandexClient(
     "t",
@@ -17,11 +18,12 @@ function make() {
     {},
     async () => {},
     () => clock.t,
+    caches,
   );
   const setLib = (lib: unknown) => {
     (client as unknown as { lib: unknown }).lib = lib;
   };
-  return { client, clock, setLib };
+  return { client, clock, setLib, caches };
 }
 
 test("lyrics: fetchLyrics бросает (сбой) -> не кэшируется, второй вызов повторяет", async () => {
@@ -92,7 +94,7 @@ test("lyrics: положительный результат кэшируется
 });
 
 test("wave: ошибка -> не кэшируется; нет агента -> негатив с TTL; цвет кэшируется", async () => {
-  const { client, clock, setLib } = make();
+  const { client, clock, setLib, caches } = make();
   let calls = 0;
   let mode: "err" | "none" | "color" = "err";
   setLib({
@@ -116,8 +118,31 @@ test("wave: ошибка -> не кэшируется; нет агента -> н
   assert.equal(calls, 4, "после TTL повтор");
 
   // положительный цвет кэшируется навсегда
-  (client as unknown as { waveColorCache: { set(k: number, v: string): void } }).waveColorCache.set(2, "#fff");
+  caches.waveColor.set(2, "#fff");
   clock.t += 100 * TTL_MS;
   assert.equal(await client.getAlbumWaveColor(2), "#fff");
   assert.equal(calls, 4);
+});
+
+test("R1: лирика, wave-цвет и негатив общие для клиентов разных юзеров", async () => {
+  const caches = createYandexSharedCaches();
+  const a = make(caches);
+  const b = make(caches);
+  let calls = 0;
+  const lib = {
+    tracksLyrics: async (id: string) => {
+      calls += 1;
+      if (id === "404") throw new NotFoundError("nf");
+      return { fetchLyrics: async () => "shared text" };
+    },
+  };
+  a.setLib(lib);
+  b.setLib(lib);
+  assert.equal(await a.client.getTrackLyrics(11), "shared text");
+  assert.equal(await b.client.getTrackLyrics(11), "shared text");
+  assert.equal(await a.client.getTrackLyrics(404), null);
+  assert.equal(await b.client.getTrackLyrics(404), null);
+  assert.equal(calls, 2, "второй юзер берёт и текст, и негатив из общего кэша");
+  caches.waveColor.set(3, "#123456");
+  assert.equal(await b.client.getAlbumWaveColor(3), "#123456");
 });

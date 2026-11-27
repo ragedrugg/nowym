@@ -20,8 +20,8 @@ import {
   UPLOAD_DONE,
   uploadCancelled,
 } from "../bot/texts.ts";
-import { sleep } from "../infra/async.ts";
 import { floodRetry } from "../infra/floodRetry.ts";
+import { collectGarbage } from "../infra/gc.ts";
 import type { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
@@ -43,7 +43,7 @@ import {
   LABELED_ALBUM_TYPES,
   trackIsTooLong,
 } from "../yandex/metadata.ts";
-import type { AlbumData, TrackMetadata, YaTrack } from "../yandex/types.ts";
+import type { AlbumData, YaTrack } from "../yandex/types.ts";
 import type { CacheMetadata, CacheService } from "./cache.ts";
 
 const log = getLogger("services.albums");
@@ -699,6 +699,7 @@ export class AlbumService {
           log.debug(`[inflight] delete row=${inflightId}: ${e}`);
         }
       }
+      collectGarbage(`альбом user=${userId}`);
     }
   }
 

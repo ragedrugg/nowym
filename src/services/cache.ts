@@ -352,7 +352,7 @@ export class CacheService {
     const url = await getUrl();
     if (!url) return null;
     try {
-      const data = await this.http.downloadAudio(url, 3);
+      const data = await this.http.downloadAudio(url, 3, undefined, MAX_TRACK_BYTES);
       if (!hasAudioMagic(data, codec)) {
         log.warning(`[solo] байты не похожи на контейнер ${codec} — отбрасываю`);
         return null;
@@ -440,7 +440,7 @@ export class CacheService {
           if (++failedCount >= maxAttempts) finish();
           return;
         }
-        const data = await this.http.downloadAudio(url, 1, ctrl.signal);
+        const data = await this.http.downloadAudio(url, 1, ctrl.signal, MAX_TRACK_BYTES);
         // HTML/JSON-ошибка CDN или шифртекст — проваленная попытка, а не победитель
         if (!hasAudioMagic(data, codec)) throw new Error(`байты не похожи на контейнер ${codec}`);
         if (!resolved) {

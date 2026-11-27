@@ -71,7 +71,6 @@ export class Container {
   // извне хендлера (нужно для device-flow login, где ответ приходит асинхронно).
   dialogBackground: ((bot: Bot, stackKey: string) => Promise<DialogManager>) | null = null;
 
-  private bot!: Bot;
   // TTL, не голый Map: без него оба кэша росли бы весь lifetime процесса —
   // на 5000+ лайфтайм-юзерах это гигабайты закэшированных YaTrack/http-клиентов.
   // Клиенты дешёвые в пересборке, час простоя не жалко.
@@ -82,10 +81,12 @@ export class Container {
   // YandexClient) могли одновременно слать один и тот же refresh_token,
   // и параллельные usersDb.save() гонялись бы за тем, чья пара токенов останется.
   private refreshInFlight = new Map<number, Promise<string | null>>();
+  // D18: дедуп конкурентного создания YandexClient на юзера — набор в inline шлёт
+  // пачку запросов, и без этого каждый делал бы свой lib.init() (сеть + RAM).
+  private clientInFlight = new Map<number, Promise<YandexClient>>();
 
   async start(bot: Bot): Promise<void> {
     log.info("инициализация контейнера...");
-    this.bot = bot;
     const s = getSettings();
 
     crypto.init(s.TOKEN_ENCRYPTION_KEY);
@@ -173,10 +174,20 @@ export class Container {
     const cached = this.yandexClients.get(key);
     if (cached !== null) return cached;
 
-    const cb = this.makeRefreshCallback(userId);
-    const client = await YandexClientFactory.create(token, cb);
-    this.yandexClients.set(key, client);
-    return client;
+    const existing = this.clientInFlight.get(userId);
+    if (existing !== undefined) return existing;
+    const task = YandexClientFactory.create(token, this.makeRefreshCallback(userId))
+      .then((client) => {
+        // invalidate во время lib.init() снимает task из clientInFlight — тогда
+        // клиент со старым токеном отдаём ждущим, но в кэш не кладём
+        if (this.clientInFlight.get(userId) === task) this.yandexClients.set(key, client);
+        return client;
+      })
+      .finally(() => {
+        if (this.clientInFlight.get(userId) === task) this.clientInFlight.delete(userId);
+      });
+    this.clientInFlight.set(userId, task);
+    return task;
   }
 
   async getTrackService(token: string, userId?: number): Promise<SearchService> {
@@ -250,6 +261,7 @@ export class Container {
   }
 
   invalidateTokenCacheForUser(userId: number): void {
+    this.clientInFlight.delete(userId);
     this.yandexClients.delete(String(userId));
     this.searchServices.delete(String(userId));
   }
