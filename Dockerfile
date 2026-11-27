@@ -1,7 +1,7 @@
 # Никакого build-шага — бот гоняется прямо из TS через встроенный в node type
 # stripping (по умолчанию с 22.18; tsconfig: erasableSyntaxOnly), поэтому один стейдж
 # и `npm ci --omit=dev` без devDependencies.
-# Нужен node >= 22.19 (engines; undici). Тег — минорный, без digest.
+# Нужен node ^22.19 || >=23.6 (engines; undici). Тег — минорный, без digest.
 FROM node:22.21-slim
 
 RUN apt-get update \

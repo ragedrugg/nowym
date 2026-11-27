@@ -84,6 +84,9 @@ export class Container {
   // D18: дедуп конкурентного создания YandexClient на юзера — набор в inline шлёт
   // пачку запросов, и без этого каждый делал бы свой lib.init() (сеть + RAM).
   private clientInFlight = new Map<number, Promise<YandexClient>>();
+  /** поколение инвалидаций на юзера: SearchService, собранный на клиенте, взятом до
+   *  invalidateTokenCacheForUser (logout/смена аккаунта/refresh), в кэш не кладём. */
+  private invalidationGen = new Map<number, number>();
 
   async start(bot: Bot): Promise<void> {
     log.info("инициализация контейнера...");
@@ -199,9 +202,10 @@ export class Container {
     const cached = this.searchServices.get(key);
     if (cached !== null) return cached;
 
+    const gen = this.invalidationGen.get(userId) ?? 0;
     const yandex = await this.getYandexService(token, userId);
     const svc = new SearchService(yandex, this.trackCache, this.cacheService, this.botUsername, userId);
-    this.searchServices.set(key, svc);
+    if ((this.invalidationGen.get(userId) ?? 0) === gen) this.searchServices.set(key, svc);
     return svc;
   }
 
@@ -261,6 +265,7 @@ export class Container {
   }
 
   invalidateTokenCacheForUser(userId: number): void {
+    this.invalidationGen.set(userId, (this.invalidationGen.get(userId) ?? 0) + 1);
     this.clientInFlight.delete(userId);
     this.yandexClients.delete(String(userId));
     this.searchServices.delete(String(userId));

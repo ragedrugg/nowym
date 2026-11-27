@@ -17,6 +17,7 @@ import {
   resumeGone,
   resumeNeedsLogin,
   sendingNow,
+  TOO_LONG_MARK,
   UPLOAD_DONE,
   uploadCancelled,
 } from "../bot/texts.ts";
@@ -128,7 +129,8 @@ interface RetryBuf {
   yandex: YandexClient;
 }
 
-type PrepareKind = "cached" | "fresh" | "failed";
+// too_long — >4.5 ч: в телеграм не влезет никогда, в retry-буфер не кладём
+type PrepareKind = "cached" | "fresh" | "failed" | "too_long";
 interface PreparedEntry {
   kind: PrepareKind;
   track: YaTrack;
@@ -146,6 +148,8 @@ interface ProgressState {
   sent: number;
   downloading: number;
   failed: YaTrack[];
+  /** слишком длинные — показываем отдельно, «повторить» их не касается. */
+  tooLong: YaTrack[];
   lock: Semaphore;
   startedAt: number;
   lastRender: number;
@@ -441,10 +445,13 @@ export class AlbumService {
       if (total === 0) return;
 
       // режим качества юзера: lossless → весь альбом во FLAC (отдельный тир кэша),
-      // с пофайловым фолбэком на lossy, если у трека нет lossless.
+      // с пофайловым фолбэком на lossy, если у трека нет lossless; economy (≤192) — свой тир,
+      // как у одиночного трека (inline.ts lossyTier), оптимальное не подменяет.
       const quality = (await this.getUserSettings(userId)).track_quality as AudioQuality;
       const losslessMode = quality === "lossless";
-      const tier = losslessMode ? "lossless" : "lossy";
+      const economyMode = quality === "economy";
+      const lossyTier = economyMode ? "economy" : "lossy";
+      const tier = losslessMode ? "lossless" : lossyTier;
 
       if (args.persistInflight && inflightId === null) {
         try {
@@ -500,6 +507,7 @@ export class AlbumService {
         sent: 0,
         downloading: 0,
         failed: [],
+        tooLong: [],
         lock: new Semaphore(1),
         startedAt: performance.now() / 1000,
         lastRender: 0,
@@ -525,7 +533,16 @@ export class AlbumService {
 
         if (trackIsTooLong(track)) {
           log.info(`[album] трек ${trackId} «${track.title}» длинный, пропускаю`);
-          prepared[idx] = { kind: "failed", track, trackId, metadata, fileId: null, payload: null, codec: "mp3", tier };
+          prepared[idx] = {
+            kind: "too_long",
+            track,
+            trackId,
+            metadata,
+            fileId: null,
+            payload: null,
+            codec: "mp3",
+            tier,
+          };
           return;
         }
 
@@ -572,7 +589,7 @@ export class AlbumService {
 
           let codec = "mp3";
           let payload: [Buffer, Buffer | null] | null = null;
-          let actualTier = "lossy";
+          let actualTier = lossyTier;
           try {
             const result = await this.downloadQueue.enqueue(async () => {
               // lossless-режим: raw flac-mp4 через get-file-info (lossy-ответ = null → фолбэк в lossy-тир).
@@ -590,7 +607,7 @@ export class AlbumService {
                 }
                 // фолбэк: трек без lossless или сбой — качаем lossy ниже.
               }
-              const info = await yandex.getBestDownloadInfo(track);
+              const info = await yandex.getBestDownloadInfo(track, economyMode ? "economy" : "best");
               if (info === null) return null;
               metadata.codec = info.codec;
               metadata.bitrate_kbps = info.bitrateInKbps;
@@ -599,9 +616,10 @@ export class AlbumService {
                 () => yandex.directLinkFromInfo(info),
                 metadata,
                 info.codec,
+                lossyTier,
               );
               if (p === null) return null;
-              return { codec: info.codec, payload: p, tier: "lossy" };
+              return { codec: info.codec, payload: p, tier: lossyTier };
             });
             if (result !== null) {
               codec = result.codec;
@@ -650,12 +668,14 @@ export class AlbumService {
           const batchIdx: number[] = [];
           while (cursor < chunkEnd && batch.length < MEDIA_GROUP_MAX) {
             const entry = prepared[cursor];
-            if (entry == null || entry.kind === "failed") {
+            if (entry == null || entry.kind === "failed" || entry.kind === "too_long") {
               if (batch.length > 0) break; // сначала отправим что собрали
               if (entry != null) {
                 const failedTrack = entry.track;
+                const tooLong = entry.kind === "too_long";
                 await this.mutateProgress(progress, (p) => {
-                  p.failed.push(failedTrack);
+                  if (tooLong) p.tooLong.push(failedTrack);
+                  else p.failed.push(failedTrack);
                 });
               }
               prepared[cursor] = null;
@@ -684,6 +704,7 @@ export class AlbumService {
         headerShort,
         total,
         failed: progress.failed,
+        tooLong: progress.tooLong,
         albumData,
         userId,
         chatId,
@@ -856,6 +877,7 @@ export class AlbumService {
     headerShort: FormattableString;
     total: number;
     failed: YaTrack[];
+    tooLong?: YaTrack[];
     albumData: AlbumData;
     userId: number;
     chatId: number;
@@ -863,13 +885,23 @@ export class AlbumService {
     elapsed: number;
   }): Promise<void> {
     const { msg, headerShort, total, failed, albumData, userId, chatId, yandex, elapsed } = args;
+    const tooLong = args.tooLong ?? [];
     if (msg === null) return;
     const bar = renderProgressBar(total, total);
     const elapsedStr = formatEta(elapsed);
 
-    if (failed.length > 0) {
-      const failedList = join(failed, (t) => format`- ${t.title}`, "\n");
-      const text = format`${headerShort}\n${code(bar)} ${total - failed.length}/${total}, за ${elapsedStr}\n\n${FAILED_LIST_HEADER}\n${failedList}`;
+    if (failed.length > 0 || tooLong.length > 0) {
+      const lines = [
+        ...failed.map((t) => format`- ${t.title}`),
+        ...tooLong.map((t) => format`- ${t.title} ${TOO_LONG_MARK}`),
+      ];
+      const failedList = join(lines, (l) => l, "\n");
+      const done = total - failed.length - tooLong.length;
+      const text = format`${headerShort}\n${code(bar)} ${done}/${total}, за ${elapsedStr}\n\n${FAILED_LIST_HEADER}\n${failedList}`;
+      if (failed.length === 0) {
+        await msg.edit(text); // повторять нечего: длинные треки не пройдут никогда
+        return;
+      }
       this.putRetry(msg.messageId, { chatId, userId, tracks: failed, albumData, yandex });
       await msg.edit(text, albumRetryMarkup(msg.messageId, pluralTracks(failed.length)));
     } else {

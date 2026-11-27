@@ -7,7 +7,13 @@
  * Сбой с ответом API => один warning `[rich]` и результат "fallback": вызывающий код
  * отдаёт карточку и трек по отдельности из уже полученных file_id (без повторного
  * рендера/скачивания). Наружу ничего не бросается. */
-import { type Bot, type InlineKeyboard, TelegramError, type TelegramInputRichMessage } from "gramio";
+import {
+  type Bot,
+  type FormattableString,
+  type InlineKeyboard,
+  TelegramError,
+  type TelegramInputRichMessage,
+} from "gramio";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import { nowPlayingMarkup, trackMarkup } from "./markup.ts";
@@ -27,6 +33,9 @@ export interface RichAudio {
   durationSec: number | null;
   /** запрошено «превосходное», но отдаём оптимальное. */
   degraded: boolean;
+  /** для подписи качества в фолбэк-аудио (track_layout «текст»/«всё»). */
+  codec?: string | null;
+  bitrateKbps?: number | null;
 }
 
 /** file_id карточки + освобождение служебного сообщения в канале (best-effort). */
@@ -50,6 +59,12 @@ export class PartialDeliveryError extends Error {
     super(`карточка отправлена, трек нет: ${errText(cause)}`);
     this.name = "PartialDeliveryError";
   }
+}
+
+/** caption/reply_markup отдельного аудио в чат (sendAudio) — по track_layout. */
+export interface AudioExtras {
+  caption?: FormattableString | string;
+  reply_markup?: InlineKeyboard;
 }
 
 export interface FallbackInput {
@@ -100,8 +115,9 @@ export function errText(e: unknown): string {
   return msg.replace(BOT_TOKEN, "bot<token>").slice(0, 300);
 }
 
-/** Определённый ответ Bot API (есть error_code): запрос точно не выполнен, фолбэк безопасен. */
-function isApiError(e: unknown): boolean {
+/** Определённый ответ Bot API (есть error_code): запрос точно не выполнен, фолбэк безопасен.
+ * Иначе (сеть/таймаут) исход неизвестен — Telegram мог применить запрос. */
+export function isApiError(e: unknown): boolean {
   if (e instanceof TelegramError) return true;
   const x = e as { name?: unknown; code?: unknown } | null;
   return x?.name === "TelegramError" && typeof x.code === "number";
@@ -196,7 +212,13 @@ export async function deliverCardAndTrack(o: {
 export function chatRichSenders(
   bot: Bot,
   chatId: number | string,
-  o: { trackId: string; trackLayout: string; botUsername: string | null },
+  o: {
+    trackId: string;
+    trackLayout: string;
+    botUsername: string | null;
+    /** caption/reply_markup фолбэк-аудио по track_layout; без него — только пометка о деградации. */
+    audioExtras?: (audio: RichAudio) => AudioExtras;
+  },
 ): {
   sendRich: (rich: TelegramInputRichMessage) => Promise<void>;
   fallback: (got: FallbackInput) => Promise<void>;
@@ -213,11 +235,12 @@ export function chatRichSenders(
       }
       if (audio) {
         try {
-          await bot.api.sendAudio({
-            chat_id: chatId,
-            audio: audio.fileId,
-            ...(audio.degraded ? { caption: DEGRADED_NOTE } : {}),
-          });
+          const extras: AudioExtras = o.audioExtras
+            ? o.audioExtras(audio)
+            : audio.degraded
+              ? { caption: DEGRADED_NOTE }
+              : {};
+          await bot.api.sendAudio({ chat_id: chatId, audio: audio.fileId, ...extras });
         } catch (e) {
           if (cardFileId) throw new PartialDeliveryError(e);
           throw e;

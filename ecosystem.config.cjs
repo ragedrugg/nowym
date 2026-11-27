@@ -18,7 +18,7 @@
  *   - --env-file тоже через __dirname, не абсолютным путём.
  *
  * Запуск .ts напрямую через node: встроенный type stripping (по умолчанию с
- * Node 22.18; tsconfig держит erasableSyntaxOnly), без tsx-лоадера — воркеры
+ * Node 22.18 / 23.6; tsconfig держит erasableSyntaxOnly), без tsx-лоадера — воркеры
  * рендера карточки наследуют execArgv и тоже не тянут транспилятор.
  * pm2 по умолчанию шлёт SIGINT на stop — main.ts ловит его для graceful
  * shutdown (delete_webhook + закрытие пулов).
@@ -32,6 +32,22 @@
  * модуль pm2-logrotate; кастомный путь вывалился бы из ротации.
  */
 const path = require("node:path");
+
+// interpreter = node, под которым выполняется pm2 (см. выше). Если это старый
+// node (например, глобальный pm2 под системным Node 20 при nvm-24), бот упал бы
+// на `src/main.ts` с невнятным ERR_UNKNOWN_FILE_EXTENSION — падаем сразу и понятно.
+const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+// порог как engines в package.json: ^22.19 || >=23.6 (в 23.x type stripping
+// включён по умолчанию только с 23.6; 23.0–23.5 требуют флаг).
+const nodeOk = (nodeMajor === 22 && nodeMinor >= 19) || (nodeMajor === 23 && nodeMinor >= 6) || nodeMajor >= 24;
+if (!nodeOk) {
+  throw new Error(
+    `nowym-ts: pm2 запущен под node ${process.versions.node} (${process.execPath}), ` +
+      "а для запуска .ts без транспилятора нужен node >= 22.19 (в ветке 23 — >= 23.6, " +
+      "см. engines в package.json). Запусти pm2 под новым node: " +
+      "`npm i -g pm2` в нужной версии node, затем `pm2 update`.",
+  );
+}
 
 module.exports = {
   apps: [

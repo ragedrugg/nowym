@@ -159,10 +159,11 @@ export const TOO_LONG_TEXT = "трек слишком длинный для те
 export const TRACK_NOT_FOUND = "трек не найден";
 export const NO_VARIANTS = "нет вариантов скачивания";
 
-export type EnsureFailKind = "not_found" | "too_long" | "no_variants" | "failed";
+export type EnsureFailKind = "not_found" | "too_long" | "no_variants" | "failed" | "unavailable";
 
 /** итог неудачной закачки — сообщением в чат. */
 export function ensureErrorText(kind: EnsureFailKind): FormattableString {
+  if (kind === "unavailable") return format`${YANDEX_DOWN}`;
   const text = ensureErrorButton(kind);
   return text ? format`❌ ${text}` : format`❌ не вышло скачать — попробуй ещё раз`;
 }
@@ -175,12 +176,16 @@ export function ensureErrorButton(kind: EnsureFailKind): string | null {
       ? TOO_LONG_TEXT
       : kind === "no_variants"
         ? NO_VARIANTS
-        : null;
+        : kind === "unavailable"
+          ? YANDEX_DOWN
+          : null;
 }
 
 // ───────────────────────── inline: кнопка над выдачей ─────────────────────────
 
 export const INLINE_SERVICE_DOWN = "⏳ сервис не отвечает — попробуй ещё раз";
+/** сбой Яндекса (сеть/таймаут/5xx/429) — отдельно от «не найдено»: inline-кнопка и сообщение в лс. */
+export const YANDEX_DOWN = "⏳ Яндекс не отвечает — попробуй ещё раз";
 export const INLINE_TIMED_OUT = "⏳ не успел — попробуй ещё раз";
 export const INLINE_NOTHING_RECENT = "🕗 пока нечего показать";
 export const inlineNotFound = (text: string): string =>
@@ -231,6 +236,8 @@ export const playlistResultText = (title: string, suffix: string, url: string): 
   suffix ? format`🎵 ${bold(title)}\n${italic(suffix)}\n\n${url}` : format`🎵 ${bold(title)}\n\n${url}`;
 export const PLAYLIST_DESCRIPTION = "плейлист";
 export const PLAYLIST_TO_DM = "выгрузить плейлист мне в личку";
+/** плейлист без deep-link'а (логин владельца с точкой): ссылку кидают в личку. */
+export const PLAYLIST_SEND_LINK_HINT = "кинь ссылку мне в личку — пришлю треками";
 
 /** названия аудио-эффектов: в /help и суффиксом в названии трека. */
 export const EFFECT_NAMES = {
@@ -279,6 +286,8 @@ export const sendingNow = (what: string): FormattableString => format`📨 от�
 export const PREPARING_SEND = "📨 готовлю отправку…";
 export const downloadingInParallel = (tracks: string): FormattableString => format`⬇️ параллельно качаю ${tracks}`;
 export const FAILED_LIST_HEADER = "❌ не вышло:";
+/** пометка трека >4.5 ч в итоге выгрузки — «повторить» его не касается. */
+export const TOO_LONG_MARK = "(слишком длинный)";
 export const UPLOAD_DONE = "✅ готово";
 
 // ───────────────────────── меню: настройки ─────────────────────────
@@ -342,9 +351,9 @@ export const trackRootText = (s: UserSettings): FormattableString => format`${bo
 
 export const layoutPickText = (): FormattableString => format`${bold("подпись и кнопки трека")}
 
-${bold("кнопка")} — под аудио кнопка «открыть»
+${bold("кнопка")} — под аудио кнопки лайка и «открыть»
 ${bold("текст")} — подпись со ссылкой «открыть»
-${bold("всё")} — и подпись, и кнопка
+${bold("всё")} — и подпись, и кнопки
 ${bold("ничего")} — только аудиофайл`;
 
 export const sendModePickText = (): FormattableString => format`${bold("способ отправки (в inline)")}

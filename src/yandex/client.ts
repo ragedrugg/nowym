@@ -6,6 +6,7 @@ import {
   type ClientOptions as LibClientOptions,
   type DownloadInfo as LibDownloadInfo,
   type LosslessDownloadInfo as LibLosslessDownloadInfo,
+  NetworkError as LibNetworkError,
   NotFoundError as LibNotFoundError,
   TooManyRequestsError as LibTooManyRequestsError,
   UnauthorizedError as LibUnauthorizedError,
@@ -42,6 +43,24 @@ const LIB_TIMEOUT_MS = 8_000;
 const NOWYM_429_RETRIES = 2;
 /** Верхняя граница паузы между 429-повторами. */
 const RETRY_DELAY_CAP_MS = 30_000;
+
+/** Яндекс недоступен (сеть, таймаут, 5xx, 429): отличаем от «не найдено» в inline/лс. */
+export class YandexUnavailableError extends Error {
+  constructor(label: string, cause: unknown) {
+    super(`яндекс недоступен: ${label}`, { cause });
+    this.name = "YandexUnavailableError";
+  }
+}
+
+/** транспорт/таймаут/5xx/429 — «Яндекс не отвечает»; 4xx и прочее — содержательный ответ. */
+function isYandexUnavailable(e: unknown): boolean {
+  if (e instanceof LibNetworkError) {
+    const status = e.status;
+    return status === undefined || status === 429 || status >= 500;
+  }
+  // withRetry исчерпал попытки (после 429)
+  return e instanceof Error && e.message.startsWith("превышено число попыток");
+}
 
 /** Ссылки get-file-info живут недолго; старше этого возраста список запрашиваем заново (один раз). */
 const LOSSLESS_URL_TTL_MS = 45_000;
@@ -345,16 +364,34 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     }
   }
 
-  async getTrackById(trackId: number | string): Promise<YaTrack | null> {
-    return this.withLib(`getTrackById(${trackId})`, null, async (lib) => {
+  /** как withLib, но недоступность Яндекса (сеть/таймаут/5xx/429) бросает YandexUnavailableError
+   * вместо фолбэка — для inline/лс, где пользователь должен отличать сбой от «не найдено». */
+  private async withLibStrict<T>(label: string, fallback: T, func: (lib: LibClient) => Promise<T>): Promise<T> {
+    try {
+      return await this.withRetry(async () => func(await this.getLib()));
+    } catch (e) {
+      if (isYandexUnavailable(e)) {
+        log.warning(`яндекс недоступен ${label}: ${e}`);
+        throw new YandexUnavailableError(label, e);
+      }
+      log.error(`ошибка ${label}: ${e}`);
+      return fallback;
+    }
+  }
+
+  /** strict: сбой Яндекса бросает YandexUnavailableError (inline/лс), иначе — null. */
+  async getTrackById(trackId: number | string, opts: { strict?: boolean } = {}): Promise<YaTrack | null> {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(`getTrackById(${trackId})`, null, async (lib) => {
       const tracks = await lib.tracks([trackId]);
       return tracks.length > 0 ? (tracks[0] as unknown as YaTrack) : null;
     });
   }
 
-  async searchTracks(query: string, limit?: number): Promise<YaTrack[]> {
+  async searchTracks(query: string, limit?: number, opts: { strict?: boolean } = {}): Promise<YaTrack[]> {
     const lim = limit ?? getSettings().MAX_SEARCH_RESULTS;
-    return this.withLib(`searchTracks(${JSON.stringify(query)})`, [], async (lib) => {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(`searchTracks(${JSON.stringify(query)})`, [] as YaTrack[], async (lib) => {
       const result = await lib.search(query, false, "track");
       const tracks = (result?.tracks?.results ?? []) as unknown as YaTrack[];
       return tracks.slice(0, lim);
@@ -362,10 +399,15 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   /** полная страница поиска треков (для inline-пагинации): результаты + total/perPage. */
-  async searchTracksPage(query: string, page = 0): Promise<{ tracks: YaTrack[]; total: number; perPage: number }> {
-    return this.withLib(
+  async searchTracksPage(
+    query: string,
+    page = 0,
+    opts: { strict?: boolean } = {},
+  ): Promise<{ tracks: YaTrack[]; total: number; perPage: number }> {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(
       `searchTracksPage(${JSON.stringify(query)}, ${page})`,
-      { tracks: [], total: 0, perPage: 0 },
+      { tracks: [] as YaTrack[], total: 0, perPage: 0 },
       async (lib) => {
         const result = await lib.search(query, false, "track", page);
         const t = result?.tracks;
@@ -393,8 +435,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   /** альбом БЕЗ трек-листа (1 запрос) — добор year/labels/genre. */
-  async getAlbumShort(albumId: number | string): Promise<YaAlbum | null> {
-    return this.withLib(`getAlbumShort(${albumId})`, null, async (lib) => {
+  async getAlbumShort(albumId: number | string, opts: { strict?: boolean } = {}): Promise<YaAlbum | null> {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(`getAlbumShort(${albumId})`, null, async (lib) => {
       const result = await lib.albums([albumId]);
       return result.length > 0 ? (result[0] as unknown as YaAlbum) : null;
     });
@@ -1058,8 +1101,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   /** альбом со всеми треками. проставляет _trackNumber / _discNumber. */
-  async getAlbum(albumId: number): Promise<AlbumData | null> {
-    const album = await this.withLib(`getAlbum(${albumId})`, null, async (lib) => {
+  async getAlbum(albumId: number, opts: { strict?: boolean } = {}): Promise<AlbumData | null> {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    const album = await run(`getAlbum(${albumId})`, null, async (lib) => {
       return (await lib.albumsWithTracks(albumId)) as unknown as YaAlbum | null;
     });
     if (!album) return null;
@@ -1118,8 +1162,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
   }
 
   /** сырой ответ usersPlaylists: треки тут — «короткие» (часто только id). */
-  private async fetchPlaylist(owner: string, kind: number) {
-    return this.withLib(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
+  private async fetchPlaylist(owner: string, kind: number, strict = false) {
+    const run = strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(`getPlaylist(${owner}, ${kind})`, null, async (lib) => {
       return (await lib.usersPlaylists(kind, owner)) as unknown as {
         title?: string;
         cover?: { uri?: string };
@@ -1128,12 +1173,33 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     });
   }
 
+  /** ссылка «поделиться» (/playlists/<uuid>) → (owner=uid, kind) для обычного пути плейлиста.
+   * uid числовой — годится и для deep-link'а, и для resume. */
+  async resolvePlaylistUuid(
+    uuid: string,
+    opts: { strict?: boolean } = {},
+  ): Promise<{ owner: string; kind: number } | null> {
+    const run = opts.strict ? this.withLibStrict.bind(this) : this.withLib.bind(this);
+    return run(`resolvePlaylistUuid(${uuid})`, null, async (lib) => {
+      const pl = (await lib.playlist(uuid)) as unknown as {
+        uid?: number;
+        owner?: { uid?: number };
+        kind?: number;
+      } | null;
+      const uid = pl?.owner?.uid ?? pl?.uid;
+      const kind = pl?.kind;
+      if (uid === undefined || kind === undefined || !Number.isFinite(kind) || kind <= 0) return null;
+      return { owner: String(uid), kind };
+    });
+  }
+
   /** шапка плейлиста без резолва треков — для inline-результата (одним запросом). */
   async getPlaylistShort(
     owner: string,
     kind: number,
+    opts: { strict?: boolean } = {},
   ): Promise<{ title: string; coverUri: string; trackCount: number } | null> {
-    const playlist = await this.fetchPlaylist(owner, kind);
+    const playlist = await this.fetchPlaylist(owner, kind, opts.strict);
     if (!playlist) return null;
     return {
       title: playlist.title || "",
@@ -1144,8 +1210,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
 
   /** плейлист как AlbumData (переиспользует всю инфру AlbumService: chunked
    *  download/send/retry/resume) — owner из URL, kind = id плейлиста внутри owner. */
-  async getPlaylist(owner: string, kind: number): Promise<AlbumData | null> {
-    const playlist = await this.fetchPlaylist(owner, kind);
+  /** strict — только для шапки плейлиста (лс): сбой Яндекса ≠ «плейлист не найден». */
+  async getPlaylist(owner: string, kind: number, opts: { strict?: boolean } = {}): Promise<AlbumData | null> {
+    const playlist = await this.fetchPlaylist(owner, kind, opts.strict);
     if (!playlist) return null;
 
     const shorts = playlist.tracks ?? [];

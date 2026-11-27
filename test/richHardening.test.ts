@@ -293,7 +293,9 @@ for (const [mode, code] of [
     assert.deepEqual(methods(sent), ["sendPhoto", "sendAudio"]);
     assert.equal(sent[0]!.params.photo, "CARD");
     assert.ok(JSON.stringify(sent[0]!.params.reply_markup).includes("start=track_777"));
-    assert.deepEqual(sent[1]!.params, { chat_id: 10, audio: "FID" });
+    assert.equal(sent[1]!.params.audio, "FID");
+    assert.equal(sent[1]!.params.caption, undefined); // track_layout=button: подписи нет
+    assert.ok(JSON.stringify(sent[1]!.params.reply_markup).includes("like:t:777"));
   });
 }
 

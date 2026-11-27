@@ -176,8 +176,11 @@ test("[regression guard] sendTrackToChat: rich OFF + card: только sendAudi
     methods(calls).filter((m) => m !== "deleteMessage"),
     ["sendAudio"],
   );
-  // полные параметры старого пути: только chat_id + audio (без caption/reply_markup/rich_message)
-  assert.deepEqual(calls.find((c) => c.method === "sendAudio")!.params, { chat_id: 10, audio: "FID" });
+  // track_layout=button: chat_id + audio + ♥/«открыть», без caption/rich_message
+  const p = calls.find((c) => c.method === "sendAudio")!.params;
+  assert.deepEqual(Object.keys(p).sort(), ["audio", "chat_id", "reply_markup"]);
+  assert.equal(p.audio, "FID");
+  assert.ok(JSON.stringify(p.reply_markup).includes("like:t:777"));
   assert.deepEqual(
     calls.filter((c) => c.method === "deleteMessage").map((c) => c.params),
     [{ chat_id: 10, message_id: 5 }],
@@ -253,10 +256,10 @@ test("[regression guard] sendCurrentTrack: rich OFF: только sendAudio", as
   const { bot, calls } = mkBot();
   await sendCurrentTrack(bot, 10, user, container, 5);
   assert.equal(renders.length, 0);
-  assert.deepEqual(
-    calls.filter((c) => c.method === "sendAudio").map((c) => c.params),
-    [{ chat_id: 10, audio: "FID" }],
-  );
+  const sent = calls.filter((c) => c.method === "sendAudio").map((c) => c.params);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.audio, "FID");
+  assert.ok(JSON.stringify(sent[0]!.reply_markup).includes("like:t:777"));
   assert.equal(methods(calls).includes("sendRichMessage"), false);
 });
 

@@ -95,3 +95,49 @@ test("R5: фон с блюром на канвасе 1/4 почти совпад
     assert.ok(mean < 1, `${W}x${H}: mean diff ${mean.toFixed(2)}/255`);
   }
 });
+
+test("M3 (review-1): обложка рисуется с quality=high, «low» — только внутри drawBackground", async () => {
+  const cover = createCanvas(1000, 1000);
+  const cx = cover.getContext("2d");
+  cx.fillStyle = "#3080ff";
+  cx.fillRect(0, 0, 1000, 1000);
+  const coverBytes = cover.toBuffer("image/png");
+
+  const proto = Object.getPrototypeOf(createCanvas(1, 1).getContext("2d")) as {
+    drawImage: (...a: unknown[]) => void;
+  };
+  const orig = proto.drawImage;
+  const calls: { quality: string; srcW: number; argc: number }[] = [];
+  proto.drawImage = function (this: { imageSmoothingQuality: string }, ...a: unknown[]) {
+    calls.push({ quality: this.imageSmoothingQuality, srcW: (a[0] as { width: number }).width, argc: a.length });
+    return orig.apply(this, a);
+  };
+  try {
+    await renderNowPlayingCard({
+      coverBytes,
+      title: "Трек",
+      artist: "Артист",
+      progressMs: 30_000,
+      durationMs: 180_000,
+      botUsername: "nowymbot",
+    });
+  } finally {
+    proto.drawImage = orig;
+  }
+  // обложка: 9-аргументный drawImage(cover, sx, sy, s, s, x, y, size, size) — даунскейл 1000 → ~540
+  const coverDraws = calls.filter((c) => c.srcW === 1000 && c.argc === 9);
+  assert.ok(coverDraws.length >= 1, "drawCoverWithShadow не вызван");
+  for (const c of coverDraws) assert.equal(c.quality, "high");
+  // растяжка размытого фона 1/4 → полный размер остаётся «low» (выигрыш R5)
+  const bgStretch = calls.filter((c) => c.srcW > 0 && c.srcW < 1000 && c.argc === 5 && c.quality === "low");
+  assert.ok(bgStretch.length >= 1, "растяжка фона не на quality=low");
+});
+
+test("M3 (review-1): drawBackground не протекает quality=low наружу", () => {
+  const cover = createCanvas(100, 100);
+  const c = createCanvas(160, 90);
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  drawBackground(ctx, cover as unknown as Image, 160, 90, "right");
+  assert.equal(ctx.imageSmoothingQuality, "high");
+});

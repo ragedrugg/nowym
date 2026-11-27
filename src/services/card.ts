@@ -1158,7 +1158,8 @@ export async function renderNowPlayingCard(args: RenderCardArgs): Promise<Buffer
   const canvas = createCanvas(lay.W, lay.H);
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "low";
+  // high — для даунскейла обложки и аватара; «low» (выигрыш R5) выставляет только drawBackground у себя.
+  ctx.imageSmoothingQuality = "high";
 
   drawBackground(ctx, cover, lay.W, lay.H, lay.bgGradDir);
   drawCoverWithShadow(ctx, cover, lay.coverX, lay.coverY, lay.coverSize, lay.coverRadius);

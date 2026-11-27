@@ -6,6 +6,7 @@ import type { Container } from "../src/bot/container.ts";
 import { buildEmptyResults, chosenRichCardTrack, onChosenResult } from "../src/bot/handlers/inline.ts";
 import { buildRichNowPlayingResult } from "../src/bot/handlers/inlineCard.ts";
 import { tooOftenButton } from "../src/bot/texts.ts";
+import { YandexUnavailableError } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };
@@ -227,4 +228,21 @@ test("onChosenResult npr: владелец пишется в inlineOwners, ид�
     calls.some((c) => c.method === "editMessageMedia"),
     false,
   );
+});
+
+test("chosen npr: сбой Яндекса (strict getTrackById), трек в кэше → rich [карточка, кэш-аудио]", async () => {
+  const { container } = mkChosenContainer();
+  const c = container as unknown as Record<string, unknown>;
+  c.getTrackService = async () => ({ getTrackObject: () => null, cacheTrackObject() {} });
+  c.getYandexService = async () => ({
+    getTrackById: async () => {
+      throw new YandexUnavailableError("down", new Error("503"));
+    },
+  });
+  const { bot, calls } = mkBot();
+  await chosenRichCardTrack(bot, container, stash(container), "IM", 1);
+  await new Promise((r) => setImmediate(r));
+  const edit = calls.find((x) => x.method === "editMessageText")!;
+  const blocks = (edit.params.rich_message as { blocks: { audio?: { media: string } }[] }).blocks;
+  assert.equal(blocks[1]!.audio!.media, "FID");
 });

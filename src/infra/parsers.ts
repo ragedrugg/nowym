@@ -13,13 +13,23 @@ const ALBUM_URL_RE = new RegExp(String.raw`${HOST}/album/(\d+)(?!\d)(?!/track/\d
 // owner — логин/uid Яндекса, реальный чарсет [A-Za-z0-9._-]; более широкий
 // класс ([^/\s]+) пропускал бы ?/#/пробелоподобное внутрь URL, который
 // собирается конкатенацией в lib.usersPlaylists() (client.ts.getPlaylist).
-export const PLAYLIST_URL_RE = new RegExp(String.raw`${HOST}/users/([\w.-]+)/playlists/(\d+)`);
+const OWNER = String.raw`[\w.-]+`;
+export const PLAYLIST_URL_RE = new RegExp(String.raw`${HOST}/users/(${OWNER})/playlists/(\d+)`);
+
+/** owner, пригодный для deep-link payload'а (телеграм пускает только [A-Za-z0-9_-]);
+ * у логина с точкой deep-link'а нет — ссылку кидают в личку (START_PLAYLIST_RE в common.ts). */
+export const DEEPLINK_OWNER_RE = /^[\w-]+$/;
+
+// новый формат «поделиться»: /playlists/<uuid> или /playlists/lk.<uuid> (без /users/<owner>/)
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const PLAYLIST_UUID_URL_RE = new RegExp(String.raw`${HOST}/playlists/((?:lk\.)?${UUID})(?![\w-])`, "i");
 
 export type ParsedQuery =
   | { type: "empty" }
   | { type: "track_link"; track_id: number }
   | { type: "album_link"; album_id: number }
   | { type: "playlist_link"; owner: string; kind: number }
+  | { type: "playlist_uuid_link"; uuid: string }
   | { type: "search"; content: string };
 
 function extractId(query: string, re: RegExp): number | null {
@@ -44,6 +54,9 @@ export function parseSearchQuery(query: string): ParsedQuery {
     const kind = parseInt(pl[2]!, 10);
     if (Number.isFinite(kind) && kind > 0) return { type: "playlist_link", owner: pl[1]!, kind };
   }
+
+  const plu = PLAYLIST_UUID_URL_RE.exec(q);
+  if (plu) return { type: "playlist_uuid_link", uuid: plu[1]!.toLowerCase() };
 
   return { type: "search", content: q };
 }

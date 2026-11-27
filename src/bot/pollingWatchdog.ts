@@ -8,6 +8,11 @@
  *     висящем fetch оставил бы второй живой цикл);
  *  2) если и после этого за stallMs ни одного завершения (или висит не getUpdates) —
  *     onFatal: процесс выходит с ненулевым кодом, pm2 поднимает заново.
+ * Если рвать нечего (запроса нет: gramio спит между попытками — retryGetUpdatesWait
+ * или 429 retry_after в withRetries), сначала даётся одно окно stallMs на
+ * восстановление, а известный retry_after из ответа 429 сдвигает порог целиком.
+ * Heartbeat засчитывается только от текущего запроса (токен на вызов): поздний
+ * ответ оборванного запроса не маскирует зависание нового.
  * Один setInterval на весь процесс. */
 import { getLogger } from "../infra/logging.ts";
 
@@ -33,10 +38,16 @@ export class PollingWatchdog {
   private readonly stallMs: number;
   private readonly checkEveryMs: number;
   private readonly onFatal: (reason: string) => void;
+  /** момент последнего завершения (может быть в будущем: + известный retry_after). */
   private lastBeat = Date.now();
-  /** момент обрыва висящего запроса; null — обрывов с последнего завершения не было. */
+  /** момент открытия окна восстановления; null — окна с последнего завершения не было. */
   private interruptedAt: number | null = null;
+  /** чем открыто окно: обрывом висящего запроса или простоем без запроса. */
+  private recovery: "interrupt" | "idle" | null = null;
   private interruptPending: ((e: Error) => void) | null = null;
+  /** токен текущего getUpdates; 0 — текущего нет (не начат или оборван). */
+  private currentToken = 0;
+  private seq = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(o: PollingWatchdogOptions) {
@@ -47,7 +58,18 @@ export class PollingWatchdog {
 
   /** onApiCall-хук для getUpdates: `bot.onApiCall("getUpdates", watchdog.hook)`. */
   readonly hook = (_ctx: unknown, next: () => Promise<unknown>): Promise<unknown> => {
-    const call = next().finally(() => this.beat());
+    const token = ++this.seq;
+    this.currentToken = token;
+    const call = next().then(
+      (v) => {
+        this.beat(token, v); // suppress-вызовы возвращают TelegramError значением
+        return v;
+      },
+      (e: unknown) => {
+        this.beat(token, e);
+        throw e;
+      },
+    );
     let interrupt!: (e: Error) => void;
     const interrupted = new Promise<never>((_, reject) => {
       interrupt = reject;
@@ -71,11 +93,16 @@ export class PollingWatchdog {
     this.timer = null;
   }
 
-  private beat(): void {
-    this.lastBeat = Date.now();
+  private beat(token: number, outcome: unknown): void {
+    if (token !== this.currentToken) return; // поздний ответ оборванного/устаревшего запроса
+    const retryAfterSec = (outcome as { payload?: { retry_after?: unknown } } | null)?.payload?.retry_after;
+    const retryAfterMs = typeof retryAfterSec === "number" && retryAfterSec > 0 ? retryAfterSec * 1000 : 0;
+    // gramio проспит retry_after до следующего getUpdates — это не зависание
+    this.lastBeat = Date.now() + retryAfterMs;
     if (this.interruptedAt !== null) {
       log.info("[watchdog] getUpdates снова завершается — polling восстановлен");
       this.interruptedAt = null;
+      this.recovery = null;
     }
   }
 
@@ -83,21 +110,34 @@ export class PollingWatchdog {
     const now = Date.now();
     const idle = now - this.lastBeat;
     if (idle <= this.stallMs) return;
-    if (this.interruptedAt === null && this.interruptPending) {
+    if (this.recovery !== "interrupt" && this.interruptPending) {
       log.warning(
         `[watchdog] getUpdates не завершался ${Math.round(idle / 1000)}s — обрываю запрос, polling продолжится`,
       );
       const interrupt = this.interruptPending;
       this.interruptPending = null;
+      this.currentToken = 0;
       this.interruptedAt = now;
+      this.recovery = "interrupt";
       this.lastBeat = now; // новое окно stallMs на восстановление
       interrupt(new PollingStalledError(idle));
       return;
     }
+    if (this.recovery === null) {
+      log.warning(
+        `[watchdog] нет завершённого getUpdates ${Math.round(idle / 1000)}s и нет активного запроса ` +
+          "(gramio ждёт перед повтором?) — даю окно на восстановление",
+      );
+      this.interruptedAt = now;
+      this.recovery = "idle";
+      this.lastBeat = now;
+      return;
+    }
     this.stop();
+    const total = Math.round((now - (this.interruptedAt ?? now) + this.stallMs) / 1000);
     const reason =
-      this.interruptedAt === null
-        ? `нет завершённого getUpdates ${Math.round(idle / 1000)}s и нет активного запроса`
+      this.recovery === "idle"
+        ? `нет завершённого getUpdates ${total}s и нет активного запроса`
         : `после обрыва getUpdates ${Math.round(idle / 1000)}s без завершённого запроса`;
     log.error(`[watchdog] polling завис: ${reason} — выход для рестарта`);
     this.onFatal(reason);

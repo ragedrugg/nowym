@@ -1,12 +1,12 @@
 import type { Bot } from "gramio";
-import { format } from "gramio";
+import { type FormattableString, format } from "gramio";
 import { createInterruptibleSleep, withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
 import type { InlineResult, SearchService } from "../../services/search.ts";
 import { getSettings } from "../../settings.ts";
 import type { CachedTrack } from "../../storage/types.ts";
-import { losslessUrlPicker, type YandexClient } from "../../yandex/client.ts";
+import { losslessUrlPicker, type YandexClient, YandexUnavailableError } from "../../yandex/client.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import {
   type AudioQuality,
@@ -23,10 +23,18 @@ import { buildCardImage, mintCardFileId } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
 import { progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
-import { chatRichSenders, deliverCardAndTrack, errText, type RichAudio } from "../richMessage.ts";
+import {
+  type AudioExtras,
+  chatRichSenders,
+  deliverCardAndTrack,
+  errText,
+  isApiError,
+  type RichAudio,
+} from "../richMessage.ts";
 import { safeAnswerCb, safeEditMedia, safeSetReplyMarkup, say } from "../safeApi.ts";
 import {
   BTN_DOWNLOADING,
+  BTN_PREPARING,
   BTN_SENDING,
   CB_FAILED,
   CB_FIND_AGAIN,
@@ -53,6 +61,7 @@ import {
   TRACK_UNSUPPORTED,
   tooOften,
   tooOftenButton,
+  YANDEX_DOWN,
 } from "../texts.ts";
 import {
   buildLyricsCardResult,
@@ -68,6 +77,10 @@ import {
 const log = getLogger("bot.inline");
 
 const RECENT_RE = /^(недавн(ее|ие)|recent|истори[яю])$/i;
+
+/** пустой/ошибочный inline-ответ: без cache_time Telegram держит его 300 с и может отдать
+ * другим юзерам с тем же запросом — «попробуй ещё раз» не сработал бы, чужое «ничего не играет» прилипло бы. */
+export const EMPTY_ANSWER_PARAMS = { cache_time: 3, is_personal: true } as const;
 
 /** лимитер скачивания сработал уже на старте закачки (см. ensureFileId.onDownloadStart). */
 class DownloadRateLimited extends Error {
@@ -134,7 +147,14 @@ function stripParen(s: string): string {
   return s.replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
 
-type ResolveResult = { cached: CachedTrack | null; trackObj: YaTrack | null; yandex: YandexClient };
+/** unavailable — Яндекс не ответил на getTrackById: trackObj=null, но кэш (cached и тиры в
+ * ensureFileId) ещё может выручить; «Яндекс не отвечает» — только после промаха всех тиров. */
+type ResolveResult = {
+  cached: CachedTrack | null;
+  trackObj: YaTrack | null;
+  yandex: YandexClient;
+  unavailable: boolean;
+};
 
 /** lossless — отдельный тир кэша; переданный lossy-`cached` для него не годится. */
 async function resolveCacheEntry(
@@ -158,6 +178,9 @@ export function parseTrackResultId(resultId: string): string | null {
   return /^\d+$/.test(id) ? id : null;
 }
 
+/** InputMediaAudio (file_id) для editMessageMedia. */
+type AudioEditMedia = { type: "audio"; media: string; caption?: FormattableString };
+
 /** InputMediaAudio для editMessageMedia + reply_markup под выбранный layout. */
 export function buildChosenEditPayload(args: {
   trackId: string;
@@ -167,13 +190,13 @@ export function buildChosenEditPayload(args: {
   layout: string;
   lyricsQuote?: string | null;
   degraded?: boolean;
-}): { media: Record<string, unknown>; markup: ReturnType<typeof trackMarkup> | undefined } {
+}): { media: AudioEditMedia; markup: ReturnType<typeof trackMarkup> | undefined } {
   const { trackId, fileId, codec, bitrateKbps, layout, lyricsQuote, degraded } = args;
   const prefix = buildLyricsQuote(lyricsQuote ?? null);
   const trackCaption = buildTrackCaption(trackId, codec, bitrateKbps, degraded);
 
   if (layout === "none") {
-    const media: Record<string, unknown> = { type: "audio", media: fileId };
+    const media: AudioEditMedia = { type: "audio", media: fileId };
     if (prefix) media.caption = prefix;
     return { media, markup: undefined };
   }
@@ -186,9 +209,24 @@ export function buildChosenEditPayload(args: {
     return { media: { type: "audio", media: fileId, caption }, markup: trackMarkup(trackId, true) };
   }
   // "button"
-  const media: Record<string, unknown> = { type: "audio", media: fileId };
+  const media: AudioEditMedia = { type: "audio", media: fileId };
   if (prefix) media.caption = prefix;
   return { media, markup: trackMarkup(trackId, true) };
+}
+
+/** caption + reply_markup для трека в чат (лс/чат) — те же, что у inline по track_layout.
+ * При «кнопка»/«ничего» подписи нет — пометку о деградации качества даём отдельной подписью. */
+export function chatAudioExtras(args: {
+  trackId: string;
+  fileId: string;
+  codec: string | null;
+  bitrateKbps: number | null;
+  layout: string;
+  degraded: boolean;
+}): AudioExtras {
+  const { media, markup } = buildChosenEditPayload(args);
+  const caption = media.caption ?? (args.degraded ? DEGRADED_NOTE : undefined);
+  return { ...(caption ? { caption } : {}), ...(markup ? { reply_markup: markup } : {}) };
 }
 
 async function resolveTrack(
@@ -203,13 +241,22 @@ async function resolveTrack(
 
   let obj = trackObj ?? trackService.getTrackObject(trackId);
   let cached: CachedTrack | null;
+  let unavailable = false;
   if (obj !== null) {
     cached = await container.cacheDb.get(trackId);
   } else {
-    [cached, obj] = await Promise.all([container.cacheDb.get(trackId), yandex.getTrackById(Number(trackId))]);
+    [cached, obj] = await Promise.all([
+      container.cacheDb.get(trackId),
+      yandex.getTrackById(Number(trackId), { strict: true }).catch((e: unknown) => {
+        if (!(e instanceof YandexUnavailableError)) throw e;
+        log.warning(`[resolve] ${e.message} track=${trackId} — пробую кэш`);
+        unavailable = true;
+        return null;
+      }),
+    ]);
     if (obj) trackService.cacheTrackObject(obj);
   }
-  return { cached, trackObj: obj, yandex };
+  return { cached, trackObj: obj, yandex, unavailable };
 }
 
 /** lossless (raw flac-mp4, без шифрования); кэш под своим тиром. lossy-ответ приходит как null → вызывающий деградирует. */
@@ -318,7 +365,7 @@ async function buildEffectTrack(
 /** kind'ы ровно те, что call-сайты различают своими текстами; ok=false — уже финал. */
 export type EnsureResult =
   | { ok: true; fileId: string; codec: string | null; bitrateKbps: number | null; degraded: boolean }
-  | { ok: false; kind: "not_found" | "too_long" | "no_variants" | "failed" };
+  | { ok: false; kind: "not_found" | "too_long" | "no_variants" | "failed" | "unavailable" };
 
 /** единственная реализация «взять file_id: есть в кэше — отдать, нет — скачать».
  * tier — аудио-эффект (ncore/speed/slow): свой тир кэша и сборка ffmpeg'ом вместо
@@ -329,9 +376,15 @@ export async function ensureFileId(
   trackObj: YaTrack | null,
   yandex: YandexClient,
   trackId: string,
-  opts: { quality?: AudioQuality; tier?: string | null; onDownloadStart?: () => Promise<void> } = {},
+  opts: {
+    quality?: AudioQuality;
+    tier?: string | null;
+    onDownloadStart?: () => Promise<void>;
+    /** trackObj=null из-за сбоя Яндекса (resolveTrack), а не «нет такого трека». */
+    unavailable?: boolean;
+  } = {},
 ): Promise<EnsureResult> {
-  const { quality = "best", tier = null, onDownloadStart } = opts;
+  const { quality = "best", tier = null, onDownloadStart, unavailable = false } = opts;
   const effect = tier ? AUDIO_EFFECTS[tier] : undefined;
 
   const entry = effect
@@ -344,7 +397,7 @@ export async function ensureFileId(
       : { ok: true, fileId, codec: entry.codec, bitrateKbps: entry.bitrate_kbps, degraded: false };
   }
 
-  if (trackObj === null) return { ok: false, kind: "not_found" };
+  if (trackObj === null) return { ok: false, kind: unavailable ? "unavailable" : "not_found" };
   if (trackIsTooLong(trackObj)) return { ok: false, kind: "too_long" };
   if (onDownloadStart) await onDownloadStart();
 
@@ -386,8 +439,9 @@ export async function buildEmptyResults(
     try {
       current = await trackService.yandexService.getCurrentTrack();
     } catch (e) {
+      // сбой Ynison не повод терять «недавнее»: пропускаем блок «сейчас играет»
       log.warning(`[inline] не получил текущий трек: ${e}`);
-      return { results: [], nextOffset: "" };
+      current = null;
     }
   }
 
@@ -426,9 +480,24 @@ export async function buildEmptyResults(
     log.warning(`[inline] недавнее не построилось: ${e}`);
     return { results: [] as InlineResult[], nextOffset: "" };
   });
+  // текущий трек нередко есть и в «недавнем» (его же только что слушали), а id результата
+  // строится от trackId — идентичные id Telegram отвергает ВЕСЬ ответ (RESULT_ID_DUPLICATE)
+  // целиком, а не только дубль. Оставляем первый (из «текущего»).
   results.push(...recent.results);
 
-  return { results, nextOffset: recent.nextOffset };
+  return { results: dedupeResultsById(results), nextOffset: recent.nextOffset };
+}
+
+/** убирает результаты с повторяющимся id, сохраняя порядок и первый экземпляр. */
+export function dedupeResultsById(results: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  return results.filter((r) => {
+    const id = (r as { id?: unknown } | null)?.id;
+    if (typeof id !== "string") return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 /** позиция на карточке: замораживается в момент команды. */
@@ -510,9 +579,24 @@ async function sendRichCardTrackToChat(a: {
         performer: artist,
         durationSec: trackObj.durationMs ? trackObj.durationMs / 1000 : (a.cached?.duration ?? null),
         degraded: r.degraded,
+        codec: r.codec,
+        bitrateKbps: r.bitrateKbps,
       };
     },
-    ...chatRichSenders(bot, chatId, { trackId, trackLayout: a.trackLayout, botUsername: container.botUsername }),
+    ...chatRichSenders(bot, chatId, {
+      trackId,
+      trackLayout: a.trackLayout,
+      botUsername: container.botUsername,
+      audioExtras: (au) =>
+        chatAudioExtras({
+          trackId,
+          fileId: au.fileId,
+          codec: au.codec ?? null,
+          bitrateKbps: au.bitrateKbps ?? null,
+          layout: a.trackLayout,
+          degraded: au.degraded,
+        }),
+    }),
   });
   if (res === "unknown") {
     // rich-запрос мог дойти (нет ответа API): ничего не досылаем, чтобы не продублировать
@@ -583,7 +667,13 @@ export async function sendTrackToChat(args: {
   }
 
   try {
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId, args.trackObj ?? null);
+    const { cached, trackObj, yandex, unavailable } = await resolveTrack(
+      container,
+      token,
+      userId,
+      trackId,
+      args.trackObj ?? null,
+    );
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
 
@@ -609,6 +699,7 @@ export async function sendTrackToChat(args: {
 
     const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
       quality,
+      unavailable,
       onDownloadStart: async () => {
         if (statusMsgId === null) return;
         try {
@@ -630,7 +721,14 @@ export async function sendTrackToChat(args: {
     await bot.api.sendAudio({
       chat_id: chatId,
       audio: res.fileId,
-      ...(res.degraded ? { caption: format`${DEGRADED_NOTE}` } : {}),
+      ...chatAudioExtras({
+        trackId,
+        fileId: res.fileId,
+        codec: res.codec,
+        bitrateKbps: res.bitrateKbps,
+        layout: settings.track_layout,
+        degraded: res.degraded,
+      }),
     });
     if (trackObj) void yandex.reportPlayback(trackObj);
     if (statusMsgId !== null) {
@@ -641,6 +739,11 @@ export async function sendTrackToChat(args: {
       }
     }
   } catch (e) {
+    if (e instanceof YandexUnavailableError) {
+      log.warning(`[track_dm] ${e.message} user=${userId} track=${trackId}`);
+      await say(bot, chatId, statusMsgId, format`${YANDEX_DOWN}`);
+      return;
+    }
     log.error(`[track_dm] ошибка user=${userId} track=${trackId}: ${e}`);
     await say(bot, chatId, statusMsgId, format`${ERROR_RETRY}`);
   }
@@ -807,6 +910,7 @@ async function applySuggestCorrection(
     return { results, nextOffset: "" };
   } catch (e) {
     cAc.abort();
+    if (e instanceof YandexUnavailableError) throw e; // «Яндекс не отвечает», а не «не найдено»
     log.warning(`[inline/suggest] коррекция-поиск: ${e}`);
     return current;
   }
@@ -846,6 +950,7 @@ async function applyLyricFallback(
     );
   } catch (e) {
     fbAc.abort();
+    if (e instanceof YandexUnavailableError) throw e; // «Яндекс не отвечает», а не «не найдено»
     log.warning(`[inline/lyric] фолбэк-поиск: ${e}`);
     return currentResults;
   }
@@ -952,7 +1057,7 @@ async function onInlineQuery(
   const [allowed, retryAfter] = container.inlineLimiter.check(userId);
   if (!allowed) {
     await ctx.answer([], {
-      cache_time: 5,
+      ...EMPTY_ANSWER_PARAMS,
       button: { text: tooOften(retryAfter), start_parameter: "start" },
     });
     return;
@@ -960,7 +1065,10 @@ async function onInlineQuery(
 
   const token = await container.resolveToken(userId);
   if (!token) {
-    await ctx.answer([], { cache_time: 5, button: { text: LOGIN_INLINE_BUTTON, start_parameter: "login" } });
+    await ctx.answer([], {
+      ...EMPTY_ANSWER_PARAMS,
+      button: { text: LOGIN_INLINE_BUTTON, start_parameter: "login" },
+    });
     return;
   }
 
@@ -999,7 +1107,7 @@ async function onInlineQuery(
     } catch (e) {
       log.warning(`[inline] яндекс-клиент не создан user=${userId}: ${e}`);
       await ctx.answer([], {
-        cache_time: 3,
+        ...EMPTY_ANSWER_PARAMS,
         button: { text: INLINE_SERVICE_DOWN, start_parameter: "start" },
       });
       return;
@@ -1031,6 +1139,7 @@ async function onInlineQuery(
     let results: unknown[] = [];
     let nextOffset = "";
     let timedOut = false;
+    let unavailable = false;
     try {
       const built = await dispatchQuery(
         container,
@@ -1056,28 +1165,43 @@ async function onInlineQuery(
       nextOffset = built.nextOffset;
     } catch (e) {
       ac.abort();
-      log.warning(`[inline] таймаут ${timeout}ms user=${userId} text=${JSON.stringify(text)}: ${e}`);
       results = [];
-      timedOut = true;
+      // сбой на странице прокрутки: эхо текущего offset — иначе Telegram сочтёт выдачу законченной
+      if (offset) nextOffset = offset;
+      if (e instanceof YandexUnavailableError) {
+        unavailable = true;
+      } else {
+        log.warning(`[inline] таймаут ${timeout}ms user=${userId} text=${JSON.stringify(text)}: ${e}`);
+        timedOut = true;
+      }
     }
 
-    // nocorrect у /search чинит не всякую опечатку, suggest — чинит
-    const correctable = !!text && !isLyric && !isRecent && !offset && parseSearchQuery(searchText).type === "search";
-    if (correctable && results.length === 0) {
-      const corrected = await applySuggestCorrection(
-        trackService,
-        { offset, isPagedSearch, searchText, layout, sendMode, pageSize, timeout },
-        { results, nextOffset },
-      );
-      results = corrected.results;
-      nextOffset = corrected.nextOffset;
-    }
+    // nocorrect у /search чинит не всякую опечатку, suggest — чинит; при сбое Яндекса не дёргаем его зря
+    const correctable =
+      !unavailable && !!text && !isLyric && !isRecent && !offset && parseSearchQuery(searchText).type === "search";
+    try {
+      if (correctable && results.length === 0) {
+        const corrected = await applySuggestCorrection(
+          trackService,
+          { offset, isPagedSearch, searchText, layout, sendMode, pageSize, timeout },
+          { results, nextOffset },
+        );
+        results = corrected.results;
+        nextOffset = corrected.nextOffset;
+      }
 
-    results = await applyLyricFallback(
-      trackService,
-      { isLyric, lyricPhrase, searchText, layout, sendMode, timeout },
-      results,
-    );
+      if (!unavailable) {
+        results = await applyLyricFallback(
+          trackService,
+          { isLyric, lyricPhrase, searchText, layout, sendMode, timeout },
+          results,
+        );
+      }
+    } catch (e) {
+      if (!(e instanceof YandexUnavailableError)) throw e;
+      log.warning(`[inline] ${e.message} (коррекция/фолбэк) user=${userId}`);
+      unavailable = true;
+    }
 
     if (isLyric) injectLyricsCard(container, trackService, user, lyricPhrase, results);
     injectTrackLinkCards(
@@ -1104,29 +1228,35 @@ async function onInlineQuery(
       const cacheTime = !text ? 5 : 30;
       const params: Record<string, unknown> = { cache_time: cacheTime, is_personal: true };
       if (nextOffset) params.next_offset = nextOffset;
-      await ctx.answer(results, params);
+      // последняя страховка: дубль id в любой ветке (текущий+недавнее, карточка+трек) уронил бы весь ответ
+      await ctx.answer(dedupeResultsById(results) as typeof results, params);
     } else if (offset) {
       // nextOffset может быть непустым и тут: createTrackResultsParallel теряет
       // треки на гонке стаб-аплоада, withTimeout может обнулить всю страницу —
       // это не значит, что дальше страниц нет. Без echo Telegram решит, что
       // next_offset="" и прекратит листать с этой страницы навсегда.
-      const params: Record<string, unknown> = { cache_time: 5, is_personal: true };
+      const params: Record<string, unknown> = { ...EMPTY_ANSWER_PARAMS };
       if (nextOffset) params.next_offset = nextOffset;
       await ctx.answer([], params);
     } else {
-      const label = timedOut
-        ? INLINE_TIMED_OUT
-        : !text
-          ? NOTHING_PLAYING
-          : isRecent
-            ? INLINE_NOTHING_RECENT
-            : inlineNotFound(text);
-      await ctx.answer([], { button: { text: label, start_parameter: "start" } });
+      const label = unavailable
+        ? YANDEX_DOWN
+        : timedOut
+          ? INLINE_TIMED_OUT
+          : !text
+            ? NOTHING_PLAYING
+            : isRecent
+              ? INLINE_NOTHING_RECENT
+              : inlineNotFound(text);
+      await ctx.answer([], { ...EMPTY_ANSWER_PARAMS, button: { text: label, start_parameter: "start" } });
     }
   } catch (e) {
     log.error(`[inline] ошибка user=${userId} text=${JSON.stringify(text)}: ${e}`);
     try {
-      await ctx.answer([], { button: { text: ERROR_RETRY, start_parameter: "start" } });
+      await ctx.answer([], {
+        ...EMPTY_ANSWER_PARAMS,
+        button: { text: ERROR_RETRY, start_parameter: "start" },
+      });
     } catch {
       /* query expired */
     }
@@ -1172,10 +1302,11 @@ export async function chosenRichCardTrack(
     return;
   }
   const getAudio = async (): Promise<RichAudio | null> => {
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const { cached, trackObj, yandex, unavailable } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
       quality: settings.track_quality as AudioQuality,
+      unavailable,
     });
     if (!res.ok) {
       log.error(`[chosen] rich: скачивание не удалось track=${trackId} (${res.kind})`);
@@ -1245,6 +1376,8 @@ export async function onChosenResult(
   }
 
   const cancelTicker = startProgressTicker(bot, inlineMsgId, trackId);
+  // финальный edit на аудио: при сетевом сбое (исход неизвестен) повторяем его, а не ставим «загрузить снова»
+  let finalEdit: { media: AudioEditMedia; markup: ReturnType<typeof trackMarkup> | undefined } | null = null;
 
   try {
     let searchPhrase = "";
@@ -1252,7 +1385,7 @@ export async function onChosenResult(
       searchPhrase = queryText.replace(/^["«]+/, "").trim();
     }
 
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const { cached, trackObj, yandex, unavailable } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
 
@@ -1265,7 +1398,8 @@ export async function onChosenResult(
       [artist, title] = formatTrackBasics(trackObj, "");
     }
 
-    if (trackObj === null && !(cached && cached.is_cached)) {
+    // при сбое Яндекса не выходим: ensureFileId ещё проверит тиры кэша (lossless/economy/эффект)
+    if (trackObj === null && !(cached && cached.is_cached) && !unavailable) {
       log.error(`[chosen] трек ${trackId} не найден`);
       // если тикер уже успел написать «качаю...»/«отправляю...» — не оставляем
       // кнопку в этом состоянии навсегда
@@ -1283,6 +1417,7 @@ export async function onChosenResult(
     // готовый file_id из кэша лимит не тратит и кнопки не затирает.
     const ensureOpts = {
       quality,
+      unavailable,
       tier: effect?.tier ?? null,
       onDownloadStart: downloadLimitGate(container, userId),
     };
@@ -1310,7 +1445,11 @@ export async function onChosenResult(
 
     if (!res.ok) {
       log.error(`[chosen] скачивание не удалось track=${trackId} (${res.kind})`);
-      await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
+      await safeSetReplyMarkup(
+        bot,
+        inlineMsgId,
+        res.kind === "unavailable" ? progressMarkup(trackId, YANDEX_DOWN) : retryMarkup(trackId),
+      );
       return;
     }
     const { fileId, codec, bitrateKbps, degraded } = res;
@@ -1328,6 +1467,7 @@ export async function onChosenResult(
 
     await cancelTicker(); // ДО edit'а: иначе «отправляю…» тикера легло бы поверх аудио
 
+    finalEdit = { media, markup };
     await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, media, markup);
     log.info(`[chosen] трек ${trackId} отправлен user=${userId}${degraded ? " (FLAC→mp3)" : ""}`);
   } catch (e) {
@@ -1339,9 +1479,30 @@ export async function onChosenResult(
     log.error(`[chosen] ошибка user=${userId} track=${trackId}: ${e}`);
     // без этого кнопка навсегда остаётся «качаю...»/«отправляю...» от тикера
     await cancelTicker();
+    if (await reissueEdit(bot, inlineMsgId, finalEdit, e)) return;
     await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
   } finally {
     await cancelTicker();
+  }
+}
+
+/** editMessageMedia упал без ответа API (сеть/таймаут) — Telegram мог его применить: повторяем
+ * тот же edit один раз (уже применён → «not modified» = успех). true — аудио на месте.
+ * Ответ API (error_code) = edit точно не прошёл → false, вызывающий ставит «загрузить снова». */
+async function reissueEdit(
+  bot: Bot,
+  inlineMsgId: string,
+  edit: { media: AudioEditMedia; markup: ReturnType<typeof trackMarkup> | undefined } | null,
+  err: unknown,
+): Promise<boolean> {
+  if (edit === null || isApiError(err)) return false;
+  try {
+    await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, edit.media, edit.markup);
+    log.info(`[edit] повтор editMessageMedia после неясного исхода прошёл (${errText(err)})`);
+    return true;
+  } catch (e) {
+    log.warning(`[edit] повтор editMessageMedia не прошёл: ${errText(e)}`);
+    return false;
   }
 }
 
@@ -1390,8 +1551,9 @@ async function onLoadCallback(
   // отвечаем на callback сразу (иначе кнопка крутится до таймаута), итог — сменой кнопок.
   // лимитер в onDownloadStart: готовый кэш лимит не тратит; дедуп закачек живёт в cacheService.
   await safeAnswerCb(ctx, BTN_DOWNLOADING);
+  let finalEdit: { media: AudioEditMedia; markup: ReturnType<typeof trackMarkup> | undefined } | null = null;
   try {
-    const { cached, trackObj, yandex } = await resolveTrack(container, token, userId, trackId);
+    const { cached, trackObj, yandex, unavailable } = await resolveTrack(container, token, userId, trackId);
     const settings = await container.getUserSettings(userId);
     const quality = settings.track_quality as AudioQuality;
     // эффект берём из запроса, запомненного на chosen_result: в callback_data его нет,
@@ -1400,6 +1562,7 @@ async function onLoadCallback(
     const res = await ensureFileId(container, cached, trackObj, yandex, trackId, {
       quality,
       tier,
+      unavailable,
       onDownloadStart: async () => {
         await downloadLimitGate(container, userId)();
         await safeSetReplyMarkup(bot, inlineMsgId, progressMarkup(trackId, BTN_DOWNLOADING));
@@ -1413,6 +1576,7 @@ async function onLoadCallback(
     const { fileId, codec, bitrateKbps, degraded } = res;
     const layout = settings.track_layout;
     const { media, markup } = buildChosenEditPayload({ trackId, fileId, codec, bitrateKbps, layout, degraded });
+    finalEdit = { media, markup };
     await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, media, markup);
     log.info(`[load] трек ${trackId} загружен user=${userId}${degraded ? " (FLAC→mp3)" : ""}`);
   } catch (e) {
@@ -1421,8 +1585,36 @@ async function onLoadCallback(
       return;
     }
     log.error(`[load] ошибка user=${userId} track=${trackId}: ${e}`);
+    if (await reissueEdit(bot, inlineMsgId, finalEdit, e)) return;
     await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
   }
+}
+
+/** `crd:<resultId>` — повтор рендера карточки (npc:/lyc:) после сбоя: перерисовывает
+ * карточку, а не меняет её на аудио. Стэш протух → renderAndSwapCard сам даст load:. */
+async function onCardRetryCallback(
+  ctx: {
+    inlineMessageId?: string | null;
+    from: { id: number };
+    answer(params?: string | { text?: string; show_alert?: boolean }): Promise<unknown>;
+  },
+  container: Container,
+  bot: Bot,
+): Promise<void> {
+  const resultId = cbData(ctx).slice("crd:".length);
+  const inlineMsgId = ctx.inlineMessageId ?? null;
+  if (!isCardResultId(resultId) || !inlineMsgId) {
+    await safeAnswerCb(ctx, { text: CB_FIND_AGAIN, show_alert: true });
+    return;
+  }
+  // кнопку в группе видят все: перерисовать может только тот, чья это карточка
+  const payload = peekCardPending(resultId);
+  if (payload !== null && payload.userId !== ctx.from.id) {
+    await safeAnswerCb(ctx, { text: cbNotYourTrack(container.botUsername), show_alert: true });
+    return;
+  }
+  await safeAnswerCb(ctx, BTN_PREPARING);
+  await renderAndSwapCard(bot, container, resultId, inlineMsgId, ctx.from.id);
 }
 
 /** кнопка статична (❤️ без состояния) — клаву не перерисовываем, результат тостом. */
@@ -1477,4 +1669,5 @@ export function registerInline(bot: Bot, container: Container): void {
   bot.chosenInlineResult(/[\s\S]*/, (ctx) => onChosenResult(ctx as never, container, bot));
   bot.callbackQuery(/^load:/, (ctx) => onLoadCallback(ctx as never, container, bot));
   bot.callbackQuery(/^like:/, (ctx) => onLikeCallback(ctx as never, container));
+  bot.callbackQuery(/^crd:/, (ctx) => onCardRetryCallback(ctx as never, container, bot));
 }

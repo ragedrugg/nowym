@@ -12,9 +12,20 @@ const log = getLogger("iconset");
 
 let ICON_MAP = new Map<string, string>();
 
-/** custom_emoji_id для стандартного эмодзи, если набор его покрывает. */
+/** близкие по смыслу эмодзи, если в наборе нет точного (tgiosicons: 🔓 есть, 🔐 нет). */
+const ICON_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "🔐": ["🔓", "🔒"],
+};
+
+/** custom_emoji_id для стандартного эмодзи (или его алиаса), если набор его покрывает. */
 export function iconFor(emoji: string): string | undefined {
-  return ICON_MAP.get(emoji);
+  const id = ICON_MAP.get(emoji);
+  if (id !== undefined) return id;
+  for (const alias of ICON_ALIASES[emoji] ?? []) {
+    const aliasId = ICON_MAP.get(alias);
+    if (aliasId !== undefined) return aliasId;
+  }
+  return undefined;
 }
 
 /** Подтягивает набор кастом-эмодзи и заполняет карту emoji→id.

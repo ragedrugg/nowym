@@ -76,3 +76,29 @@ test("D18: сбой создания не залипает — следующи�
   await c.getYandexService("T", 7);
   assert.equal(n, 2);
 });
+
+test("L5: invalidate во время getTrackService — SearchService со старым клиентом не кэшируется", async () => {
+  const c = mk();
+  const { calls, release } = stubCreate();
+  const p = c.getTrackService("OLD", 7);
+  c.invalidateTokenCacheForUser(7); // logout / смена аккаунта
+  release();
+  const oldSvc = await p;
+  const newSvc = await c.getTrackService("NEW", 7);
+  assert.notEqual(newSvc, oldSvc, "после инвалидации — свежий SearchService");
+  assert.deepEqual(calls, ["OLD", "NEW"]);
+  assert.equal(await c.getTrackService("NEW", 7), newSvc, "без инвалидации — из кэша");
+});
+
+test("L5: invalidate, пока getTrackService ждёт уже готовый in-flight клиент — тоже не кэшируется", async () => {
+  const c = mk();
+  const { calls, release } = stubCreate();
+  const inflight = c.getYandexService("OLD", 7); // клиент уже создаётся (например, из другого хендлера)
+  const p = c.getTrackService("OLD", 7); // ждёт тот же in-flight
+  c.invalidateTokenCacheForUser(7);
+  release();
+  await inflight;
+  await p;
+  await c.getTrackService("NEW", 7);
+  assert.deepEqual(calls, ["OLD", "NEW"]);
+});

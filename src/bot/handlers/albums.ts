@@ -4,7 +4,7 @@ import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
 import { pluralTracks } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
-import type { YandexClient } from "../../yandex/client.ts";
+import { type YandexClient, YandexUnavailableError } from "../../yandex/client.ts";
 import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
 import type { AlbumData } from "../../yandex/types.ts";
 import type { Container } from "../container.ts";
@@ -26,6 +26,7 @@ import {
   tooOften,
   UPLOAD_BUSY,
   uploadingTracks,
+  YANDEX_DOWN,
 } from "../texts.ts";
 import { startTrackUploadReply } from "./common.ts";
 
@@ -113,6 +114,12 @@ export async function startUpload(
       coverBytes,
     });
   } catch (e) {
+    if (e instanceof YandexUnavailableError && !handedOff) {
+      // сбой Яндекса на поиске релиза — не «не найден» и не общая ошибка
+      log.warning(`[${noun}] ${e.message} user=${userId}`);
+      if (progressMsg) await progressMsg.edit(format`${YANDEX_DOWN}`).catch(() => {});
+      return;
+    }
     log.error(`[${noun}] ошибка user=${userId}: ${e}`);
     // после передачи слота sendAlbum сам разбирается со своими ошибками
     if (!handedOff && progressMsg) await progressMsg.edit(format`${ERROR_RETRY}`).catch(() => {});
@@ -130,7 +137,7 @@ export async function startAlbumUpload(
   container: Container,
 ): Promise<void> {
   await startUpload(bot, chatId, userId, container, ALBUM_NOUN, format`${ALBUM_NOT_FOUND}`, (yandex) =>
-    yandex.getAlbum(albumId),
+    yandex.getAlbum(albumId, { strict: true }),
   );
 }
 

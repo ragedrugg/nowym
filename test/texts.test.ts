@@ -129,7 +129,7 @@ for (const [name, value] of Object.entries(T)) collect(name, value, ALL);
 const EMOJI = /\p{Extended_Pictographic}/u;
 const LEADING_EMOJI = /^\p{Extended_Pictographic}(?:\uFE0F|\u200D|\p{Extended_Pictographic})*(\s|$)/u;
 /** строки, которым можно начинаться с заглавной (имена собственные). */
-const CAPITAL_OK = new Set<string>([T.ADMIN.ymTitle]);
+const CAPITAL_OK = new Set<string>([T.ADMIN.ymTitle, T.YANDEX_DOWN]);
 
 const lines = (r: Rendered): string[] => r.text.split("\n").filter((l) => l.trim() !== "");
 
@@ -209,7 +209,11 @@ test("тексты: одна формулировка на ситуацию", ()
 test("тексты: вход везде с 🔐, 🔓 в исходниках нет", () => {
   assert.ok(T.LOGIN_INLINE_BUTTON.startsWith(`${T.LOGIN_EMOJI} `));
   assert.ok(T.deviceFlowText({ userCode: "A", verificationUrl: "u", mins: 1 }).toString().startsWith(T.LOGIN_EMOJI));
-  for (const f of srcFiles()) assert.ok(!readFileSync(f, "utf8").includes("🔓"), `${f}: 🔓 → LOGIN_EMOJI`);
+  for (const f of srcFiles()) {
+    // iconSet.ts: 🔓 — только ключ алиаса для поиска иконки (L6), в текст не попадает
+    if (f.replaceAll("\\", "/").endsWith("bot/iconSet.ts")) continue;
+    assert.ok(!readFileSync(f, "utf8").includes("🔓"), `${f}: 🔓 → LOGIN_EMOJI`);
+  }
 });
 
 test("тексты: нет захардкоженного @nowymbot (только дефолт botMention)", () => {

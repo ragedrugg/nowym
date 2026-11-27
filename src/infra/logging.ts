@@ -22,11 +22,12 @@ function currentLevel(): Level {
   return v in ORDER ? (v as Level) : "INFO";
 }
 
-// секреты, которые могут прийти в лог внутри текста ошибок: токен бота в URL
-// Bot API (…/bot123:ABC/sendMessage) и OAuth-заголовок Яндекса.
+// секреты, которые могут прийти в лог внутри текста ошибок: токен бота (в т.ч. в URL
+// Bot API …/bot123:ABC…/sendMessage) и OAuth-заголовок Яндекса. Маскируем только
+// значения формы токена, чтобы обычный текст («OAuth device flow») не портился.
 const SECRET_PATTERNS: [RegExp, string][] = [
-  [/bot\d+:[\w-]+/g, "bot<token>"],
-  [/OAuth [\w.-]+/g, "OAuth <token>"],
+  [/\b(bot)?\d+:[A-Za-z0-9_-]{30,}/g, "$1<token>"],
+  [/OAuth (?:y0_[\w.-]+|[A-Za-z0-9_-]{20,})/g, "OAuth <token>"],
 ];
 
 export function maskSecrets(msg: string): string {

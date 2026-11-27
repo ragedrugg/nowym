@@ -113,6 +113,15 @@ export function retryMarkup(trackId: string | number): InlineKeyboard {
   return kb;
 }
 
+/** повтор рендера карточки (npc:/lyc:) — `crd:<resultId>`; null, если не влезает в 64 байта callback_data. */
+export function cardRetryMarkup(resultId: string): InlineKeyboard | null {
+  const data = `crd:${resultId}`;
+  if (Buffer.byteLength(data) > 64) return null;
+  const kb = new InlineKeyboard();
+  inlineText(kb, "🔄", "↻", BTN_RETRY, data);
+  return kb;
+}
+
 export function cancelAlbumMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard();
   dmText(kb, "❌", "✕", BTN_CANCEL_UPLOAD, "cancel_album", "danger");

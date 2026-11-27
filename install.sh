@@ -60,12 +60,13 @@ gen_pw()     { node -e 'process.stdout.write(require("crypto").randomBytes(18).t
 
 step "нода"
 if ! command -v node >/dev/null 2>&1; then
-  err "node не найден. нужен Node.js >= 22 (nvm install 22 / apt / брю — на твой вкус)."
+  err "node не найден. нужен Node.js >= 22.19 (nvm install 22 / apt / брю — на твой вкус)."
   exit 1
 fi
-NODE_MAJOR="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
-if [ "$NODE_MAJOR" -lt 22 ]; then
-  err "стоит node $(node -v), нужен >= 22. апгрейдь и запускай заново."
+# ^22.19 || >=23.6, как engines в package.json: .ts запускается встроенным type stripping
+# (по умолчанию с 22.18 и 23.6); на 22.0–22.17 и 23.0–23.5 бот упал бы с ERR_UNKNOWN_FILE_EXTENSION.
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit((a===22&&b>=19)||(a===23&&b>=6)||a>=24?0:1)'; then
+  err "стоит node $(node -v), нужен >= 22.19 (в ветке 23 — >= 23.6). апгрейдь и запускай заново."
   exit 1
 fi
 ok "node $(node -v)"

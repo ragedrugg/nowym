@@ -435,3 +435,103 @@ test("D24: текст inline-запроса и result_id chosen — на DEBUG, 
   assert.ok(!all.includes("секретный запрос"), all);
   assert.ok(!all.includes("secret-77"), all);
 });
+
+test("renderAndSwapCard: рендер карточки упал → «загрузить снова» перерисовывает карточку (crd:), а не вечное «готовлю карточку»", async () => {
+  const container = {
+    botUsername: "nowymbot",
+    getUserSettings: async () => {
+      throw new Error("pool down");
+    },
+    resolveToken: async () => "tok",
+  } as never;
+  const r = buildNowPlayingCardResult(container, track(557), { progress_ms: 0 }, { id: 1 }) as { id: string };
+  const { bot, calls } = mkBot();
+  await renderAndSwapCard(bot, container, r.id, "IM", 1);
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["editMessageReplyMarkup"],
+  );
+  const kb = JSON.stringify(calls[0]!.params.reply_markup);
+  assert.ok(kb.includes(`crd:${r.id}`), kb);
+  assert.ok(kb.includes("загрузить снова"), kb);
+});
+
+// ---------- review-2 L7: повтор карточки = перерисовка карточки ----------
+
+function crdHarness(container: unknown, bot: { api: unknown }) {
+  let fn!: (ctx: unknown) => Promise<void>;
+  const reg = {
+    inlineQuery: () => undefined,
+    chosenInlineResult: () => undefined,
+    callbackQuery: (re: RegExp, h: (ctx: unknown) => Promise<void>) => {
+      if (re.test("crd:npc:1:2:3")) fn = h;
+    },
+    api: bot.api,
+  };
+  registerInline(reg as never, container as never);
+  const toasts: unknown[] = [];
+  const tap = (data: string, from = 1) =>
+    fn({
+      data,
+      inlineMessageId: "IM",
+      from: { id: from },
+      answer: async (p: unknown) => {
+        toasts.push(p);
+        return true;
+      },
+    });
+  return { tap, toasts };
+}
+
+function renderingContainer() {
+  return {
+    botUsername: "nowymbot",
+    channelId: "chan",
+    getUserSettings: async () => ({
+      track_layout: "button",
+      card_toggles: { avatar: false },
+      card_progress: "bar",
+      card_style: "dark",
+      card_aspect: "square",
+    }),
+    resolveToken: async () => null,
+    cardRenderPool: { render: async () => Buffer.from("jpg") },
+  };
+}
+
+test("crd: тап владельца перерисовывает карточку (editMessageMedia фото), а не качает аудио", async () => {
+  const container = renderingContainer();
+  const r = buildNowPlayingCardResult(container as never, track(558), { progress_ms: 0 }, { id: 1 }) as {
+    id: string;
+  };
+  const calls: Call[] = [];
+  const rec = (method: string, ret: unknown) => async (params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    return ret;
+  };
+  const bot = {
+    api: {
+      sendPhoto: rec("sendPhoto", { message_id: 9, photo: [{ file_id: "CARD" }] }),
+      deleteMessage: rec("deleteMessage", true),
+      editMessageMedia: rec("editMessageMedia", true),
+      editMessageReplyMarkup: rec("editMessageReplyMarkup", true),
+    },
+  };
+  const h = crdHarness(container, bot as never);
+  await h.tap(`crd:${r.id}`);
+  const edit = calls.find((c) => c.method === "editMessageMedia");
+  assert.equal((edit!.params.media as { type: string; media: string }).type, "photo");
+  assert.equal((edit!.params.media as { media: string }).media, "CARD");
+});
+
+test("crd: тап не владельца в группе → тост, карточку не трогаем", async () => {
+  const container = renderingContainer();
+  const r = buildNowPlayingCardResult(container as never, track(559), { progress_ms: 0 }, { id: 1 }) as {
+    id: string;
+  };
+  const { bot, calls } = mkBot();
+  const h = crdHarness(container, bot as never);
+  await h.tap(`crd:${r.id}`, 2);
+  assert.equal(calls.length, 0);
+  assert.ok(JSON.stringify(h.toasts).includes("show_alert"));
+});

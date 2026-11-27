@@ -11,18 +11,20 @@ import { trackUrl } from "../../yandex/urls.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage, mintCardFileId } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
-import { nowPlayingMarkup, progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
+import { cardRetryMarkup, nowPlayingMarkup, progressMarkup, retryMarkup, trackMarkup } from "../markup.ts";
 import {
   DEGRADED_NOTE,
   type DeliverResult,
   deliverCardAndTrack,
   errText,
   type FallbackInput,
+  isApiError,
   type MintedCard,
   makeRichSend,
   type RichAudio,
   richTrackMarkup,
 } from "../richMessage.ts";
+import { safeEditMedia } from "../safeApi.ts";
 import { BTN_PREPARING, CARD_RESULT, cardCaptionText, LYRICS_RESULT, RICH_RESULT } from "../texts.ts";
 
 const log = getLogger("bot.inline_card");
@@ -382,6 +384,7 @@ export async function renderAndSwapCard(
     return;
   }
 
+  let swapped = false;
   try {
     const card = await renderPendingCard(bot, container, payload, resultId);
     try {
@@ -393,11 +396,20 @@ export async function renderAndSwapCard(
         cardLayout: payload.cardLayout || "button",
         botUsername: container.botUsername,
       });
-      await bot.api.editMessageMedia({
-        inline_message_id: inlineMsgId,
-        media: media as never,
-        ...(markup ? { reply_markup: markup } : {}),
-      });
+      try {
+        await bot.api.editMessageMedia({
+          inline_message_id: inlineMsgId,
+          media: media as never,
+          ...(markup ? { reply_markup: markup } : {}),
+        });
+      } catch (e) {
+        // ответ API = правка точно не прошла; сеть/таймаут — могла пройти: повторяем ту же
+        // правку один раз (уже применена → «not modified» = успех), иначе — «загрузить снова»
+        if (isApiError(e)) throw e;
+        log.warning(`[chosen] карточка ${resultId}: ${errText(e)} → исход неизвестен, повторяю правку`);
+        await safeEditMedia(bot, { inlineMessageId: inlineMsgId }, media, markup);
+      }
+      swapped = true;
       log.info(`[chosen] карточка ${resultId} отправлена user=${payload.userId}`);
     } finally {
       // finally, а не после await — иначе упавший editMessageMedia (протухший
@@ -406,6 +418,19 @@ export async function renderAndSwapCard(
     }
   } catch (e) {
     log.error(`[chosen] карточка ${resultId}: ${errText(e)}`);
+    // рендер/правка упали — вместо вечного «готовлю карточку...» кнопка «загрузить снова»,
+    // которая перерисовывает карточку (crd:), а не меняет её на аудио (load:)
+    if (swapped) return;
+    const kb = cardRetryMarkup(resultId);
+    if (kb === null) {
+      await setRetry(payload.trackId);
+      return;
+    }
+    try {
+      await bot.api.editMessageReplyMarkup({ inline_message_id: inlineMsgId, reply_markup: kb });
+    } catch (err) {
+      log.warning(`[chosen] ${resultId}: retry-разметка карточки не встала: ${errText(err)}`);
+    }
   }
 }
 

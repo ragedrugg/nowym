@@ -28,6 +28,11 @@ function deferred() {
 
 const flush = () => new Promise<void>((r) => setImmediate(r));
 
+/** промотать время шагами по CHECK, чтобы каждый тик setInterval видел своё Date.now(). */
+function advance(ms: number): void {
+  for (let left = ms; left > 0; left -= CHECK) mock.timers.tick(Math.min(CHECK, left));
+}
+
 test("завершающиеся getUpdates (и успешные, и с ошибкой) держат сторожа спокойным", async () => {
   const { wd, fatal } = mk();
   wd.start();
@@ -90,12 +95,103 @@ test("после обрыва снова ни одного завершения 
   assert.equal(fatal.length, 1);
 });
 
-test("зависание без активного getUpdates (рвать нечего) → сразу onFatal", () => {
+test("L1: без активного getUpdates (рвать нечего) сначала окно на восстановление, потом onFatal", () => {
   const { wd, fatal } = mk();
   wd.start();
   mock.timers.tick(STALL + CHECK);
+  assert.deepEqual(fatal, [], "первое срабатывание — только окно восстановления");
+  mock.timers.tick(STALL);
+  assert.deepEqual(fatal, []);
+  mock.timers.tick(CHECK);
   assert.equal(fatal.length, 1);
   assert.match(fatal[0]!, /нет активного запроса/);
+});
+
+test("L1: gramio проснулся в окне восстановления — новый getUpdates лечит без выхода", async () => {
+  const { wd, fatal } = mk();
+  wd.start();
+  mock.timers.tick(STALL + CHECK); // окно «idle»
+  await wd.hook(null, () => Promise.resolve([]));
+  advance(STALL * 3);
+  // снова окно idle и затем fatal — но только после полного цикла, не сразу
+  assert.equal(fatal.length, 1);
+  assert.match(fatal[0]!, /нет активного запроса/);
+});
+
+test("L1: окно idle, а затем повисший запрос — он обрывается, а не сразу выход", async () => {
+  const { wd, fatal } = mk();
+  wd.start();
+  mock.timers.tick(STALL + CHECK); // окно «idle»
+  const r = assert.rejects(
+    wd.hook(null, () => new Promise(() => {})),
+    PollingStalledError,
+  );
+  mock.timers.tick(STALL + CHECK);
+  await r;
+  assert.deepEqual(fatal, []);
+});
+
+test("L1: известный retry_after из 429 сдвигает порог — сон gramio не считается зависанием", async () => {
+  const { wd, fatal } = mk();
+  wd.start();
+  const err429 = Object.assign(new Error("Too Many Requests: retry after 200"), {
+    code: 429,
+    payload: { retry_after: 200 },
+  });
+  await assert.rejects(
+    wd.hook(null, () => Promise.reject(err429)),
+    /Too Many Requests/,
+  );
+  // gramio спит 200s; порог 90s — без учёта retry_after было бы окно idle и затем выход
+  advance(200_000 + STALL);
+  assert.deepEqual(fatal, []);
+  // suppress-вариант: TelegramError возвращается значением — тоже учитывается
+  await wd.hook(null, () => Promise.resolve({ payload: { retry_after: 300 } }));
+  advance(300_000 + STALL);
+  assert.deepEqual(fatal, []);
+  // после этого — обычная логика: окно, затем выход
+  advance(CHECK + STALL + CHECK);
+  assert.equal(fatal.length, 1);
+});
+
+test("L2: поздний ответ оборванного getUpdates не засчитывается как heartbeat", async () => {
+  const { wd, fatal } = mk();
+  wd.start();
+  const hung = deferred();
+  const first = assert.rejects(
+    wd.hook(null, () => hung.promise),
+    PollingStalledError,
+  );
+  mock.timers.tick(STALL + CHECK);
+  await first;
+
+  // новый запрос тоже висит; старый вдруг отвечает (свой abort gramio / 409)
+  void wd.hook(null, () => new Promise(() => {})).catch(() => {});
+  mock.timers.tick(STALL / 2);
+  hung.reject(new Error("getUpdates request timed out"));
+  await flush();
+
+  // окно не продлено: выход ровно по исходному окну после обрыва
+  mock.timers.tick(STALL / 2 + CHECK);
+  assert.equal(fatal.length, 1);
+  assert.match(fatal[0]!, /после обрыва/);
+});
+
+test("L2: поздний ответ оборванного запроса до старта нового тоже игнорируется", async () => {
+  const { wd, fatal } = mk();
+  wd.start();
+  const hung = deferred();
+  const first = assert.rejects(
+    wd.hook(null, () => hung.promise),
+    PollingStalledError,
+  );
+  mock.timers.tick(STALL + CHECK);
+  await first;
+  hung.resolve([]); // нового getUpdates ещё нет
+  await flush();
+  mock.timers.tick(STALL + CHECK);
+  assert.equal(fatal.length, 1);
+  assert.match(fatal[0]!, /после обрыва/);
 });
 
 test("stop() снимает таймер", () => {

@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Yandex Music Telegram bot — TypeScript port of nowym",
   "engines": {
-    "node": ">=22.19"
+    "node": "^22.19 || >=23.6"
   },
   "scripts": {
     "start": "node src/main.ts",

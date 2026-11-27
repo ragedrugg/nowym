@@ -11,6 +11,7 @@ import {
   albumResultTitle,
   BTN_DOWNLOADING,
   PLAYLIST_DESCRIPTION,
+  PLAYLIST_SEND_LINK_HINT,
   PLAYLIST_TO_DM,
   playlistResultText,
   playlistResultTitle,
@@ -24,8 +25,8 @@ import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { LRUMap } from "../infra/lruMap.ts";
 import type { TTLCache } from "../infra/memoryCache.ts";
-import { parseSearchQuery } from "../infra/parsers.ts";
-import type { YandexClient } from "../yandex/client.ts";
+import { DEEPLINK_OWNER_RE, parseSearchQuery } from "../infra/parsers.ts";
+import { type YandexClient, YandexUnavailableError } from "../yandex/client.ts";
 import { normalizeCoverUrl } from "../yandex/media.ts";
 import { formatArtists } from "../yandex/metadata.ts";
 import { detachClient, sharedTrackObjects } from "../yandex/sharedCaches.ts";
@@ -252,9 +253,9 @@ export class SearchService {
   ): InlineResult | null {
     if (!this.botUsername) return null;
     // payload deep-link'а телеграм принимает только из [A-Za-z0-9_-], а owner
-    // бывает с точкой — такому плейлисту кнопку просто не показываем.
-    // ponytail: если точечные логины окажутся частыми — кодировать owner в payload.
-    if (!/^[\w-]+$/.test(owner)) return null;
+    // бывает с точкой — такому плейлисту статья без кнопки, с подсказкой про личку
+    // (ссылка в личке выгружается: PLAYLIST_URL_RE пускает точку).
+    const deepLinkable = DEEPLINK_OWNER_RE.test(owner);
 
     const title = pl.title || UNTITLED;
     const suffix = pl.trackCount ? searchTrackCount(pl.trackCount) : "";
@@ -262,6 +263,18 @@ export class SearchService {
     const text = playlistResultText(title, suffix, link);
     const thumbUrl = normalizeCoverUrl(pl.coverUri, "200x200");
 
+    if (!deepLinkable) {
+      const hint = PLAYLIST_SEND_LINK_HINT;
+      return InlineQueryResult.article(
+        `playlist:${owner}:${kind}`,
+        playlistResultTitle(title),
+        InputMessageContent.text(text),
+        {
+          description: suffix ? `${suffix} · ${hint}` : hint,
+          ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
+        },
+      );
+    }
     // owner может содержать '_', поэтому kind якорится хвостовым _\d+$ (см. START_PLAYLIST_RE)
     const deepLink = `https://t.me/${this.botUsername}?start=playlist_${owner}_${kind}`;
     return InlineQueryResult.article(
@@ -302,7 +315,7 @@ export class SearchService {
       let trackIdsInResult: (string | number)[] = [];
 
       if (parsed.type === "track_link") {
-        const track = await this.yandexService.getTrackById(parsed.track_id);
+        const track = await this.yandexService.getTrackById(parsed.track_id, { strict: true });
         if (track) {
           const r = await this.safeCreateTrack(track, layout, sendMode, signal);
           if (r) {
@@ -311,22 +324,26 @@ export class SearchService {
           }
         }
       } else if (parsed.type === "album_link") {
-        const album = await this.yandexService.getAlbumShort(parsed.album_id);
+        const album = await this.yandexService.getAlbumShort(parsed.album_id, { strict: true });
         if (album) {
           const r = this.createAlbumResult(album);
           if (r) results.push(r);
         }
-      } else if (parsed.type === "playlist_link") {
-        const pl = await this.yandexService.getPlaylistShort(parsed.owner, parsed.kind);
-        if (pl) {
-          const r = this.createPlaylistResult(parsed.owner, parsed.kind, pl);
+      } else if (parsed.type === "playlist_link" || parsed.type === "playlist_uuid_link") {
+        const ref =
+          parsed.type === "playlist_link"
+            ? { owner: parsed.owner, kind: parsed.kind }
+            : await this.yandexService.resolvePlaylistUuid(parsed.uuid, { strict: true });
+        const pl = ref ? await this.yandexService.getPlaylistShort(ref.owner, ref.kind, { strict: true }) : null;
+        if (ref && pl) {
+          const r = this.createPlaylistResult(ref.owner, ref.kind, pl);
           if (r) results.push(r);
         }
       } else if (parsed.type === "search") {
         // tracksOnly — для поиска по строке лирики (" ...): нужен только трек,
         // альбомы тут шум.
         const [tracks, albums] = await Promise.all([
-          this.yandexService.searchTracks(query, maxResults),
+          this.yandexService.searchTracks(query, maxResults, { strict: true }),
           tracksOnly ? Promise.resolve([] as YaAlbum[]) : this.yandexService.searchAlbums(query, 2),
         ]);
         const trackResults =
@@ -349,6 +366,8 @@ export class SearchService {
       log.debug(`создано ${results.length} результатов: ${JSON.stringify(query)}`);
       return results;
     } catch (e) {
+      // сбой Яндекса — не «не найдено»: пусть inline покажет «Яндекс не отвечает»
+      if (e instanceof YandexUnavailableError) throw e;
       log.error(`ошибка поиска ${JSON.stringify(query)}: ${e}`);
       return [];
     }
@@ -371,7 +390,7 @@ export class SearchService {
     const ypage = Math.max(0, parseInt(ypageStr || "0", 10) || 0);
     const within = Math.max(0, parseInt(withinStr || "0", 10) || 0);
 
-    const { tracks, total, perPage } = await this.yandexService.searchTracksPage(query, ypage);
+    const { tracks, total, perPage } = await this.yandexService.searchTracksPage(query, ypage, { strict: true });
     const slice = tracks.slice(within, within + pageSize);
 
     const cacheKey = `paged:${layout}:${sendMode}:${query}:${ypage}:${within}:${pageSize}`;

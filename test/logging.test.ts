@@ -60,10 +60,11 @@ test("маскировка: токен бота и OAuth-токен не поп�
   const log = getLogger("t.mask");
   const line = capture(() =>
     log.error(
-      "fetch https://api.telegram.org/bot123456:AAH-x_yZ/sendAudio failed; headers Authorization: OAuth y0_AgAA.bc-d",
+      "fetch https://api.telegram.org/bot123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw-x_yZ/sendAudio failed; " +
+        "headers Authorization: OAuth y0_AgAA.bc-d",
     ),
   );
-  assert.ok(!line.includes("AAH-x_yZ"), line);
+  assert.ok(!line.includes("AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"), line);
   assert.ok(!line.includes("y0_AgAA.bc-d"), line);
   assert.match(line, /bot<token>\/sendAudio/);
   assert.match(line, /OAuth <token>/);
@@ -71,4 +72,17 @@ test("маскировка: токен бота и OAuth-токен не поп�
 
 test("maskSecrets: обычный текст не меняется", () => {
   assert.equal(maskSecrets("track 42:13 about bots"), "track 42:13 about bots");
+});
+
+test("L8: маскируются только значения формы токена", () => {
+  // обычные слова после «OAuth» не трогаем
+  assert.equal(maskSecrets("старт OAuth device flow"), "старт OAuth device flow");
+  assert.equal(maskSecrets("OAuth token expired"), "OAuth token expired");
+  // старый формат Яндекс-токена (без y0_) — длинная token-строка
+  assert.equal(maskSecrets("OAuth AQAAAAAABcdEFghIJklMNopQRstUVwxyz12"), "OAuth <token>");
+  assert.equal(maskSecrets("OAuth y0_short"), "OAuth <token>");
+  // голый токен бота (не в URL) тоже маскируется
+  assert.equal(maskSecrets("token=123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw end"), "token=<token> end");
+  // короткие «число:слово» — не токены
+  assert.equal(maskSecrets("bot42:status ok, 12:30"), "bot42:status ok, 12:30");
 });
