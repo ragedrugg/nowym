@@ -1,5 +1,5 @@
 import type { Bot } from "gramio";
-import { type FormattableString, format, InlineQueryResult, InputMessageContent, link } from "gramio";
+import { type FormattableString, InlineQueryResult, InputMessageContent } from "gramio";
 import { withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
@@ -23,6 +23,7 @@ import {
   type RichAudio,
   richTrackMarkup,
 } from "../richMessage.ts";
+import { BTN_PREPARING, CARD_RESULT, cardCaptionText, LYRICS_RESULT, RICH_RESULT } from "../texts.ts";
 
 const log = getLogger("bot.inline_card");
 
@@ -146,13 +147,13 @@ export function buildNowPlayingCardResult(
   // reply_markup обязателен даже для text/none — иначе tg не отдаёт inline_message_id
   const initialMarkup =
     cardLayout === "text" || cardLayout === "none"
-      ? progressMarkup(String(track.id), "готовлю...")
+      ? progressMarkup(String(track.id), BTN_PREPARING)
       : nowPlayingMarkup(track.id!, container.botUsername);
 
   return buildCardArticle({
     resultId,
-    label: "оформить карточкой",
-    placeholderText: "готовлю карточку...",
+    label: CARD_RESULT.label,
+    placeholderText: CARD_RESULT.placeholder,
     artist,
     title,
     thumb,
@@ -189,8 +190,8 @@ export function buildRichNowPlayingResult(
   });
   return buildCardArticle({
     resultId,
-    label: "карточка + трек",
-    placeholderText: "готовлю карточку и трек...",
+    label: RICH_RESULT.label,
+    placeholderText: RICH_RESULT.placeholder,
     artist,
     title,
     thumb,
@@ -228,8 +229,8 @@ export function buildLyricsCardResult(
 
   return buildCardArticle({
     resultId,
-    label: "🪪 карточка с текстом",
-    placeholderText: "готовлю карточку с текстом...",
+    label: LYRICS_RESULT.label,
+    placeholderText: LYRICS_RESULT.placeholder,
     artist,
     title,
     thumb,
@@ -245,10 +246,7 @@ export function hashPhrase(s: string): number {
 }
 
 export function cardCaption(trackId: number | string, artist: string, title: string): FormattableString {
-  const a = (artist || "").trim();
-  const t = (title || "").trim();
-  const head = a ? `🎵 ${a} — ${t}` : `🎵 ${t}`;
-  return format`${head}, ${link("в плеере", trackUrl(trackId))}`;
+  return cardCaptionText(trackUrl(trackId), artist, title);
 }
 
 export function cardMediaAndMarkup(args: {

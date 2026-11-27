@@ -2,22 +2,9 @@
 import type { Bot } from "gramio";
 import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
+import { ADMIN_COMMANDS, PUBLIC_COMMANDS } from "./texts.ts";
 
 const log = getLogger("bot.commands_menu");
-
-const PUBLIC_COMMANDS = [
-  { command: "start", description: "главное меню" },
-  { command: "help", description: "как пользоваться" },
-  { command: "np", description: "карточка того, что играет" },
-  { command: "settings", description: "качество, подписи, карточка" },
-  { command: "login", description: "войти в аккаунт" },
-  { command: "logout", description: "выйти из аккаунта" },
-];
-
-const ADMIN_COMMANDS = [
-  { command: "health", description: "статус и диагностика" },
-  { command: "broadcast", description: "рассылка всем" },
-];
 
 export async function registerCommands(bot: Bot): Promise<void> {
   const s = getSettings();

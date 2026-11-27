@@ -5,6 +5,7 @@ import { TelegramError } from "gramio";
 import type { Container } from "../src/bot/container.ts";
 import { buildEmptyResults, chosenRichCardTrack, onChosenResult } from "../src/bot/handlers/inline.ts";
 import { buildRichNowPlayingResult } from "../src/bot/handlers/inlineCard.ts";
+import { tooOftenButton } from "../src/bot/texts.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };
@@ -173,7 +174,8 @@ test("chosen npr: лимитер отказал: без рендера, плей
     ["editMessageReplyMarkup"],
   );
   const kb = JSON.stringify(calls[0]!.params.reply_markup);
-  assert.ok(kb.includes("слишком часто, подожди 8 сек"), "retryAfter 7.2 → вверх, 8 (D12)");
+  assert.ok(kb.includes(tooOftenButton(7.2)), "лимит-кнопка каноничным текстом");
+  assert.ok(kb.includes("подожди 8 сек"), "retryAfter 7.2 → вверх, 8 (D12)");
   assert.ok(kb.includes("load:777"));
 });
 

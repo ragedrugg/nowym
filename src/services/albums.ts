@@ -3,6 +3,23 @@
 import type { Bot } from "gramio";
 import { bold, code, type FormattableString, format, join, MediaInput, MediaUpload } from "gramio";
 import { albumRetryMarkup, cancelAlbumMarkup } from "../bot/markup.ts";
+import {
+  ALBUM_NOUN,
+  downloadingInParallel,
+  etaLeft,
+  FAILED_LIST_HEADER,
+  nowSendingBatch,
+  nowSendingTrack,
+  PLAYLIST_NOUN,
+  PREPARING_SEND,
+  resumeAlreadyDone,
+  resumeContinue,
+  resumeGone,
+  resumeNeedsLogin,
+  sendingNow,
+  UPLOAD_DONE,
+  uploadCancelled,
+} from "../bot/texts.ts";
 import { sleep } from "../infra/async.ts";
 import { floodRetry } from "../infra/floodRetry.ts";
 import type { HttpClient } from "../infra/http.ts";
@@ -315,7 +332,7 @@ export class AlbumService {
     const albumId = row.album_id;
     // плейлист: album_id = kind, перезапрашиваем по (owner, kind), а не getAlbum(kind)
     const owner = row.playlist_owner;
-    const noun = owner ? "плейлист" : "альбом";
+    const noun = owner ? PLAYLIST_NOUN : ALBUM_NOUN;
     const doneIds = new Set(row.completed_track_ids.map(Number));
     const inflightId = row.id;
 
@@ -335,7 +352,7 @@ export class AlbumService {
     try {
       const token = await deps.resolveToken(userId);
       if (!token) {
-        if (proxy) await proxy.edit(format`❌ не получилось продолжить — войди /login и кинь ${noun} ещё раз`);
+        if (proxy) await proxy.edit(resumeNeedsLogin(noun));
         await this.db.deleteInflight(inflightId);
         return;
       }
@@ -350,7 +367,7 @@ export class AlbumService {
       }
 
       if (!album) {
-        if (proxy) await proxy.edit(format`❌ ${noun} больше недоступен`);
+        if (proxy) await proxy.edit(resumeGone(noun));
         await this.db.deleteInflight(inflightId);
         return;
       }
@@ -359,16 +376,14 @@ export class AlbumService {
       const totalOrig = album.tracks.length;
 
       if (remaining.length === 0) {
-        if (proxy) await proxy.edit(format`✅ ${noun} уже залит 🎶`);
+        if (proxy) await proxy.edit(resumeAlreadyDone(noun));
         await this.db.deleteInflight(inflightId);
         return;
       }
 
       const done = totalOrig - remaining.length;
       if (proxy) {
-        await proxy.edit(
-          format`🔄 продолжаю с того места: ${done}/${totalOrig} уже залито, остаётся ${remaining.length}`,
-        );
+        await proxy.edit(resumeContinue(done, totalOrig, remaining.length));
       }
 
       handedOff = true; // дальше слот ведёт sendAlbumTracks (его finally чистит active)
@@ -660,7 +675,7 @@ export class AlbumService {
       }
 
       if (state.cancelled) {
-        await this.safeEdit(progressMsg, format`⛔ ${headerShort}\nотменено — отправлено ${progress.sent}/${total}`);
+        await this.safeEdit(progressMsg, uploadCancelled(headerShort, progress.sent, total));
         return;
       }
 
@@ -703,7 +718,7 @@ export class AlbumService {
     for (const entry of batch) {
       if (entry.kind === "fresh") {
         await this.mutateProgress(progress, (p) => {
-          p.nowSending = `заливаю «${entry.track.title || "?"}»`;
+          p.nowSending = nowSendingTrack(entry.track.title || "?");
         });
         await this.renderProgress(progressMsg, headerFull, progress, total);
         const [audioBytes, coverBytes] = entry.payload!;
@@ -737,7 +752,8 @@ export class AlbumService {
 
     // phase 2b: пачкой в чат юзера
     await this.mutateProgress(progress, (p) => {
-      p.nowSending = promoted.length === 1 ? promoted[0]!.track.title || "?" : `пачка ${promoted.length} треков`;
+      p.nowSending =
+        promoted.length === 1 ? nowSendingTrack(promoted[0]!.track.title || "?") : nowSendingBatch(promoted.length);
     });
     await this.renderProgress(progressMsg, headerFull, progress, total);
 
@@ -808,10 +824,10 @@ export class AlbumService {
       const elapsed = now - progress.startedAt;
       const bar = renderProgressBar(sent, total);
       let eta = "";
-      if (sent > 0 && sent < total) eta = `, осталось ~${formatEta((elapsed / sent) * (total - sent))}`;
+      if (sent > 0 && sent < total) eta = etaLeft(formatEta((elapsed / sent) * (total - sent)));
 
-      const sendingLine = progress.nowSending ? format`📨 шлю: ${progress.nowSending}` : format`📨 готовлю отправку...`;
-      const downloadingLine = downloading ? format`⬇️ параллельно качается ${pluralTracks(downloading)}` : null;
+      const sendingLine = progress.nowSending ? sendingNow(progress.nowSending) : format`${PREPARING_SEND}`;
+      const downloadingLine = downloading ? downloadingInParallel(pluralTracks(downloading)) : null;
 
       let t = format`${headerFull}\n\n${code(bar)} ${sent}/${total}${eta}\n${sendingLine}`;
       if (downloadingLine) t = format`${t}\n${downloadingLine}`;
@@ -852,11 +868,11 @@ export class AlbumService {
 
     if (failed.length > 0) {
       const failedList = join(failed, (t) => format`- ${t.title}`, "\n");
-      const text = format`${headerShort}\n${code(bar)} ${total - failed.length}/${total}, за ${elapsedStr}\n\n❌ не вышло:\n${failedList}`;
+      const text = format`${headerShort}\n${code(bar)} ${total - failed.length}/${total}, за ${elapsedStr}\n\n${FAILED_LIST_HEADER}\n${failedList}`;
       this.putRetry(msg.messageId, { chatId, userId, tracks: failed, albumData, yandex });
       await msg.edit(text, albumRetryMarkup(msg.messageId, pluralTracks(failed.length)));
     } else {
-      const text = format`${headerShort}\n${code(bar)} ${total}/${total}, за ${elapsedStr}\n✅ готово 🎶`;
+      const text = format`${headerShort}\n${code(bar)} ${total}/${total}, за ${elapsedStr}\n${UPLOAD_DONE}`;
       await msg.edit(text);
     }
   }

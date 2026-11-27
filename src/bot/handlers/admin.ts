@@ -11,6 +11,7 @@ import { errorDetail } from "../../yandex/health.ts";
 import type { Container } from "../container.ts";
 import { broadcastConfirmMarkup, broadcastSendingMarkup, healthMarkup, yandexHealthMarkup } from "../markup.ts";
 import { safeAnswerCb, safeEditApi } from "../safeApi.ts";
+import { ADMIN } from "../texts.ts";
 
 const log = getLogger("bot.admin");
 
@@ -96,7 +97,7 @@ ${bold("кэши (in-memory)")}
 export function registerAdmin(bot: Bot, container: Container): void {
   bot.command("health", async (ctx) => {
     if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
-    const status = await ctx.reply("⏳ собираю статус...");
+    const status = await ctx.reply(ADMIN.collecting);
     try {
       const { text, markup } = await buildMainHealth(bot, container);
       await bot.api.editMessageText({
@@ -111,7 +112,7 @@ export function registerAdmin(bot: Bot, container: Container): void {
       await safeEditApi(
         bot,
         { chatId: ctx.chat.id, messageId: status.id },
-        format`❌ не удалось собрать статус
+        format`${ADMIN.collectFailed}
 ${errorDetail(e)}`,
         healthMarkup(),
       );
@@ -121,7 +122,7 @@ ${errorDetail(e)}`,
   bot.callbackQuery("health:ym", async (ctx) => {
     const chat = ctx.message?.chat;
     if (chat?.type !== "private" || !ctx.from || !isAdmin(ctx.from.id)) {
-      await safeAnswerCb(ctx, { text: "недоступно", show_alert: true });
+      await safeAnswerCb(ctx, { text: ADMIN.unavailable, show_alert: true });
       return;
     }
     await safeAnswerCb(ctx);
@@ -130,7 +131,7 @@ ${errorDetail(e)}`,
       await safeEditApi(
         bot,
         { chatId: chat.id, messageId },
-        format`⏳ ${bold("Яндекс Музыка")}: собираю статус...`,
+        format`⏳ ${bold(ADMIN.ymTitle)}${ADMIN.ymCollecting}`,
         yandexHealthMarkup(),
       );
       const report = await getYandexHealth(container, true);
@@ -140,7 +141,7 @@ ${errorDetail(e)}`,
       await safeEditApi(
         bot,
         { chatId: chat.id, messageId },
-        format`❌ ${bold("Яндекс Музыка")}: не удалось собрать статус
+        format`❌ ${bold(ADMIN.ymTitle)}${ADMIN.ymCollectFailed}
 ${errorDetail(e)}`,
         yandexHealthMarkup(),
       );
@@ -150,7 +151,7 @@ ${errorDetail(e)}`,
   bot.callbackQuery("health:main", async (ctx) => {
     const chat = ctx.message?.chat;
     if (chat?.type !== "private" || !ctx.from || !isAdmin(ctx.from.id)) {
-      await safeAnswerCb(ctx, { text: "недоступно", show_alert: true });
+      await safeAnswerCb(ctx, { text: ADMIN.unavailable, show_alert: true });
       return;
     }
     await safeAnswerCb(ctx);
@@ -161,9 +162,7 @@ ${errorDetail(e)}`,
   bot.command("broadcast", async (ctx) => {
     if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
     container.broadcastService.startCompose(ctx.from!.id);
-    await ctx.reply(
-      "пришли ОДНО сообщение для рассылки — любой тип (текст/фото/видео/файл/голос/стикер). /cancel — отмена.",
-    );
+    await ctx.reply(ADMIN.broadcastCompose);
   });
 
   // сразу return, если админ не в режиме композиции рассылки — не мешаем остальным хендлерам.
@@ -173,7 +172,7 @@ ${errorDetail(e)}`,
 
     if (ctx.text === "/cancel") {
       container.broadcastService.cancelCompose(ctx.from.id);
-      await ctx.reply("рассылка отменена");
+      await ctx.reply(ADMIN.broadcastCancelled);
       return;
     }
 
@@ -181,7 +180,7 @@ ${errorDetail(e)}`,
     if (!captured) return next();
 
     const recipients = await container.knownChatsDb.count();
-    await ctx.reply(format`разослать это сообщение ${bold(String(recipients))} пользователям?`, {
+    await ctx.reply(ADMIN.broadcastConfirm(recipients), {
       reply_markup: broadcastConfirmMarkup(),
     } as never);
   });
@@ -189,7 +188,7 @@ ${errorDetail(e)}`,
   bot.callbackQuery("broadcast_cancel", async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     container.broadcastService.cancelCompose(ctx.from.id);
-    await ctx.answer("отменено");
+    await ctx.answer(ADMIN.cancelled);
   });
 
   bot.callbackQuery("broadcast_confirm", async (ctx) => {
@@ -197,10 +196,10 @@ ${errorDetail(e)}`,
     const adminId = ctx.from.id;
     const pending = container.broadcastService.beginSending(adminId);
     if (!pending) {
-      await ctx.answer({ text: "черновик рассылки устарел — начни заново через /broadcast", show_alert: true });
+      await ctx.answer({ text: ADMIN.draftStale, show_alert: true });
       return;
     }
-    await ctx.answer("рассылка начата...");
+    await ctx.answer(ADMIN.broadcastStarted);
 
     const chatId = ctx.message ? ctx.message.chat.id : adminId;
     const progress = ctx.message ? new ProgressMessage(bot, chatId, ctx.message.id) : null;
@@ -225,6 +224,6 @@ ${errorDetail(e)}`,
   bot.callbackQuery("broadcast_stop", async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     const stopped = container.broadcastService.requestStop(ctx.from.id);
-    await ctx.answer(stopped ? "останавливаю..." : "рассылка уже не идёт");
+    await ctx.answer(stopped ? ADMIN.stopping : ADMIN.notRunning);
   });
 }

@@ -11,10 +11,11 @@ import { type Bot, type InlineKeyboard, TelegramError, type TelegramInputRichMes
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import { nowPlayingMarkup, trackMarkup } from "./markup.ts";
+import { DEGRADED_NOTE } from "./texts.ts";
 
 const log = getLogger("bot.rich");
 
-export const DEGRADED_NOTE = "⚠️ превосходное недоступно — отдаю оптимальное";
+export { DEGRADED_NOTE } from "./texts.ts";
 
 /** лимит Telegram на title/performer аудио (символов). */
 const MAX_AUDIO_TEXT = 256;

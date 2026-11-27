@@ -18,6 +18,7 @@ process.env.BOT_API_BASE_URL = "http://127.0.0.1:8081/bot";
 import type { Bot } from "gramio";
 import type { Container } from "../src/bot/container.ts";
 import { isAdmin, registerAdmin } from "../src/bot/handlers/admin.ts";
+import { ADMIN } from "../src/bot/texts.ts";
 
 test("isAdmin — true только для точного ADMIN_USER_ID", () => {
   assert.equal(isAdmin(12345), true);
@@ -26,7 +27,7 @@ test("isAdmin — true только для точного ADMIN_USER_ID", () => 
   assert.equal(isAdmin(-12345), false);
 });
 
-test("D16: /health — сбой сборки статуса заменяет «⏳ собираю статус...» на ошибку", async () => {
+test("D16: /health — сбой сборки статуса заменяет «⏳ собираю статус…» на ошибку", async () => {
   const commands = new Map<string, (ctx: unknown) => Promise<void>>();
   const edits: Array<Record<string, unknown>> = [];
   const bot = {
@@ -49,5 +50,5 @@ test("D16: /health — сбой сборки статуса заменяет «�
   });
   assert.equal(edits.length, 1);
   assert.equal(edits[0]!.message_id, 99);
-  assert.match(String(edits[0]!.text), /не удалось собрать статус/);
+  assert.ok(String(edits[0]!.text).includes(ADMIN.collectFailed));
 });

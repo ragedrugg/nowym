@@ -1,8 +1,7 @@
 import { type DialogManager, StartMode } from "@gramio/dialogs";
 import type { Bot } from "gramio";
-import { blockquote, bold, code, type FormattableString, format, MediaUpload } from "gramio";
+import { format, MediaUpload } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
-import { botMention, waitSeconds } from "../../infra/text.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
 import type { YaTrack } from "../../yandex/types.ts";
@@ -11,9 +10,20 @@ import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
 import { startLogin } from "../dialogs.ts";
-import { LOGIN_FIRST, nowPlayingMarkup } from "../markup.ts";
+import { nowPlayingMarkup } from "../markup.ts";
 import { errText } from "../richMessage.ts";
 import { say } from "../safeApi.ts";
+import {
+  ALREADY_SENDING,
+  ERROR_RETRY,
+  FINDING_PLAYING,
+  FINDING_TRACK,
+  groupHint,
+  LOGIN_FIRST,
+  NOTHING_PLAYING,
+  privateHint,
+  tooOften,
+} from "../texts.ts";
 import { startAlbumUpload } from "./albums.ts";
 import { type CardPosition, sendTrackToChat } from "./inline.ts";
 import { startPlaylistUpload } from "./playlists.ts";
@@ -39,35 +49,6 @@ export interface TgUser {
   firstName?: string | null;
 }
 
-export function startText(loggedIn: boolean, botUsername: string | null = null): FormattableString {
-  const base = format`привет 👋\n\nэто бот для одного жёлтого музыкального сервиса. кидает треки прямо в телеграм — по названию, по ссылке или просто тот, который у тебя сейчас играет\n\n`;
-  const tail = loggedIn
-    ? `набери ${botMention(botUsername)} название в любом чате — или жми кнопки ниже`
-    : "чтобы всё заработало — войди, это минута";
-  return format`${base}${tail}`;
-}
-
-export function helpText(botUsername: string | null = null): FormattableString {
-  return format`🎵 ${bold("что я умею")}
-кидаю треки, альбомы и плейлисты прямо в телеграм — по названию, ссылке, цитате из песни или тот, что играет у тебя сейчас.
-
-⌨️ ${bold("inline — в любом чате")}
-набери ${code(botMention(botUsername))} и через пробел:
-${blockquote(format`${code("название")} — поиск треков и альбомов
-${code("ссылка")} — трек, альбом или плейлист по ссылке
-${code("(пусто)")} — что играет сейчас + карточка
-${code('"строка из песни"')} — поиск по цитате + текст песни
-${code("недавнее")} — история прослушиваний (листается)
-${code("ncore / speed / slow")} + название — эффект: nightcore / спидап / slowed+reverb`)}
-
-💬 ${bold("в личке")}
-${blockquote(format`ссылка на трек, альбом или плейлист — пришлю сюда (альбом и плейлист — выгрузкой)
-${code("что играет")} (кнопка в меню) — пришлю сам трек, который играет сейчас
-${code("/np")} — карточка того, что играет сейчас
-${code("/settings")} — качество, подписи, карточка
-${code("/login")} · ${code("/logout")} — вход и выход`)}`;
-}
-
 /** общий гейт для карточки и аудио: statusMsgId отличается у каждого вызывающего. */
 async function checkLimitAndToken(
   bot: Bot,
@@ -78,7 +59,7 @@ async function checkLimitAndToken(
 ): Promise<string | null> {
   const [allowed, retryAfter] = container.downloadLimiter.check(user.id);
   if (!allowed) {
-    await say(bot, chatId, statusMsgId, format`⏳ слишком часто, подожди ${waitSeconds(retryAfter)} сек`);
+    await say(bot, chatId, statusMsgId, format`${tooOften(retryAfter)}`);
     return null;
   }
   const token = await container.resolveToken(user.id);
@@ -113,7 +94,7 @@ async function withUserLock(
   fn: () => Promise<void>,
 ): Promise<void> {
   if (busyUsers.has(userId)) {
-    await say(bot, chatId, statusMsgId, format`⏳ уже отправляю...`);
+    await say(bot, chatId, statusMsgId, format`${ALREADY_SENDING}`);
     return;
   }
   busyUsers.add(userId);
@@ -151,7 +132,7 @@ async function renderNowPlayingLocked(
     const current = await currentTrackOf(container, user, token);
     const track = current?.track;
     if (!track) {
-      await say(bot, chatId, statusMsgId, format`🎵 сейчас ничего не играет`);
+      await say(bot, chatId, statusMsgId, format`${NOTHING_PLAYING}`);
       return;
     }
 
@@ -212,7 +193,7 @@ async function renderNowPlayingLocked(
     }
   } catch (e) {
     log.error(`[np] ошибка user=${user.id}: ${errText(e)}`);
-    await say(bot, chatId, statusMsgId, format`❌ не получилось, попробуй ещё раз`);
+    await say(bot, chatId, statusMsgId, format`${ERROR_RETRY}`);
   }
 }
 
@@ -244,13 +225,13 @@ async function sendCurrentTrackLocked(
     current = await currentTrackOf(container, user, token);
   } catch (e) {
     log.error(`[current] ошибка user=${user.id}: ${errText(e)}`);
-    await say(bot, chatId, statusMsgId, format`❌ не получилось, попробуй ещё раз`);
+    await say(bot, chatId, statusMsgId, format`${ERROR_RETRY}`);
     return;
   }
 
   const track = current?.track;
   if (!track) {
-    await say(bot, chatId, statusMsgId, format`🎵 сейчас ничего не играет`);
+    await say(bot, chatId, statusMsgId, format`${NOTHING_PLAYING}`);
     return;
   }
 
@@ -277,11 +258,6 @@ function ctxUser(ctx: { from?: TgUser | null }): TgUser {
   if (!ctx.from) throw new Error("ctx.from отсутствует");
   return ctx.from;
 }
-
-const groupHint = (botUsername: string | null): string =>
-  `в группах работаю через inline — набери ${botMention(botUsername)} название. настройки и вход — в личке`;
-const privateHint = (botUsername: string | null): string =>
-  `так не ищу 🙂 набери ${botMention(botUsername)} название — в любом чате. в личку можно кидать ссылки на трек, альбом или плейлист. остальное — /help`;
 
 const isGroupChat = (type: string | undefined): boolean => type === "group" || type === "supergroup";
 
@@ -337,7 +313,7 @@ export function registerCommon(bot: Bot, container: Container): void {
 
   bot.command("np", async (ctx) => {
     if (ctx.chat?.type !== "private") return;
-    const status = await ctx.reply(format`⏳ ищу что играет...`);
+    const status = await ctx.reply(format`${FINDING_PLAYING}`);
     await renderNowPlaying(bot, ctx.chat.id, ctxUser(ctx), container, status.id);
   });
 }
@@ -361,7 +337,7 @@ export function startTrackUploadReply(
   container: Container,
 ): Promise<void> {
   return withUserLock(bot, chatId, user.id, null, async () => {
-    const status = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу трек...` });
+    const status = await bot.api.sendMessage({ chat_id: chatId, text: format`${FINDING_TRACK}` });
     await sendTrackToChat({
       bot,
       chatId,

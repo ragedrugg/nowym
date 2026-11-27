@@ -14,10 +14,17 @@
 import { InlineKeyboard } from "gramio";
 import { trackUrl } from "../yandex/urls.ts";
 import { iconFor } from "./iconSet.ts";
-
-/** единые тексты «нет входа»: в сообщении и в алерте (короче). */
-export const LOGIN_FIRST = "сначала войди — /login или кнопка «войти» в /start";
-export const LOGIN_FIRST_ALERT = "сначала войди — /login";
+import {
+  ADMIN,
+  albumRetryButton,
+  BTN_CANCEL_UPLOAD,
+  BTN_DOWNLOADING,
+  BTN_LISTEN_DM,
+  BTN_LISTEN_PLAYER,
+  BTN_OPEN,
+  BTN_RETRY,
+  MENU_BTN,
+} from "./texts.ts";
 
 type BtnStyle = "danger" | "primary" | "success";
 interface BtnOpts {
@@ -75,7 +82,7 @@ function inlineUrl(
 
 export function loadingMarkup(trackId: string | number): InlineKeyboard {
   const kb = new InlineKeyboard();
-  inlineText(kb, "⌛️", "⧖", "загружается...", `load:${trackId}`);
+  inlineText(kb, "⌛️", "⧖", BTN_DOWNLOADING, `load:${trackId}`);
   return kb;
 }
 
@@ -88,7 +95,7 @@ export function progressMarkup(trackId: string | number, label: string): InlineK
 export function trackMarkup(trackId: string | number, withLike = false): InlineKeyboard {
   const kb = new InlineKeyboard();
   if (!withLike) {
-    inlineUrl(kb, "▶️", "▷", "открыть", trackUrl(trackId));
+    inlineUrl(kb, "▶️", "▷", BTN_OPEN, trackUrl(trackId));
     return kb;
   }
   // heart: премиум-иконка есть, но на инлайне рендерится только с Fragment-username
@@ -96,40 +103,40 @@ export function trackMarkup(trackId: string | number, withLike = false): InlineK
   kb.pattern([2]);
   const heartId = iconFor("❤️");
   kb.text("♥", `like:t:${trackId}`, heartId ? { icon_custom_emoji_id: heartId } : {});
-  inlineUrl(kb, "▶️", "▷", "открыть", trackUrl(trackId));
+  inlineUrl(kb, "▶️", "▷", BTN_OPEN, trackUrl(trackId));
   return kb;
 }
 
 export function retryMarkup(trackId: string | number): InlineKeyboard {
   const kb = new InlineKeyboard();
-  inlineText(kb, "🔄", "↻", "загрузить снова", `load:${trackId}`);
+  inlineText(kb, "🔄", "↻", BTN_RETRY, `load:${trackId}`);
   return kb;
 }
 
 export function cancelAlbumMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  dmText(kb, "❌", "✕", "отменить", "cancel_album", "danger");
+  dmText(kb, "❌", "✕", BTN_CANCEL_UPLOAD, "cancel_album", "danger");
   return kb;
 }
 
 export function albumRetryMarkup(messageId: number, label: string): InlineKeyboard {
   const kb = new InlineKeyboard();
-  dmText(kb, "🔄", "↻", `повторить ${label}`, `album_retry:${messageId}`);
+  dmText(kb, "🔄", "↻", albumRetryButton(label), `album_retry:${messageId}`);
   return kb;
 }
 
 /** /broadcast: «разослать это N пользователям?» */
 export function broadcastConfirmMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard().pattern([2]);
-  dmText(kb, "✅", "✓", "разослать", "broadcast_confirm", "success");
-  dmText(kb, "❌", "✕", "отмена", "broadcast_cancel", "danger");
+  dmText(kb, "✅", "✓", ADMIN.btnBroadcast, "broadcast_confirm", "success");
+  dmText(kb, "❌", "✕", ADMIN.btnCancel, "broadcast_cancel", "danger");
   return kb;
 }
 
 /** кнопка остановки уже идущей рассылки. */
 export function broadcastSendingMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  dmText(kb, "⛔", "■", "остановить рассылку", "broadcast_stop", "danger");
+  dmText(kb, "⛔", "■", ADMIN.btnStop, "broadcast_stop", "danger");
   return kb;
 }
 
@@ -140,23 +147,23 @@ export function nowPlayingMarkup(trackId: string | number, botUsername: string |
   const dmOk = Boolean(botUsername) && /^\d+$/.test(String(trackId));
   const kb = new InlineKeyboard().pattern([dmOk ? 2 : 1]);
   if (dmOk) {
-    inlineUrl(kb, "💬", "▷", "слушать в лс", `https://t.me/${botUsername}?start=track_${trackId}`);
+    inlineUrl(kb, "💬", "▷", BTN_LISTEN_DM, `https://t.me/${botUsername}?start=track_${trackId}`);
   }
-  inlineUrl(kb, "🔗", "↗", "слушать в плеере", trackUrl(trackId));
+  inlineUrl(kb, "🔗", "↗", BTN_LISTEN_PLAYER, trackUrl(trackId));
   return kb;
 }
 
 /** главная панель /health: вход в детальный статус Яндекс Музыки. */
 export function healthMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard();
-  dmText(kb, "🎵", "♪", "Яндекс Музыка", "health:ym", "primary");
+  dmText(kb, "🎵", "♪", ADMIN.ymTitle, "health:ym", "primary");
   return kb;
 }
 
 /** детальная панель Яндекс Музыки: обновить и назад. */
 export function yandexHealthMarkup(): InlineKeyboard {
   const kb = new InlineKeyboard().pattern([1, 1]);
-  dmText(kb, "🔄", "↻", "обновить", "health:ym", "primary");
-  dmText(kb, "⬅️", "←", "назад", "health:main");
+  dmText(kb, "🔄", "↻", ADMIN.btnRefresh, "health:ym", "primary");
+  dmText(kb, "⬅️", "←", MENU_BTN.back, "health:main");
   return kb;
 }

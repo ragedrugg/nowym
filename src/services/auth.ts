@@ -7,6 +7,7 @@
  * client_id/secret берём из settings (по умолчанию — публичный клиент Android-
  * приложения Я.Музыки). */
 import { DeviceAuthError, type DeviceCode, Client as LibClient } from "@dvxch/yandex-music";
+import { LOGIN_INTERNAL_FAILED } from "../bot/texts.ts";
 import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
@@ -110,7 +111,7 @@ export class AuthService {
     entry.state.done = this.pollLoop(entry, code, onSuccess, onFailure).catch(async (e) => {
       log.error(`pollLoop упал для ${userId}: ${e}`);
       try {
-        await onFailure(userId, "внутренняя ошибка, попробуй ещё раз");
+        await onFailure(userId, LOGIN_INTERNAL_FAILED);
       } catch {
         // ignore — мы и так уже в catch-ветке отказавшего pollLoop
       }

@@ -2,14 +2,31 @@ import type { Bot } from "gramio";
 import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
-import { pluralTracks, waitSeconds } from "../../infra/text.ts";
+import { pluralTracks } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
 import type { YandexClient } from "../../yandex/client.ts";
 import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
 import type { AlbumData } from "../../yandex/types.ts";
 import type { Container } from "../container.ts";
 import { cbData } from "../ctxutil.ts";
-import { LOGIN_FIRST } from "../markup.ts";
+import {
+  ALBUM_NOT_FOUND,
+  ALBUM_NOUN,
+  CB_CANCELLING,
+  CB_FAILED,
+  CB_NOT_YOUR_UPLOAD,
+  CB_NOTHING_TO_CANCEL,
+  CB_RETRYING,
+  CB_TOO_LATE,
+  CB_UPLOAD_BUSY,
+  ERROR_RETRY,
+  findingRelease,
+  LOGIN_FIRST,
+  NO_TRACKS,
+  tooOften,
+  UPLOAD_BUSY,
+  uploadingTracks,
+} from "../texts.ts";
 import { startTrackUploadReply } from "./common.ts";
 
 const log = getLogger("bot.albums");
@@ -36,7 +53,7 @@ export async function startUpload(
   if (!allowed) {
     await bot.api.sendMessage({
       chat_id: chatId,
-      text: format`⏳ слишком часто, подожди ${waitSeconds(retryAfter)} сек`,
+      text: tooOften(retryAfter),
     });
     return;
   }
@@ -51,14 +68,14 @@ export async function startUpload(
   if (!container.albumService.tryBegin(userId)) {
     await bot.api.sendMessage({
       chat_id: chatId,
-      text: "у тебя уже идёт выгрузка — дождись или жми «отменить»",
+      text: UPLOAD_BUSY,
     });
     return;
   }
   let handedOff = false;
   let progressMsg: ProgressMessage | null = null;
   try {
-    const progress = await bot.api.sendMessage({ chat_id: chatId, text: format`⏳ ищу ${noun}...` });
+    const progress = await bot.api.sendMessage({ chat_id: chatId, text: findingRelease(noun) });
     progressMsg = new ProgressMessage(bot, chatId, progress.message_id);
 
     const yandex = await container.getYandexService(token, userId);
@@ -71,7 +88,7 @@ export async function startUpload(
 
     const trackCount = album.tracks.length;
     if (trackCount === 0) {
-      await progressMsg.edit(format`❌ нет доступных треков`);
+      await progressMsg.edit(format`${NO_TRACKS}`);
       return;
     }
     const metaParts = [album.year, album.label, pluralTracks(trackCount)].filter(Boolean) as string[];
@@ -84,7 +101,7 @@ export async function startUpload(
     const caption = albumHeader(album.artist, album.title, metaLine, album.album_type);
 
     const coverBytes = await container.albumService.sendCover(chatId, album.cover_url, caption);
-    await progressMsg.edit(format`${caption}\n\nзагружаю ${pluralTracks(trackCount)}...`);
+    await progressMsg.edit(uploadingTracks(caption, pluralTracks(trackCount)));
 
     handedOff = true; // дальше слот ведёт sendAlbumTracks (его finally чистит active)
     await container.albumService.sendAlbum({
@@ -98,7 +115,7 @@ export async function startUpload(
   } catch (e) {
     log.error(`[${noun}] ошибка user=${userId}: ${e}`);
     // после передачи слота sendAlbum сам разбирается со своими ошибками
-    if (!handedOff && progressMsg) await progressMsg.edit(format`❌ ошибка, попробуй ещё раз`).catch(() => {});
+    if (!handedOff && progressMsg) await progressMsg.edit(format`${ERROR_RETRY}`).catch(() => {});
   } finally {
     if (!handedOff) container.albumService.release(userId);
   }
@@ -112,7 +129,7 @@ export async function startAlbumUpload(
   albumId: number,
   container: Container,
 ): Promise<void> {
-  await startUpload(bot, chatId, userId, container, "альбом", format`❌ альбом не найден или недоступен`, (yandex) =>
+  await startUpload(bot, chatId, userId, container, ALBUM_NOUN, format`${ALBUM_NOT_FOUND}`, (yandex) =>
     yandex.getAlbum(albumId),
   );
 }
@@ -139,13 +156,13 @@ export function registerAlbums(bot: Bot, container: Container): void {
 
   bot.callbackQuery("cancel_album", async (ctx) => {
     const cancelled = container.albumService.cancel(ctx.from.id);
-    await ctx.answer(cancelled ? "отмена..." : "нечего отменять");
+    await ctx.answer(cancelled ? CB_CANCELLING : CB_NOTHING_TO_CANCEL);
   });
 
   bot.callbackQuery(/^album_retry:/, async (ctx) => {
     const msgId = Number(cbData(ctx).split(":", 2)[1]);
     if (!Number.isFinite(msgId)) {
-      await ctx.answer({ text: "что-то пошло не так", show_alert: true });
+      await ctx.answer({ text: CB_FAILED, show_alert: true });
       return;
     }
 
@@ -153,11 +170,11 @@ export function registerAlbums(bot: Bot, container: Container): void {
     // тап мимо владельца) сжирал бы retry чужого альбома без права на него.
     const peeked = container.albumService.peekRetry(msgId);
     if (!peeked) {
-      await ctx.answer({ text: "слишком поздно — кинь ссылку ещё раз", show_alert: true });
+      await ctx.answer({ text: CB_TOO_LATE, show_alert: true });
       return;
     }
     if (peeked.userId !== ctx.from.id) {
-      await ctx.answer({ text: "это не твоя выгрузка", show_alert: true });
+      await ctx.answer({ text: CB_NOT_YOUR_UPLOAD, show_alert: true });
       return;
     }
 
@@ -165,14 +182,14 @@ export function registerAlbums(bot: Bot, container: Container): void {
     // popRetry впустую на очевидно занятый слот). Настоящая атомарная проверка —
     // внутри retryFailed (tryBegin синхронно, до наших await'ов ниже).
     if (container.albumService.isActive(peeked.userId)) {
-      await ctx.answer({ text: "у тебя уже идёт выгрузка", show_alert: true });
+      await ctx.answer({ text: CB_UPLOAD_BUSY, show_alert: true });
       return;
     }
 
     // все проверки прошли — теперь забираем буфер по-настоящему
     const buf = container.albumService.popRetry(msgId);
     if (!buf) {
-      await ctx.answer({ text: "слишком поздно — кинь ссылку ещё раз", show_alert: true });
+      await ctx.answer({ text: CB_TOO_LATE, show_alert: true });
       return;
     }
 
@@ -185,7 +202,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
       progressMsg,
       yandex: buf.yandex,
     });
-    await ctx.answer(started ? "повторяю..." : { text: "у тебя уже идёт выгрузка", show_alert: true });
+    await ctx.answer(started ? CB_RETRYING : { text: CB_UPLOAD_BUSY, show_alert: true });
   });
 
   log.debug("album-хендлеры зарегистрированы");

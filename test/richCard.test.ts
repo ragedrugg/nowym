@@ -16,6 +16,7 @@ import {
   resolveRichCard,
 } from "../src/bot/handlers/inlineCard.ts";
 import type { RichAudio } from "../src/bot/richMessage.ts";
+import { RICH_RESULT } from "../src/bot/texts.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };
@@ -157,7 +158,7 @@ test("buildRichNowPlayingResult — плейсхолдер-текст и reply_m
     input_message_content: { message_text: string };
     reply_markup?: unknown;
   };
-  assert.equal(r.input_message_content.message_text, "готовлю карточку и трек...");
+  assert.equal(r.input_message_content.message_text, RICH_RESULT.placeholder);
   assert.ok(r.reply_markup);
 });
 

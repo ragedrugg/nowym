@@ -74,8 +74,8 @@ test("radioOnClick: сохраняет, инвалидирует кэш юзер
 test("тексты: главная строка настроек показывает карточка+трек", () => {
   const on = settingsMainText({ ...base, rich_messages: true }).toString();
   const off = settingsMainText(base).toString();
-  assert.match(on, /карточка\+трек: вкл/);
-  assert.match(off, /карточка\+трек: выкл/);
+  assert.match(on, /карточка \+ трек: вкл/);
+  assert.match(off, /карточка \+ трек: выкл/);
 });
 
 type Btn = {
@@ -101,20 +101,20 @@ test("настройки: два раздела, «карточка+трек» �
   const dialog = buildMenuDialog({} as Bot, {} as Container);
   const top = await labelsOf(buttonsOf(dialog.getWindow("settings").keyboard), { s: base });
   assert.ok(top.some((t) => t.includes("трек")) && top.some((t) => t.includes("карточка")), top.join("|"));
-  assert.ok(!top.some((t) => t.includes("карточка+трек")), "в корне настроек пункта карточка+трек нет");
+  assert.ok(!top.some((t) => t.includes("карточка + трек")), "в корне настроек пункта карточка+трек нет");
   assert.ok(dialog.getWindow("s_track") && dialog.getWindow("s_card"));
   assert.throws(() => dialog.getWindow("s_rich"));
   const track = await labelsOf(buttonsOf(dialog.getWindow("s_track").keyboard), { s: base });
   assert.ok(["качество", "подпись и кнопки", "способ отправки"].every((l) => track.some((t) => t.includes(l))));
   const card = await labelsOf(buttonsOf(dialog.getWindow("s_card").keyboard), { s: base });
   assert.ok(
-    card.some((t) => t.includes("карточка+трек: выкл")),
+    card.some((t) => t.includes("карточка + трек: выкл")),
     card.join("|"),
   );
   const cardOn = await labelsOf(buttonsOf(dialog.getWindow("s_card").keyboard), {
     s: { ...base, rich_messages: true },
   });
-  assert.ok(cardOn.some((t) => t.includes("карточка+трек: вкл")));
+  assert.ok(cardOn.some((t) => t.includes("карточка + трек: вкл")));
 });
 
 test("тумблер карточка+трек: переключает значение, сбрасывает кэш, ре-рендер", async () => {

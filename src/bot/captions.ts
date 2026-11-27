@@ -1,6 +1,7 @@
 /** Подписи под аудио для inline-результатов. */
 import { blockquote, bold, type FormattableString, format, italic, link } from "gramio";
 import { trackUrl } from "../yandex/urls.ts";
+import { CAPTION_OPEN, CODEC_LABELS, degradedNote, kbps } from "./texts.ts";
 
 export function senderHandleOf(user: { username?: string | null; firstName?: string | null }): string {
   return user.username ? `@${user.username}` : user.firstName || "user";
@@ -12,16 +13,16 @@ const FLAC_CODECS = new Set(["flac", "flac-mp4"]);
 const AAC_CODECS = new Set(["aac", "he-aac", "aac-mp4", "he-aac-mp4"]);
 
 function codecLabel(codec: string): string {
-  if (FLAC_CODECS.has(codec)) return "превосходное";
-  if (AAC_CODECS.has(codec)) return "экономичное";
-  if (codec === "mp3") return "оптимальное";
+  if (FLAC_CODECS.has(codec)) return CODEC_LABELS.flac;
+  if (AAC_CODECS.has(codec)) return CODEC_LABELS.aac;
+  if (codec === "mp3") return CODEC_LABELS.mp3;
   return codec.toUpperCase();
 }
 
 function formatCodecBitrate(codec: string | null | undefined, bitrateKbps: number | null | undefined): string {
   if (!codec) return "";
   let label = codecLabel(codec);
-  if (bitrateKbps) label += ` ${bitrateKbps} кбит/с`;
+  if (bitrateKbps) label += ` ${kbps(bitrateKbps)}`;
   return label;
 }
 
@@ -34,10 +35,11 @@ export function buildTrackCaption(
 ): FormattableString {
   const quality = formatCodecBitrate(codec, bitrateKbps);
   const url = trackUrl(trackId);
-  // degraded — запрошено превосходное (FLAC), но недоступно и отдано lossy: пометка.
-  const note = degraded ? "⚠️ превосходное недоступно · " : "";
-  if (!quality) return degraded ? format`${note}${link("открыть", url)}` : format`${link("открыть", url)}`;
-  return format`${note}${quality} — ${link("открыть", url)}`;
+  // degraded — запрошено превосходное (FLAC), но недоступно и отдано lossy: пометка
+  // той же формулировкой, что в чате и rich, с фактическим качеством.
+  if (degraded) return format`${degradedNote(quality || undefined)}\n${link(CAPTION_OPEN, url)}`;
+  if (!quality) return format`${link(CAPTION_OPEN, url)}`;
+  return format`${quality} — ${link(CAPTION_OPEN, url)}`;
 }
 
 /** делит строку на две: первая → жирный, вторая → курсив. Разделитель остаётся

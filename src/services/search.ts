@@ -2,9 +2,24 @@
  *
  * Кэширует Track-объекты в LRU (повторный выбор не дёргает api заново) и готовые
  * наборы результатов в TTLCache. */
-import { bold, format, InlineQueryResult, InputMessageContent, italic } from "gramio";
+import { InlineQueryResult, InputMessageContent } from "gramio";
 import { buildTrackCaption } from "../bot/captions.ts";
 import { loadingMarkup, progressMarkup, trackMarkup } from "../bot/markup.ts";
+import {
+  ALBUM_TO_DM,
+  albumResultText,
+  albumResultTitle,
+  BTN_DOWNLOADING,
+  PLAYLIST_DESCRIPTION,
+  PLAYLIST_TO_DM,
+  playlistResultText,
+  playlistResultTitle,
+  searchTrackCount,
+  TEXT_MEDIA_DESCRIPTION,
+  textMediaBody,
+  textMediaTitle,
+  UNTITLED,
+} from "../bot/texts.ts";
 import { sleep } from "../infra/async.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
@@ -122,13 +137,13 @@ export class SearchService {
     const head = artist ? `${artist} — ${title}` : title;
     return InlineQueryResult.article(
       `tm:${trackId}`,
-      `⬇️ ${head}`,
-      InputMessageContent.text(format`гружу ${bold(head)}`, { link_preview_options: { is_disabled: true } }),
+      textMediaTitle(head),
+      InputMessageContent.text(textMediaBody(head), { link_preview_options: { is_disabled: true } }),
       {
-        description: "нажми — заменю текст на трек",
+        description: TEXT_MEDIA_DESCRIPTION,
         ...(meta.thumbUrl ? { thumbnail_url: meta.thumbUrl } : {}),
         // без reply_markup tg не отдаёт inline_message_id в chosen_inline_result
-        reply_markup: progressMarkup(trackId, "качаю..."),
+        reply_markup: progressMarkup(trackId, BTN_DOWNLOADING),
       },
     );
   }
@@ -209,7 +224,7 @@ export class SearchService {
     if (!this.botUsername) return null;
     const albumId = album.id;
     if (albumId === undefined || albumId === null) return null;
-    const title = album.title || "Без названия";
+    const title = album.title || UNTITLED;
     const artistNames = formatArtists(album.artists);
     const trackCount = album.trackCount || 0;
     const year = album.year || "";
@@ -217,20 +232,18 @@ export class SearchService {
 
     const suffixParts: string[] = [];
     if (year) suffixParts.push(String(year));
-    if (trackCount) suffixParts.push(`${trackCount} треков`);
+    if (trackCount) suffixParts.push(searchTrackCount(trackCount));
     const suffix = suffixParts.join(", ");
 
     const head = `${artistNames} — ${title}`;
     const albumLink = albumUrl(albumId);
-    const text = suffix
-      ? format`📀 ${bold(head)}\n${italic(suffix)}\n\n${albumLink}`
-      : format`📀 ${bold(head)}\n\n${albumLink}`;
+    const text = albumResultText(head, suffix, albumLink);
 
     const deepLink = `https://t.me/${this.botUsername}?start=album_${albumId}`;
-    return InlineQueryResult.article(`album:${albumId}`, `📀 ${title}`, InputMessageContent.text(text), {
+    return InlineQueryResult.article(`album:${albumId}`, albumResultTitle(title), InputMessageContent.text(text), {
       description: artistNames + (suffix ? `, ${suffix}` : ""),
       ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
-      reply_markup: { inline_keyboard: [[{ text: "выгрузить альбом мне в личку", url: deepLink }]] },
+      reply_markup: { inline_keyboard: [[{ text: ALBUM_TO_DM, url: deepLink }]] },
     });
   }
 
@@ -246,21 +259,24 @@ export class SearchService {
     // ponytail: если точечные логины окажутся частыми — кодировать owner в payload.
     if (!/^[\w-]+$/.test(owner)) return null;
 
-    const title = pl.title || "Без названия";
-    const suffix = pl.trackCount ? `${pl.trackCount} треков` : "";
+    const title = pl.title || UNTITLED;
+    const suffix = pl.trackCount ? searchTrackCount(pl.trackCount) : "";
     const link = playlistUrl(owner, kind);
-    const text = suffix
-      ? format`🎵 ${bold(title)}\n${italic(suffix)}\n\n${link}`
-      : format`🎵 ${bold(title)}\n\n${link}`;
+    const text = playlistResultText(title, suffix, link);
     const thumbUrl = normalizeCoverUrl(pl.coverUri, "200x200");
 
     // owner может содержать '_', поэтому kind якорится хвостовым _\d+$ (см. START_PLAYLIST_RE)
     const deepLink = `https://t.me/${this.botUsername}?start=playlist_${owner}_${kind}`;
-    return InlineQueryResult.article(`playlist:${owner}:${kind}`, `🎵 ${title}`, InputMessageContent.text(text), {
-      description: suffix || "плейлист",
-      ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
-      reply_markup: { inline_keyboard: [[{ text: "выгрузить плейлист мне в личку", url: deepLink }]] },
-    });
+    return InlineQueryResult.article(
+      `playlist:${owner}:${kind}`,
+      playlistResultTitle(title),
+      InputMessageContent.text(text),
+      {
+        description: suffix || PLAYLIST_DESCRIPTION,
+        ...(thumbUrl ? { thumbnail_url: thumbUrl } : {}),
+        reply_markup: { inline_keyboard: [[{ text: PLAYLIST_TO_DM, url: deepLink }]] },
+      },
+    );
   }
 
   async searchAndCreateResults(

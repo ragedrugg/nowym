@@ -3,6 +3,7 @@ import { format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { PLAYLIST_URL_RE } from "../../infra/parsers.ts";
 import type { Container } from "../container.ts";
+import { PLAYLIST_NOT_FOUND, PLAYLIST_NOUN } from "../texts.ts";
 import { startUpload } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
@@ -16,14 +17,8 @@ export async function startPlaylistUpload(
   kind: number,
   container: Container,
 ): Promise<void> {
-  await startUpload(
-    bot,
-    chatId,
-    userId,
-    container,
-    "плейлист",
-    format`❌ плейлист не найден, недоступен или пуст`,
-    (yandex) => yandex.getPlaylist(owner, kind),
+  await startUpload(bot, chatId, userId, container, PLAYLIST_NOUN, format`${PLAYLIST_NOT_FOUND}`, (yandex) =>
+    yandex.getPlaylist(owner, kind),
   );
 }
 

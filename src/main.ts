@@ -15,6 +15,7 @@ import { registerHandlers } from "./bot/handlers/index.ts";
 import { resolveIconSet } from "./bot/iconSet.ts";
 import { PollingWatchdog } from "./bot/pollingWatchdog.ts";
 import { safeAnswerCb } from "./bot/safeApi.ts";
+import { STALE_MENU } from "./bot/texts.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
 import { schedulePeriodic, sleep } from "./infra/async.ts";
 import { closeServer, createHttpApp } from "./infra/httpServer.ts";
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
     storage: redisStorage(s.REDIS_HOST ? { ...dialogStorage, host: s.REDIS_HOST, port: s.REDIS_PORT } : dialogStorage),
     events: {
       // DialogEventCtx = CallbackCtx | MessageCtx: answer только на callback-ветке → каст
-      onStale: (ctx) => safeAnswerCb(ctx as never, "это меню устарело — открой заново через /start"),
+      onStale: (ctx) => safeAnswerCb(ctx as never, STALE_MENU),
     },
   });
   bot.extend(dialogsPlugin);

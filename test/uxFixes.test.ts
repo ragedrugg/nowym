@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Bot } from "gramio";
-import { helpText, registerPrivateFallback, startText } from "../src/bot/handlers/common.ts";
+import { registerPrivateFallback } from "../src/bot/handlers/common.ts";
 import { nowPlayingMarkup } from "../src/bot/markup.ts";
+import { helpText, startText } from "../src/bot/texts.ts";
 
 const urlsOf = (kb: ReturnType<typeof nowPlayingMarkup>): string[] =>
   kb

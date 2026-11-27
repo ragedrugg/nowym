@@ -20,111 +20,63 @@ import {
   Window,
 } from "@gramio/dialogs";
 import type { Bot } from "gramio";
-import { bold, code, type FormattableString, format, italic } from "gramio";
+import { format } from "gramio";
 import { getLogger } from "../infra/logging.ts";
-import { botMention } from "../infra/text.ts";
 import type { DeviceAuthState } from "../services/auth.ts";
 import { CARD_ASPECTS, CARD_TOGGLES, type CardToggleName, type UserSettings } from "../storage/settings.ts";
 import type { Container } from "./container.ts";
-import { helpText, renderNowPlaying, sendCurrentTrack, startText, type TgUser } from "./handlers/common.ts";
+import { renderNowPlaying, sendCurrentTrack, type TgUser } from "./handlers/common.ts";
 import { iconFor } from "./iconSet.ts";
 import { safeAnswerCb } from "./safeApi.ts";
+import {
+  ALREADY_IN,
+  cardAspectLabel,
+  cardAspectPickText,
+  cardFieldLabel,
+  cardFieldsText,
+  cardLayoutLabel,
+  cardLayoutPickText,
+  cardProgressLabel,
+  cardProgressText,
+  cardRootText,
+  deviceFlowText,
+  fieldToggleText,
+  fieldToggleToast,
+  helpText,
+  LOGIN_CANCELLED,
+  LOGIN_DONE_FALLBACK,
+  LOGIN_EMOJI,
+  LOGIN_PREPARING,
+  LOGIN_START_FAILED,
+  LOGIN_TIMEOUT_REASON,
+  LOGOUT_DONE,
+  LOGOUT_DONE_FALLBACK,
+  type LoginInfo,
+  layoutPickText,
+  loginFailed,
+  loginOk,
+  MENU_BTN,
+  NOT_LOGGED_IN,
+  qualityPickText,
+  richLabel,
+  richToggleText,
+  savedToast,
+  sendModePickText,
+  settingsMainText,
+  startText,
+  TOAST_DRAWING_CARD,
+  TOAST_FINDING_PLAYING,
+  trackLayoutLabel,
+  trackQualityLabel,
+  trackRootText,
+  trackSendModeLabel,
+} from "./texts.ts";
 
 const log = getLogger("bot.dialogs");
 
-const TRACK_LAYOUT_LABELS: Record<string, string> = { button: "кнопка", text: "текст", both: "всё", none: "ничего" };
-const TRACK_SEND_MODE_LABELS: Record<string, string> = { stub: "пустышка", text_media: "текст → медиа" };
-const TRACK_QUALITY_LABELS: Record<string, string> = {
-  best: "оптимальное",
-  economy: "экономичное",
-  lossless: "превосходное",
-};
-const CARD_PROGRESS_LABELS: Record<string, string> = { wavy: "волна", bar: "полоска" };
-const CARD_FIELD_LABELS: Record<string, string> = {
-  album: "альбом",
-  type: "тип релиза",
-  year: "год",
-  label: "лейбл",
-  track_no: "номер трека",
-  avatar: "аватарка",
-};
-const CARD_ASPECT_LABELS: Record<string, string> = { "16:9": "16:9", "9:16": "9:16" };
-const trackLayoutLabel = (v: string): string => TRACK_LAYOUT_LABELS[v] ?? TRACK_LAYOUT_LABELS.button!;
-const trackSendModeLabel = (v: string): string => TRACK_SEND_MODE_LABELS[v] ?? TRACK_SEND_MODE_LABELS.stub!;
-const trackQualityLabel = (v: string): string => TRACK_QUALITY_LABELS[v] ?? TRACK_QUALITY_LABELS.best!;
-const cardLayoutLabel = trackLayoutLabel;
-const cardProgressLabel = (v: string): string => CARD_PROGRESS_LABELS[v] ?? CARD_PROGRESS_LABELS.wavy!;
-const cardFieldLabel = (v: string): string => CARD_FIELD_LABELS[v] ?? v;
-const cardAspectLabel = (v: string): string => CARD_ASPECT_LABELS[v] ?? v;
-
-const toggleSummary = (t: Record<string, boolean>): string => {
-  const on = CARD_TOGGLES.filter((n) => t[n]).map(cardFieldLabel);
-  return on.length > 0 ? on.join(", ") : "ничего не выбрано";
-};
-const richLabel = (v: string): string => (v === "on" ? "вкл" : "выкл");
 const richCurrent = (s: UserSettings): string => (s.rich_messages ? "on" : "off");
 const richSave = async (c: Container, userId: number, v: string): Promise<string> =>
   (await c.settingsDb.setRichMessages(userId, v === "on")) ? "on" : "off";
-const settingsMainText = (s: UserSettings): FormattableString => format`${bold("⚙️ настройки")}
-
-${bold("🎧 трек")}
-качество: ${bold(trackQualityLabel(s.track_quality))}
-подпись и кнопки: ${bold(trackLayoutLabel(s.track_layout))}
-способ отправки: ${bold(trackSendModeLabel(s.track_send_mode))}
-
-${bold("🖼 карточка")}
-прогресс: ${bold(cardProgressLabel(s.card_progress))}
-соотношение: ${bold(cardAspectLabel(s.card_aspect))}
-подпись и кнопки: ${bold(cardLayoutLabel(s.card_layout))}
-поля: ${italic(toggleSummary(s.card_toggles))}
-карточка+трек: ${bold(richLabel(richCurrent(s)))}`;
-const trackRootText = (s: UserSettings): FormattableString => format`${bold("🎧 трек")}
-
-качество: ${bold(trackQualityLabel(s.track_quality))}
-подпись и кнопки: ${bold(trackLayoutLabel(s.track_layout))}
-способ отправки: ${bold(trackSendModeLabel(s.track_send_mode))}`;
-const layoutPickText = (): FormattableString => format`${bold("подпись и кнопки трека")}
-
-${bold("кнопка")} — под аудио кнопка «открыть»
-${bold("текст")} — подпись со ссылкой «открыть»
-${bold("всё")} — и подпись, и кнопка
-${bold("ничего")} — только аудиофайл`;
-const sendModePickText = (): FormattableString => format`${bold("способ отправки (в inline)")}
-
-${bold("пустышка")} — сразу аудиофайл, который подменяется на трек
-${bold("текст → медиа")} — сначала «гружу артист — название», потом это сообщение становится треком`;
-const qualityPickText = (): FormattableString => format`${bold("качество звука")}
-
-${bold("оптимальное")} — mp3 до 320 кбит/с
-${bold("экономичное")} — до 192 кбит/с, легче и быстрее
-${bold("превосходное")} — flac без потерь, файлы тяжёлые`;
-const cardRootText = (s: UserSettings): FormattableString => format`${bold("🖼 карточка")}
-
-поля: ${italic(toggleSummary(s.card_toggles))}
-прогресс: ${bold(cardProgressLabel(s.card_progress))}
-соотношение: ${bold(cardAspectLabel(s.card_aspect))}
-подпись и кнопки: ${bold(cardLayoutLabel(s.card_layout))}
-
-${bold("карточка+трек")}: ${bold(richLabel(richCurrent(s)))}
-${italic("карточка и трек приходят одним сообщением; если не выйдет — пришлю двумя")}`;
-
-const cardAspectPickText = (): FormattableString => format`${bold("соотношение сторон")}
-
-${bold("16:9")} — широкоэкранный (по умолчанию)
-${bold("9:16")} — вертикальный`;
-
-const cardLayoutPickText = (): FormattableString => format`${bold("подпись и кнопки карточки")}
-
-${bold("кнопка")} — под фото кнопки «слушать в лс» / «в плеере»
-${bold("текст")} — подпись со ссылкой «в плеере»
-${bold("всё")} — и подпись, и кнопки
-${bold("ничего")} — только фото`;
-const cardFieldsText = (t: Record<string, boolean>): FormattableString =>
-  format`${bold("поля карточки")}\n\n${italic(toggleSummary(t))}`;
-const cardProgressText = (): FormattableString => format`${bold("прогресс трека")}
-
-${bold("волна")} — волнистый
-${bold("полоска")} — прямая`;
 
 /** onClick stateless Select: сохранить в БД, сбросить кэш настроек юзера, ре-рендер. */
 const radioOnClick =
@@ -132,7 +84,7 @@ const radioOnClick =
   async (ctx: ClickCtx, id: string): Promise<void> => {
     const applied = await save(ctx.from.id, id);
     container.invalidateUserSettings(ctx.from.id);
-    await safeAnswerCb(ctx, `ок: ${label(applied)}`);
+    await safeAnswerCb(ctx, savedToast(label(applied)));
     await ctx.show();
   };
 
@@ -143,7 +95,7 @@ const richToggleOnClick =
     const s = await container.getUserSettings(ctx.from.id);
     const applied = await richSave(container, ctx.from.id, richCurrent(s) === "on" ? "off" : "on");
     container.invalidateUserSettings(ctx.from.id);
-    await safeAnswerCb(ctx, `карточка+трек: ${richLabel(applied)}`);
+    await safeAnswerCb(ctx, richToggleText(richLabel(applied)));
     await ctx.show();
   };
 
@@ -184,7 +136,6 @@ const uidOf = (ctx: { from?: { id: number }; senderId?: number }): number => ctx
 
 type MenuData = { loggedIn: boolean };
 type SettingsData = { s: UserSettings; userId: number };
-type LoginInfo = { userCode: string; verificationUrl: string; mins: number };
 type LoginData = {
   login?: LoginInfo;
   loginMsg?: string;
@@ -193,25 +144,11 @@ type LoginData = {
   alreadyIn?: boolean;
 };
 
-const ALREADY_IN = "✅ ты уже вошёл\n\nсменить аккаунт — кнопка ниже или /logout";
-const loginOk = (botUsername: string | null): string =>
-  `✅ готово, ты в аккаунте\n\nтеперь пиши ${botMention(botUsername)} название в любом чате или жми кнопки ниже`;
-
 const toLoginInfo = (st: DeviceAuthState): LoginInfo => ({
   userCode: st.userCode,
   verificationUrl: st.verificationUrl,
   mins: Math.floor(st.expiresIn / 60),
 });
-
-const deviceFlowText = (l: LoginInfo): FormattableString => format`🔐 ${bold("вход в аккаунт")}
-
-1. жми «продолжить»
-2. введи код: ${code(l.userCode)}
-3. подтверди вход
-
-код живёт ${l.mins} мин
-
-${italic("пароль остаётся у сервиса — ко мне приходит только токен на музыкальный api. в базе он лежит зашифрованным")}`;
 
 /** Device-flow: проверки → старт → окно `login`. Async-колбэки успеха/провала
  * правят сообщение диалога ИЗВНЕ хендлера через background(bot, stackKey) —
@@ -249,7 +186,7 @@ export async function startLogin(dialog: DialogManager, bot: Bot, container: Con
   const state = await container.authService.startDeviceAuth(userId, onSuccess, onFailure);
   if (!state) {
     await dialog.switchTo("login_fail", {
-      data: { failReason: "не удалось запустить вход — попробуй позже" },
+      data: { failReason: LOGIN_START_FAILED },
       mode: EDIT_CURRENT,
     });
     return;
@@ -266,7 +203,7 @@ export async function startLogout(dialog: DialogManager, container: Container, u
   container.albumService.forgetUser(userId);
   await dialog.switchTo("logout_done", {
     data: {
-      logoutMsg: deleted ? "вышел из аккаунта ✅\nкогда понадобится — жми кнопку" : "ты пока не входил в аккаунт",
+      logoutMsg: deleted ? LOGOUT_DONE : NOT_LOGGED_IN,
     },
     mode: EDIT_CURRENT,
   });
@@ -300,8 +237,8 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       await safeAnswerCb(ctx, label);
       await action(bot, chatId, toTgUser(ctx.from), container, null);
     };
-  const onCard: OnClick = dmAction("⏳ рисую карточку...", renderNowPlaying);
-  const onCurrent: OnClick = dmAction("⏳ ищу что играет...", sendCurrentTrack);
+  const onCard: OnClick = dmAction(TOAST_DRAWING_CARD, renderNowPlaying);
+  const onCurrent: OnClick = dmAction(TOAST_FINDING_PLAYING, sendCurrentTrack);
   const onLogin: OnClick = async (ctx) => {
     await safeAnswerCb(ctx);
     await startLogin(ctx.dialog, bot, container, ctx.from.id);
@@ -322,7 +259,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   };
   const onCancelLogin: OnClick = async (ctx) => {
     container.authService.cancelAuth(ctx.from.id);
-    await safeAnswerCb(ctx, "вход отменён");
+    await safeAnswerCb(ctx, LOGIN_CANCELLED);
     await ctx.dialog.switchTo("main");
   };
 
@@ -352,18 +289,18 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
       id: "card_fields",
       items: () => [...CARD_TOGGLES],
       itemId: (v) => v,
-      text: (st) => `${cardFieldLabel(st.item)} — ${cur(st).card_toggles[st.item as CardToggleName] ? "вкл" : "выкл"}`,
+      text: (st) => fieldToggleText(cardFieldLabel(st.item), Boolean(cur(st).card_toggles[st.item as CardToggleName])),
       onClick: async (ctx: ClickCtx, id) => {
         const s = await container.getUserSettings(ctx.from.id);
         const next = !s.card_toggles[id as CardToggleName];
         await container.settingsDb.setCardToggle(ctx.from.id, id, next);
         container.invalidateUserSettings(ctx.from.id);
-        await safeAnswerCb(ctx, `${cardFieldLabel(id)}: ${next ? "вкл" : "выкл"}`);
+        await safeAnswerCb(ctx, fieldToggleToast(cardFieldLabel(id), next));
         await ctx.show();
       },
     });
 
-  const back = (state: string): Keyboard => navBtn("⬅️", "←", "назад", state);
+  const back = (state: string): Keyboard => navBtn("⬅️", "←", MENU_BTN.back, state);
 
   // loggedIn-кнопки шириной 2, loggedOut — шириной 1 (везде одна и та же раскладка).
   const authGated = (loggedInBtns: Keyboard[], loggedOutBtns: Keyboard[]): Keyboard =>
@@ -377,18 +314,24 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     keyboard: Group([
       Group(
         [
-          actBtn("🎶", "♪", "что играет", "current", onCurrent),
-          actBtn("🖼", "◫", "карточка", "card", onCard),
-          navBtn("⚙️", "⚙", "настройки", "settings"),
-          navBtn("❓", "?", "что умею", "help"),
+          actBtn("🎶", "♪", MENU_BTN.current, "current", onCurrent),
+          actBtn("🖼", "◫", MENU_BTN.card, "card", onCard),
+          navBtn("⚙️", "⚙", MENU_BTN.settings, "settings"),
+          navBtn("❓", "?", MENU_BTN.help, "help"),
         ],
         { width: 2, when: loggedIn },
       ),
-      Group([actBtn("🚪", "⏏", "выйти", "logout", onLogout, "danger")], { width: 1, when: loggedIn }),
-      Group([actBtn("🔓", "⏻", "войти", "login", onLogin, "success"), navBtn("❓", "?", "что умею", "help")], {
-        width: 1,
-        when: loggedOut,
-      }),
+      Group([actBtn("🚪", "⏏", MENU_BTN.logout, "logout", onLogout, "danger")], { width: 1, when: loggedIn }),
+      Group(
+        [
+          actBtn(LOGIN_EMOJI, "⏻", MENU_BTN.login, "login", onLogin, "success"),
+          navBtn("❓", "?", MENU_BTN.help, "help"),
+        ],
+        {
+          width: 1,
+          when: loggedOut,
+        },
+      ),
     ]),
   });
 
@@ -399,11 +342,14 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     disableWebPreview: true,
     keyboard: authGated(
       [
-        actBtn("🎶", "♪", "что играет", "current", onCurrent),
-        actBtn("🖼", "◫", "карточка", "card", onCard),
-        navBtn("🏠", "⌂", "в меню", "main", "primary"),
+        actBtn("🎶", "♪", MENU_BTN.current, "current", onCurrent),
+        actBtn("🖼", "◫", MENU_BTN.card, "card", onCard),
+        navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
       ],
-      [actBtn("🔓", "⏻", "войти", "login", onLogin, "success"), navBtn("🏠", "⌂", "в меню", "main", "primary")],
+      [
+        actBtn(LOGIN_EMOJI, "⏻", MENU_BTN.login, "login", onLogin, "success"),
+        navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
+      ],
     ),
   });
 
@@ -417,8 +363,8 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     getter: settingsGetter,
     text: (d) => settingsMainText(d.s),
     keyboard: Group([
-      Group([navBtn("🎧", "♪", "трек", "s_track"), navBtn("🖼", "◫", "карточка", "s_card")], { width: 2 }),
-      navBtn("🏠", "⌂", "в меню", "main", "primary"),
+      Group([navBtn("🎧", "♪", MENU_BTN.track, "s_track"), navBtn("🖼", "◫", MENU_BTN.card, "s_card")], { width: 2 }),
+      navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
     ]),
   });
 
@@ -428,9 +374,9 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     text: (d) => trackRootText(d.s),
     keyboard: Group(
       [
-        navBtn("🎛", "☰", "качество", "s_quality"),
-        navBtn("🗂", "✉", "подпись и кнопки", "s_layout"),
-        navBtn("📤", "↥", "способ отправки", "s_sendmode"),
+        navBtn("🎛", "☰", MENU_BTN.quality, "s_quality"),
+        navBtn("🗂", "✉", MENU_BTN.layout, "s_layout"),
+        navBtn("📤", "↥", MENU_BTN.sendMode, "s_sendmode"),
         back("settings"),
       ],
       { width: 1 },
@@ -500,18 +446,21 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     getter: settingsGetter,
     text: (d) => cardRootText(d.s),
     keyboard: Group([
-      Group([navBtn("📝", "▤", "поля", "s_card_fields"), navBtn("📊", "∿", "прогресс", "s_card_progress")], {
-        width: 2,
-      }),
       Group(
-        [navBtn("📐", "⬚", "соотношение", "s_card_aspect"), navBtn("🧩", "▦", "подпись и кнопки", "s_card_layout")],
+        [navBtn("📝", "▤", MENU_BTN.fields, "s_card_fields"), navBtn("📊", "∿", MENU_BTN.progress, "s_card_progress")],
+        {
+          width: 2,
+        },
+      ),
+      Group(
+        [navBtn("📐", "⬚", MENU_BTN.aspect, "s_card_aspect"), navBtn("🧩", "▦", MENU_BTN.layout, "s_card_layout")],
         {
           width: 2,
         },
       ),
       Button({
         text: (d) => {
-          const label = `карточка+трек: ${richLabel(richCurrent(cur({ data: d })))}`;
+          const label = richToggleText(richLabel(richCurrent(cur({ data: d }))));
           return richIcon ? label : `◧ ${label}`;
         },
         ...(richIcon ? { icon: richIcon } : {}),
@@ -592,15 +541,15 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     state: "login",
     text: (d) => {
       const l = ld(d).login;
-      return l ? deviceFlowText(l) : format`⏳ готовлю вход...`;
+      return l ? deviceFlowText(l) : format`${LOGIN_PREPARING}`;
     },
     keyboard: Group(
       [
         Url({
-          ...chrome("➡️", "▸", "продолжить", "success"),
+          ...chrome("➡️", "▸", MENU_BTN.continueLogin, "success"),
           url: (rc) => ld(rc.data).login?.verificationUrl ?? "https://music.yandex",
         }),
-        actBtn("❌", "✕", "отмена", "cancel_login", onCancelLogin, "danger"),
+        actBtn("❌", "✕", MENU_BTN.cancel, "cancel_login", onCancelLogin, "danger"),
       ],
       { width: 1 },
     ),
@@ -610,21 +559,27 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   const notAlreadyIn = (rc: { data: unknown }): boolean => !alreadyIn(rc);
   const loginDone = new Window({
     state: "login_done",
-    text: (d) => format`${ld(d).loginMsg ?? "✅ готово"}`,
+    text: (d) => format`${ld(d).loginMsg ?? LOGIN_DONE_FALLBACK}`,
     keyboard: Group([
       Group(
         [
-          actBtn("🔄", "↻", "сменить аккаунт", "switch_account", onSwitchAccount),
-          navBtn("🏠", "⌂", "в меню", "main", "primary"),
+          actBtn("🔄", "↻", MENU_BTN.switchAccount, "switch_account", onSwitchAccount),
+          navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
         ],
         { width: 1, when: alreadyIn },
       ),
       Group(
         [
-          Group([actBtn("🎶", "♪", "что играет", "current", onCurrent), actBtn("🖼", "◫", "карточка", "card", onCard)], {
-            width: 2,
-          }),
-          navBtn("🏠", "⌂", "в меню", "main", "primary"),
+          Group(
+            [
+              actBtn("🎶", "♪", MENU_BTN.current, "current", onCurrent),
+              actBtn("🖼", "◫", MENU_BTN.card, "card", onCard),
+            ],
+            {
+              width: 2,
+            },
+          ),
+          navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
         ],
         { when: notAlreadyIn },
       ),
@@ -635,13 +590,13 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     state: "login_fail",
     text: (d) => {
       const r = ld(d).failReason;
-      const why = r === "timeout" ? "время ожидания вышло" : (r ?? "");
-      return format`❌ не получилось войти — попробуй ещё раз${why ? format`\n\n${italic(why)}` : ""}`;
+      const why = r === "timeout" ? LOGIN_TIMEOUT_REASON : (r ?? "");
+      return loginFailed(why);
     },
     keyboard: Group(
       [
-        actBtn("🔓", "⏻", "попробовать снова", "login", onLogin, "success"),
-        navBtn("🏠", "⌂", "в меню", "main", "primary"),
+        actBtn(LOGIN_EMOJI, "⏻", MENU_BTN.retryLogin, "login", onLogin, "success"),
+        navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
       ],
       { width: 1 },
     ),
@@ -649,9 +604,12 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
 
   const logoutDone = new Window({
     state: "logout_done",
-    text: (d) => format`${ld(d).logoutMsg ?? "вышел из аккаунта ✅"}`,
+    text: (d) => format`${ld(d).logoutMsg ?? LOGOUT_DONE_FALLBACK}`,
     keyboard: Group(
-      [actBtn("🔓", "⏻", "войти", "login", onLogin, "success"), navBtn("🏠", "⌂", "в меню", "main", "primary")],
+      [
+        actBtn(LOGIN_EMOJI, "⏻", MENU_BTN.login, "login", onLogin, "success"),
+        navBtn("🏠", "⌂", MENU_BTN.home, "main", "primary"),
+      ],
       { width: 1 },
     ),
   });
