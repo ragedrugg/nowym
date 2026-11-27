@@ -17,7 +17,7 @@
     "lint:fix": "biome check --write ."
   },
   "dependencies": {
-    "@dvxch/yandex-music": "^0.4.0",
+    "@dvxch/yandex-music": "^0.4.1",
     "@gramio/dialogs": "^0.3.1",
     "@gramio/storage-redis": "^1.0.5",
     "@napi-rs/canvas": "~1.0.13",

@@ -274,7 +274,7 @@ test("health: производный клиент — retries 0, аккаунт 
   shared.accountUid = 42;
   const h = derive(shared);
   assert.notEqual(h, shared);
-  assert.equal(h.request.retries, 0);
+  assert.equal((h.request as unknown as { callDefaults: { retries?: number } }).callDefaults.retries, 0);
   assert.equal(h.accountUid, 42);
   assert.equal(shared.request.retries, 2);
   assert.equal(derive(shared), h);

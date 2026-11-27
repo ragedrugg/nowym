@@ -171,3 +171,20 @@ test("D19: 401 → refresh → повтор не тратит попытку (р
   assert.equal(refreshes, 1);
   assert.equal(calls, 2);
 });
+
+test("403 (ForbiddenError ⊂ UnauthorizedError) не запускает refresh токена", async () => {
+  const { ForbiddenError } = await import("@dvxch/yandex-music");
+  const client = new YandexClient("t", null, {}, async () => assert.fail("не должен спать"));
+  let refreshes = 0;
+  (client as unknown as { tryRefreshToken: () => Promise<boolean> }).tryRefreshToken = async () => {
+    refreshes += 1;
+    return true;
+  };
+  (client as unknown as { lib: unknown }).lib = {
+    tracks: async () => {
+      throw new ForbiddenError("geo");
+    },
+  };
+  assert.equal(await client.getTrackById(42), null);
+  assert.equal(refreshes, 0);
+});

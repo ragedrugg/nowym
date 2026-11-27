@@ -5,6 +5,7 @@ import {
   Client as LibClient,
   type ClientOptions as LibClientOptions,
   type DownloadInfo as LibDownloadInfo,
+  ForbiddenError as LibForbiddenError,
   type LosslessDownloadInfo as LibLosslessDownloadInfo,
   NetworkError as LibNetworkError,
   NotFoundError as LibNotFoundError,
@@ -147,16 +148,13 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
     return this.lib;
   }
 
-  /** Health-пробы идут через отдельный клиент с retries: 0 — после таймаута проверки не
-   * должно оставаться висящих повторов. Общий транспорт не трогаем: временный
-   * retries = 0 на нём отнимал ретраи у параллельных пользовательских запросов.
-   * Аккаунт копируем из уже инициализированного lib — без второго init. */
+  /** Health-пробы идут через view lib.withOptions({retries: 0}) — после таймаута проверки не
+   * должно оставаться висящих повторов, а общий транспорт не меняется: временный
+   * retries = 0 на нём отнимал ретраи у параллельных пользовательских запросов. */
   private healthLibFor(lib: LibClient): LibClient {
     if (this.health?.source !== lib) {
-      const h = new LibClient({ token: this.token, timeout: LIB_TIMEOUT_MS, ...this.libOptions, retries: 0 });
-      h.me = lib.me;
-      h.accountUid = lib.accountUid;
-      this.health = { source: lib, lib: h };
+      // view с общим токеном/состоянием/аккаунтом, но retries: 0 (lib 0.4.1 withOptions)
+      this.health = { source: lib, lib: lib.withOptions({ retries: 0 }) };
     }
     return this.health.lib;
   }
@@ -202,7 +200,9 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
         // substring-мэтчу текста ошибки: "401"/"429" может встретиться в
         // сообщении по совпадению (например Invalid track id: "42912345"),
         // и тогда невалидный трек ретраился бы как будто он рейт-лимит/401.
-        const isUnauthorized = e instanceof LibUnauthorizedError;
+        // ForbiddenError (403) — подкласс UnauthorizedError в 0.4.1, но токен тут
+        // ни при чём (регион/права): refresh на нём не делаем.
+        const isUnauthorized = e instanceof LibUnauthorizedError && !(e instanceof LibForbiddenError);
 
         if (isUnauthorized && !refreshTried) {
           lastError = e;
@@ -374,7 +374,7 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       if (it.type !== "wave_agent_item") continue;
       const uri = it.data?.agent?.animationUri;
       if (uri) {
-        const raw = await lib.request.retrieve(uri);
+        const raw = await lib.request.retrieve(uri, LIB_TIMEOUT_MS);
         return waveColorFromLottie(Buffer.from(raw));
       }
     }

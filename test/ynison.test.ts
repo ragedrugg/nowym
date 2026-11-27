@@ -88,7 +88,7 @@ const PY_WATCHER_INFO = {
   title: "Мойва",
   type: "ANDROID",
   appName: "ru.yandex.music",
-  appVersion: "2026.05.3",
+  appVersion: "2026.11.1",
 };
 
 test("buildUpdateFullStateRequest (default): структура совпадает с Python", () => {

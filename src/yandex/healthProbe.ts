@@ -46,17 +46,9 @@ const HEALTH_DEPENDENT: Array<Pick<YandexHealthCheck, "key" | "label" | "critica
 const LOSSLESS_PROBE_IDS = ["117708948", "51516485", "60292250"];
 const LYRICS_PROBE_IDS = ["51516485", "60292250", "330765"];
 
-type AccountAbout = { geoRegionIso?: string; userSessionRegionIso?: string };
-
-async function readAccountAbout(lib: LibClient): Promise<AccountAbout | null> {
+async function readAccountAbout(lib: LibClient) {
   try {
-    const raw = await lib.request.get("https://api.music.yandex.net/account/about");
-    if (!raw || typeof raw !== "object") return null;
-    const data = raw as Record<string, unknown>;
-    return {
-      geoRegionIso: typeof data.geoRegionIso === "string" ? data.geoRegionIso : undefined,
-      userSessionRegionIso: typeof data.userSessionRegionIso === "string" ? data.userSessionRegionIso : undefined,
-    };
+    return await lib.accountAbout();
   } catch {
     // /account/about не критичен для health: регион — только пояснение
     return null;
