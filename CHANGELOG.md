@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0 (2026-11-27)
+
+### Обновление с ≤1.8 (tsx удалён)
+
+`tsx` больше не нужен: `.ts` запускается встроенным type stripping Node (нужен Node >= 22.19), а в `ecosystem.config.cjs` из `interpreter_args` убран `--import tsx`. pm2 не перечитывает `interpreter_args` у уже существующего процесса, поэтому `pm2 restart nowym-ts` / `pm2 resurrect` после `npm ci` уйдут в crash-loop с `ERR_MODULE_NOT_FOUND 'tsx'`. Один раз пересоздай процесс:
+
+```bash
+pm2 delete nowym-ts && pm2 start ecosystem.config.cjs && pm2 save
+```
+
+Проверка: в `pm2 describe nowym-ts | grep -i "interpreter args"` нет `--import tsx`.
+
 ## 1.8.0 (2026-11-26)
 
 База — продовая 1.7.3 (тег `v1.7.3-prod-baseline`).
@@ -56,7 +68,7 @@
 - TagLib на «сыром» flac-mp4 не проверен вживую.
 - Health-проба меняет ретраи общего клиента на время пробы.
 - Redis в compose запускается от root через `sh -c`.
-- `cardPending` — LRU на 200 записей.
+- `cardPending` — LRU на 2000 записей.
 - `src/services/lyricsVideo.ts` по-прежнему закомментированная заготовка.
 
 ## 1.7.3

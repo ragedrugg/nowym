@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/badge/node-%E2%89%A5%2022.19-339933?logo=node.js&logoColor=white"></a>
-  <a href="https://www.typescriptlang.org"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.7-3178C6?logo=typescript&logoColor=white"></a>
-  <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.12-2ea44f"></a>
+  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%E2%89%A523.6-339933?logo=node.js&logoColor=white"></a>
+  <a href="https://www.typescriptlang.org"><img alt="typescript" src="https://img.shields.io/badge/typescript-7.0-3178C6?logo=typescript&logoColor=white"></a>
+  <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.15-2ea44f"></a>
   <img alt="stable" src="https://img.shields.io/badge/status-stable-2ea44f">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="private" src="https://img.shields.io/badge/repo-private-lightgrey">
@@ -13,7 +13,7 @@
 
 Бот для Яндекс Музыки в Telegram. Инлайн-поиск, карточка «сейчас играет»,
 выгрузка альбомов, лирика, свой кэш-канал вместо повторных закачек. На
-[GramIO](https://gramio.dev/) 0.12.
+[GramIO](https://gramio.dev/) 0.15.
 
 ## Ништяки
 
@@ -23,8 +23,8 @@
 - 🖼 карточка «сейчас играет» — ambient-рендер на `@napi-rs/canvas`, рендер
   уходит в пул воркеров, чтобы не блокировать event loop;
 - ⚡ аудио-эффекты прямо в инлайне — `@bot ncore название` /
-  `@bot speed название` / `@bot slow название` (nightcore / ускорение /
-  замедление+реверб), реальный DSP через ffmpeg, результат кэшируется
+  `@bot speed название` / `@bot slow название` (найткор / ускорено /
+  замедлено + реверб — так эффект и подписан в названии трека), реальный DSP через ffmpeg, результат кэшируется
   отдельно от оригинала;
 - ❤️ лайк/анлайк трека кнопкой под треком;
 - 🎚 выбор качества звука — `best` / `economy` / `lossless` (lossless берётся «сырым» потоком,
@@ -47,7 +47,7 @@
 без них бот заведётся и будет выглядеть рабочим, но инлайн не заработает.
 
 1. **Бот в [@BotFather](https://t.me/BotFather):** `/newbot` → токен;
-   `/setinline` → любая заглушка подсказки (например `ищу трек...`) —
+   `/setinline` → любая заглушка подсказки (например `ищу трек…`) —
    **обязательно**, без этого инлайн (`@bot запрос`) не работает вообще;
    `/setinlinefeedback` → выбери бота → `100%` — **обязательно**, иначе
    Telegram присылает `chosen_inline_result` (сигнал «юзер выбрал трек,
@@ -116,9 +116,9 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 кэшируется отдельно от оригинального трека:
 
 ```
-@bot ncore название трека   — nightcore (ускорение + питч вверх)
-@bot speed название трека   — ускорение без питч-шифта
-@bot slow название трека    — замедление + реверб
+@bot ncore название трека   — найткор (ускорение + питч вверх)
+@bot speed название трека   — ускорено (без питч-шифта)
+@bot slow название трека    — замедлено + реверб
 ```
 
 ## Настройки (`/settings`)
@@ -130,11 +130,11 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 
 **🖼 Карточка:** поля (альбом/тип/год/лейбл/номер трека/аватар), прогресс
 (`wavy`/`bar`), соотношение сторон (`16:9`/`9:16`), подпись и кнопки под
-карточкой и тумблер «карточка+трек» (см. ниже).
+карточкой и тумблер «карточка + трек» (см. ниже).
 
 ### Rich messages (карточка + трек)
 
-Тумблер «карточка+трек» в разделе «карточка», по умолчанию **выкл.** Если включить, карточка
+Тумблер «карточка + трек» в разделе «карточка», по умолчанию **выкл.** Если включить, карточка
 «что играет» (с позицией на момент команды) и сам трек приходят **одним
 сообщением**: в инлайне первым результатом, в `/np`, кнопках меню
 «что играет» / «карточка» и по ссылке «слушать в лс» (`track_<id>`; для
@@ -151,7 +151,7 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 
 ## Стек
 
-[GramIO](https://gramio.dev/) 0.12 + `@gramio/dialogs` (меню/настройки) +
+[GramIO](https://gramio.dev/) 0.15 + `@gramio/dialogs` (меню/настройки) +
 `@gramio/format` + `@gramio/storage-redis` + `@napi-rs/canvas` (рендер
 карточки) + `undici`/`node-wreq`.
 
@@ -251,6 +251,11 @@ webhook отвечают 401 (бот при этом стартует). Числ
 `/health` требуют `Authorization: Bearer ...`; пусто — открыто, как раньше),
 `GENIUS_TOKEN` (лирика точнее — ключ на genius.com/api-clients),
 `OWNER_ID` (кто в Ynison-наблюдателе, по умолчанию = `ADMIN_USER_ID`),
+`POLLING_STALL_SEC` (long-polling: секунд без завершённого `getUpdates`, после
+которых сторож обрывает висящий запрос, а при повторе завершает процесс для
+рестарта pm2; дефолт 90, `0` — выкл.),
+`STALE_REFRESH_LIMIT` (сколько протухших пустышек ежечасно перекачивать в
+кэш-канал; дефолт 50, `0` — выкл.),
 `WEBHOOK_PATH`/`WEBHOOK_SECRET`/`WEBHOOK_SSL_CERT`/`WEBHOOK_SSL_KEY`
 (детали облачного webhook-режима), `NOW_PLAYING_TOKEN` (без него `GET
 /now-playing` всегда 401), `ICON_SET_NAME` (Telegram custom-emoji пак для
@@ -279,11 +284,11 @@ sudo -u postgres psql -f docs/sql/init.sql   # свои пароли вмест�
 ## Запуск
 
 ```bash
-npm run start       # tsx src/main.ts — webhook (облако) или long-polling (self-hosted API)
-npm run dev         # то же самое, но tsx watch — авто-рестарт на изменениях
+npm run start       # node src/main.ts — webhook (облако) или long-polling (self-hosted API)
+npm run dev         # то же самое, но node --watch — авто-рестарт на изменениях
 npm run typecheck   # tsc --noEmit
 npm run lint         # biome check . (npm run lint:fix — почить автофиксом)
-npm test            # node --import tsx --test, 402 теста, секунд 30
+npm test            # node --test (нативный type stripping), ~440 тестов, секунд 45
 ```
 
 Режим выбирается сам: задан `BOT_API_BASE_URL` → self-hosted Bot API сервер +
@@ -310,6 +315,14 @@ autorestart, `--expose-gc`). Полностью портативный — `cwd`
 pm2 start ecosystem.config.cjs
 pm2 save          # чтобы пережило ребут (после pm2 startup)
 pm2 logs nowym-ts
+```
+
+**Обновление с ≤1.8 (tsx удалён).** pm2 помнит старые `interpreter_args`
+(`--import tsx`) у существующего процесса, и после `npm ci` бот уйдёт в
+crash-loop с `ERR_MODULE_NOT_FOUND 'tsx'`. Один раз пересоздай процесс:
+
+```bash
+pm2 delete nowym-ts && pm2 start ecosystem.config.cjs && pm2 save
 ```
 
 ### Бэкапы
@@ -365,6 +378,7 @@ compose, определяется сам), делает `pg_restore --clean --if
 |---|---|
 | `src/bot/` | хендлеры, диалоги-меню (`@gramio/dialogs`), сборка карточки, DI-контейнер |
 | `src/bot/iconSet.ts` | резолвер премиум-эмодзи (`icon_custom_emoji_id`) под кнопки |
+| `src/bot/texts.ts` | все пользовательские тексты в едином стиле (правила в шапке файла, проверяет `test/texts.test.ts`) |
 | `src/services/` | рендер карточки (+ пул воркеров `cardRenderPool.ts`), поиск, кэш, альбомы, рассылка. `lyricsVideo.ts` — закомментированная заготовка, не живой код |
 | `src/yandex/` | клиент Yandex Music API, метаданные, лирика, Ynison |
 | `src/infra/` | http-клиент, шифрование, логирование, rate-limit, ретраи 429/5xx (`floodRetry.ts`), алертер об ошибках админу (`adminAlerter.ts`) |
@@ -385,7 +399,7 @@ compose, определяется сам), делает `pg_restore --clean --if
    забытый `/setinline` в BotFather. Проверить: `/setinline` без аргумента
    в диалоге с BotFather покажет текущий статус.
 2. **Инлайн-выдача показывается, но выбор трека зависает на плейсхолдере
-   («гружу...») навсегда** — забытый `/setinlinefeedback` → `100%` в
+   («качаю…») навсегда** — забытый `/setinlinefeedback` → `100%` в
    BotFather. Без него Telegram шлёт `chosen_inline_result` не на каждый
    выбор, а бот именно по этому сигналу качает и подменяет плейсхолдер на
    реальное аудио.

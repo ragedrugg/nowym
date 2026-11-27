@@ -6,7 +6,7 @@
 
 ```bash
 npm install
-npm run dev        # tsx watch, живая перезагрузка
+npm run dev        # node --watch, живая перезагрузка
 ```
 
 `.env` — см. `.env.example` и README (`## Как поставить`). Для голого прогона
