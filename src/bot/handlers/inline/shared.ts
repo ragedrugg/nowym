@@ -1,5 +1,4 @@
-import type { Bot } from "gramio";
-import { type FormattableString, format } from "gramio";
+import { type FormatResult, format } from "yaebal";
 import { getLogger } from "../../../infra/logging.ts";
 import { buildLyricsQuote, buildTrackCaption } from "../../captions.ts";
 import type { Container } from "../../container.ts";
@@ -7,6 +6,7 @@ import { trackMarkup } from "../../markup.ts";
 import { type AudioExtras, errText, isApiError } from "../../richMessage.ts";
 import { safeEditMedia } from "../../safeApi.ts";
 import { DEGRADED_NOTE, EFFECT_SUFFIX } from "../../texts.ts";
+import type { ApiBot } from "../../types.ts";
 
 const log = getLogger("bot.inline");
 
@@ -78,7 +78,7 @@ export function parseTrackResultId(resultId: string): string | null {
 }
 
 /** InputMediaAudio (file_id) для editMessageMedia. */
-export type AudioEditMedia = { type: "audio"; media: string; caption?: FormattableString };
+export type AudioEditMedia = { type: "audio"; media: string; caption?: FormatResult };
 
 /** InputMediaAudio для editMessageMedia + reply_markup под выбранный layout. */
 export function buildChosenEditPayload(args: {
@@ -132,7 +132,7 @@ export function chatAudioExtras(args: {
  * тот же edit один раз (уже применён → «not modified» = успех). true — аудио на месте.
  * Ответ API (error_code) = edit точно не прошёл → false, вызывающий ставит «загрузить снова». */
 export async function reissueEdit(
-  bot: Bot,
+  bot: ApiBot,
   inlineMsgId: string,
   edit: { media: AudioEditMedia; markup: ReturnType<typeof trackMarkup> | undefined } | null,
   err: unknown,

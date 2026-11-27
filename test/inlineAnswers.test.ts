@@ -13,10 +13,9 @@ function harness(opts: {
 }) {
   let inlineHandler!: (ctx: unknown) => Promise<void>;
   const bot = {
-    inlineQuery: (_re: RegExp, fn: (ctx: unknown) => Promise<void>) => {
-      inlineHandler = fn;
+    on: (ev: string, fn: (ctx: unknown) => Promise<void>) => {
+      if (ev === "inline_query") inlineHandler = fn;
     },
-    chosenInlineResult: () => undefined,
     callbackQuery: () => undefined,
   };
   const page0 = new Map<string, unknown>();

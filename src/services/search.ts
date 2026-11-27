@@ -1,8 +1,8 @@
-/** Поиск треков/альбомов → inline-результаты GramIO.
+/** Поиск треков/альбомов → inline-результаты (yaebal InlineQueryResult).
  *
  * Кэширует Track-объекты в LRU (повторный выбор не дёргает api заново) и готовые
  * наборы результатов в TTLCache. */
-import { InlineQueryResult, InputMessageContent } from "gramio";
+import { InlineQueryResult, InputMessageContent } from "yaebal";
 import { buildTrackCaption } from "../bot/captions.ts";
 import { loadingMarkup, progressMarkup, trackMarkup } from "../bot/markup.ts";
 import {

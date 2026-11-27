@@ -1,5 +1,5 @@
-import type { Bot, InlineKeyboard } from "gramio";
-import { bold, type FormattableString, format } from "gramio";
+import type { InlineKeyboard } from "yaebal";
+import { bold, type FormatResult, format } from "yaebal";
 import { getLogger } from "../../infra/logging.ts";
 import { formatLatency, measureLatency } from "../../infra/ping.ts";
 import { ProgressMessage } from "../../services/albums.ts";
@@ -12,6 +12,7 @@ import type { Container } from "../container.ts";
 import { broadcastConfirmMarkup, broadcastSendingMarkup, healthMarkup, yandexHealthMarkup } from "../markup.ts";
 import { safeAnswerCb, safeEditApi } from "../safeApi.ts";
 import { ADMIN } from "../texts.ts";
+import type { ApiBot, AppBot } from "../types.ts";
 
 const log = getLogger("bot.admin");
 
@@ -30,9 +31,9 @@ export function isAdmin(userId: number): boolean {
 }
 
 async function buildMainHealth(
-  bot: Bot,
+  bot: ApiBot,
   container: Container,
-): Promise<{ text: FormattableString; markup: InlineKeyboard }> {
+): Promise<{ text: FormatResult; markup: InlineKeyboard }> {
   const [users, counts, usersSize, cacheSize, tgMs, ymMs] = await Promise.all([
     container.usersDb.count().catch(() => null),
     container.cacheDb.counts().catch(() => null),
@@ -56,7 +57,7 @@ async function buildMainHealth(
     log.warning(`[admin] кэш-канал недоступен: ${e}`);
   }
 
-  const flag = (ok: boolean): FormattableString | string => (ok ? "✅" : "❌");
+  const flag = (ok: boolean): FormatResult | string => (ok ? "✅" : "❌");
   const tgOk = tgMs !== null && tgMs < 1000;
   const ymOk = ymMs !== null && ymMs < 1000;
   const botUserOk = Boolean(container.botUsername);
@@ -94,7 +95,7 @@ ${bold("кэши (in-memory)")}
   return { text, markup: healthMarkup() };
 }
 
-export function registerAdmin(bot: Bot, container: Container): void {
+export function registerAdmin(bot: AppBot, container: Container): void {
   bot.command("health", async (ctx) => {
     if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
     const status = await ctx.reply(ADMIN.collecting);
@@ -102,7 +103,7 @@ export function registerAdmin(bot: Bot, container: Container): void {
       const { text, markup } = await buildMainHealth(bot, container);
       await bot.api.editMessageText({
         chat_id: ctx.chat.id,
-        message_id: status.id,
+        message_id: status.message_id,
         text,
         reply_markup: markup,
       } as never);
@@ -111,7 +112,7 @@ export function registerAdmin(bot: Bot, container: Container): void {
       log.warning(`[admin] /health упал: ${e}`);
       await safeEditApi(
         bot,
-        { chatId: ctx.chat.id, messageId: status.id },
+        { chatId: ctx.chat.id, messageId: status.message_id },
         format`${ADMIN.collectFailed}
 ${errorDetail(e)}`,
         healthMarkup(),
@@ -126,7 +127,7 @@ ${errorDetail(e)}`,
       return;
     }
     await safeAnswerCb(ctx);
-    const messageId = ctx.message!.id;
+    const messageId = ctx.message!.message_id;
     try {
       await safeEditApi(
         bot,
@@ -156,7 +157,7 @@ ${errorDetail(e)}`,
     }
     await safeAnswerCb(ctx);
     const { text, markup } = await buildMainHealth(bot, container);
-    await safeEditApi(bot, { chatId: chat.id, messageId: ctx.message!.id }, text, markup);
+    await safeEditApi(bot, { chatId: chat.id, messageId: ctx.message!.message_id }, text, markup);
   });
 
   bot.command("broadcast", async (ctx) => {
@@ -176,7 +177,7 @@ ${errorDetail(e)}`,
       return;
     }
 
-    const captured = container.broadcastService.captureContent(ctx.from.id, ctx.chat.id, ctx.id);
+    const captured = container.broadcastService.captureContent(ctx.from.id, ctx.chat.id, ctx.message_id);
     if (!captured) return next();
 
     const recipients = await container.knownChatsDb.count();
@@ -202,7 +203,7 @@ ${errorDetail(e)}`,
     await ctx.answer(ADMIN.broadcastStarted);
 
     const chatId = ctx.message ? ctx.message.chat.id : adminId;
-    const progress = ctx.message ? new ProgressMessage(bot, chatId, ctx.message.id) : null;
+    const progress = ctx.message ? new ProgressMessage(bot, chatId, ctx.message.message_id) : null;
     if (progress)
       await progress.edit(
         broadcastProgressText({ total: 0, sent: 0, failed: 0, blocked: 0 }, 0),

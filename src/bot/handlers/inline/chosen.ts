@@ -1,4 +1,3 @@
-import type { Bot } from "gramio";
 import { createInterruptibleSleep, withTimeout } from "../../../infra/async.ts";
 import { getLogger } from "../../../infra/logging.ts";
 import { type AudioQuality, findBestLyricsLine, formatTrackBasics, trackIsTooLong } from "../../../yandex/metadata.ts";
@@ -7,6 +6,7 @@ import { progressMarkup, retryMarkup, trackMarkup } from "../../markup.ts";
 import { errText, type RichAudio } from "../../richMessage.ts";
 import { safeEditMedia, safeSetReplyMarkup } from "../../safeApi.ts";
 import { BTN_DOWNLOADING, BTN_SENDING, LOGIN_FIRST, TOO_LONG_TEXT, tooOftenButton, YANDEX_DOWN } from "../../texts.ts";
+import type { ApiBot } from "../../types.ts";
 import { isCardResultId, isRichResultId, peekCardPending, renderAndSwapCard, resolveRichCard } from "../inlineCard.ts";
 import { type EnsureResult, ensureFileId, resolveTrack } from "./ensure.ts";
 import {
@@ -70,7 +70,7 @@ async function fetchLyricsForQuery(
 
 /** +3с «качаю», +8с «отправляю». cancel() дожидается завершения тикера — иначе
  * осиротевший тикер сработает уже ПОСЛЕ editMessageMedia и перетрёт «открыть» обратно. */
-function startProgressTicker(bot: Bot, inlineMsgId: string, trackId: string): () => Promise<void> {
+function startProgressTicker(bot: ApiBot, inlineMsgId: string, trackId: string): () => Promise<void> {
   let cancelled = false;
   const { sleep, wake } = createInterruptibleSleep();
   const done = (async () => {
@@ -92,7 +92,7 @@ function startProgressTicker(bot: Bot, inlineMsgId: string, trackId: string): ()
 /** `npr:` после chosen: лимитер → resolveRichCard (карточка + трек параллельно). Любой
  * исход, кроме успеха/фолбэка, заканчивается кнопкой с load: — плейсхолдер не залипает. */
 export async function chosenRichCardTrack(
-  bot: Bot,
+  bot: ApiBot,
   container: Container,
   resultId: string,
   inlineMsgId: string,
@@ -153,7 +153,7 @@ export async function chosenRichCardTrack(
 export async function onChosenResult(
   ctx: { from: { id: number }; resultId: string; inlineMessageId?: string | null; query?: string | null },
   container: Container,
-  bot: Bot,
+  bot: ApiBot,
 ): Promise<void> {
   const userId = ctx.from.id;
   const resultId = ctx.resultId;

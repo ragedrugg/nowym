@@ -1,7 +1,11 @@
 /** inline-клавиатуры — единый источник истины.
  *
  * callback_data — literal-строки с RegExp-роутингом в хендлерах, а не
- * CallbackData-схемы gramio.
+ * callbackData-схемы yaebal.
+ *
+ * yaebal InlineKeyboard: декор кнопки — { style, icon } (icon → icon_custom_emoji_id
+ * на проводе), а pattern() раскладывает УЖЕ добавленные кнопки (у GramIO — лениво при
+ * сборке), поэтому pattern() зовём после кнопок.
  *
  * Иконки: кастом-эмодзи (icon_custom_emoji_id, Bot API 10.0) из набора tgiosicons,
  * резолвится на старте (iconSet.ts) по стандартному эмодзи. Фолбэк — монохромный
@@ -11,7 +15,7 @@
  *  • dm-кнопки (меню/настройки/логин) — чистая иконка вместо глифа (рендерит Premium);
  *  • инлайн-кнопки (трек/карточка) — глиф + иконка вместе: глиф виден всегда,
  *    кастом-иконка подхватится при наличии Fragment-username. */
-import { InlineKeyboard } from "gramio";
+import { InlineKeyboard } from "yaebal";
 import { trackUrl } from "../yandex/urls.ts";
 import { iconFor } from "./iconSet.ts";
 import {
@@ -29,7 +33,8 @@ import {
 type BtnStyle = "danger" | "primary" | "success";
 interface BtnOpts {
   style?: BtnStyle;
-  icon_custom_emoji_id?: string;
+  /** custom_emoji_id; ключ декора yaebal — `icon`, не `icon_custom_emoji_id`. */
+  icon?: string;
 }
 
 function dmText(
@@ -44,7 +49,7 @@ function dmText(
   const o: BtnOpts = {};
   if (style) o.style = style;
   if (id) {
-    o.icon_custom_emoji_id = id;
+    o.icon = id;
     kb.text(label, data, o);
   } else kb.text(`${glyph} ${label}`, data, o);
   return kb;
@@ -100,11 +105,10 @@ export function trackMarkup(trackId: string | number, withLike = false): InlineK
   }
   // heart: премиум-иконка есть, но на инлайне рендерится только с Fragment-username
   // (его нет) → держим глиф ♥ видимым текстом, чтобы кнопка не была пустой.
-  kb.pattern([2]);
   const heartId = iconFor("❤️");
-  kb.text("♥", `like:t:${trackId}`, heartId ? { icon_custom_emoji_id: heartId } : {});
+  kb.text("♥", `like:t:${trackId}`, heartId ? { icon: heartId } : {});
   inlineUrl(kb, "▶️", "▷", BTN_OPEN, trackUrl(trackId));
-  return kb;
+  return kb.pattern([2]);
 }
 
 export function retryMarkup(trackId: string | number): InlineKeyboard {
@@ -136,10 +140,10 @@ export function albumRetryMarkup(messageId: number, label: string): InlineKeyboa
 
 /** /broadcast: «разослать это N пользователям?» */
 export function broadcastConfirmMarkup(): InlineKeyboard {
-  const kb = new InlineKeyboard().pattern([2]);
+  const kb = new InlineKeyboard();
   dmText(kb, "✅", "✓", ADMIN.btnBroadcast, "broadcast_confirm", "success");
   dmText(kb, "❌", "✕", ADMIN.btnCancel, "broadcast_cancel", "danger");
-  return kb;
+  return kb.pattern([2]);
 }
 
 /** кнопка остановки уже идущей рассылки. */
@@ -154,12 +158,12 @@ export function broadcastSendingMarkup(): InlineKeyboard {
 export function nowPlayingMarkup(trackId: string | number, botUsername: string | null): InlineKeyboard {
   // start=track_<uuid> не работает (START_TRACK_RE — только цифры): для подкастов/аудиокниг кнопки «в лс» нет
   const dmOk = Boolean(botUsername) && /^\d+$/.test(String(trackId));
-  const kb = new InlineKeyboard().pattern([dmOk ? 2 : 1]);
+  const kb = new InlineKeyboard();
   if (dmOk) {
     inlineUrl(kb, "💬", "▷", BTN_LISTEN_DM, `https://t.me/${botUsername}?start=track_${trackId}`);
   }
   inlineUrl(kb, "🔗", "↗", BTN_LISTEN_PLAYER, trackUrl(trackId));
-  return kb;
+  return kb.pattern([dmOk ? 2 : 1]);
 }
 
 /** главная панель /health: вход в детальный статус Яндекс Музыки. */
@@ -171,8 +175,8 @@ export function healthMarkup(): InlineKeyboard {
 
 /** детальная панель Яндекс Музыки: обновить и назад. */
 export function yandexHealthMarkup(): InlineKeyboard {
-  const kb = new InlineKeyboard().pattern([1, 1]);
+  const kb = new InlineKeyboard();
   dmText(kb, "🔄", "↻", ADMIN.btnRefresh, "health:ym", "primary");
   dmText(kb, "⬅️", "←", MENU_BTN.back, "health:main");
-  return kb;
+  return kb.pattern([1, 1]);
 }

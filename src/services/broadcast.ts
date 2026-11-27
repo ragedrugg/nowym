@@ -1,10 +1,10 @@
 /** Админ-рассылка: одно сообщение любого типа (bot.api.copyMessage — не разбираем
  * контент по типам) всем chat_id из known_chats. Состояние на одного админа
  * (ADMIN_USER_ID один, не список), поэтому простая Map, а не полноценный
- * @gramio/dialogs FSM. */
+ * диалог-FSM. */
 
-import type { Bot } from "gramio";
-import { bold, code as codeFmt, type FormattableString, format } from "gramio";
+import { bold, code as codeFmt, type FormatResult, format } from "yaebal";
+import type { ApiBot } from "../bot/types.ts";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import { AsyncTokenGate } from "../infra/rateLimit.ts";
@@ -52,9 +52,9 @@ export class BroadcastService {
   private state = new Map<number, BroadcastState>();
 
   private knownChatsDb: KnownChatsDb;
-  private bot: Bot;
+  private bot: ApiBot;
 
-  constructor(knownChatsDb: KnownChatsDb, bot: Bot) {
+  constructor(knownChatsDb: KnownChatsDb, bot: ApiBot) {
     this.knownChatsDb = knownChatsDb;
     this.bot = bot;
   }
@@ -174,7 +174,7 @@ export class BroadcastService {
 }
 
 /** прогресс-сообщение рассылки, без разбивки по трекам. */
-export function broadcastProgressText(r: BroadcastResult, elapsedSec: number): FormattableString {
+export function broadcastProgressText(r: BroadcastResult, elapsedSec: number): FormatResult {
   const done = r.sent + r.failed + r.blocked;
   const bar = renderProgressBar(done, r.total);
   let eta = "";

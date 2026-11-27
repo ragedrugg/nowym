@@ -1,7 +1,7 @@
 /** F3: харденинг rich-сообщений: двойная отправка, 429, утечка токена, chosen npr:. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import type { Container } from "../src/bot/container.ts";
 import { renderNowPlaying } from "../src/bot/handlers/common.ts";
 import { chosenRichCardTrack, sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
@@ -13,7 +13,7 @@ type Call = { method: string; params: Record<string, unknown> };
 const SECRET = "bot123456:ABC-secret";
 
 const tgErr = (code: number, description: string, parameters?: { retry_after?: number }, method = "sendRichMessage") =>
-  new TelegramError({ ok: false, error_code: code, description, parameters } as never, method as never, {} as never);
+  new TelegramError(method, code, description, parameters);
 const netErr = () => Object.assign(new Error(`fetch failed ${SECRET}`), { name: "TypeError" });
 const abortErr = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
 

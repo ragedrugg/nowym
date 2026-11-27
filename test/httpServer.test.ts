@@ -3,7 +3,14 @@ import { EventEmitter } from "node:events";
 import { createServer, type IncomingMessage, request, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, it } from "node:test";
-import { bearerMatches, closeServer, createHttpApp, type HttpDeps, type WatcherLike } from "../src/infra/httpServer.ts";
+import {
+  bearerMatches,
+  closeServer,
+  createHttpApp,
+  createWebhookHandler,
+  type HttpDeps,
+  type WatcherLike,
+} from "../src/infra/httpServer.ts";
 import { secretMatches } from "../src/infra/secret.ts";
 
 const cache = { size: 1, stats: () => ({ size: 1, hits: 2, misses: 3 }) };
@@ -229,4 +236,32 @@ describe("SSE", () => {
     ]);
     assert.equal(r, "hung");
   });
+});
+
+it("webhook: тело больше лимита — 413 и соединение закрывается, остаток не дочитывается", async () => {
+  const handled: unknown[] = [];
+  const handler = createWebhookHandler(async (u) => void handled.push(u), 1024);
+  const server = createServer((req, res) => void handler(req, res));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    let closed!: Promise<"closed">;
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path: "/" }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      closed = new Promise((r) => req.on("close", () => r("closed")));
+      req.on("error", () => {}); // сокет закрыт сервером посреди отправки тела — ожидаемо
+      req.write(Buffer.alloc(4096, 0x20)); // уже больше лимита; тело не завершаем
+      setTimeout(() => reject(new Error("нет ответа")), 2000).unref();
+    });
+    assert.equal(status, 413);
+    assert.deepEqual(handled, []);
+    const timeout = new Promise<"open">((r) => setTimeout(() => r("open"), 1000).unref());
+    assert.equal(await Promise.race([closed, timeout]), "closed", "сервер закрыл соединение, не ждёт остаток тела");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });

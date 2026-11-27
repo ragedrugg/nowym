@@ -1,5 +1,5 @@
 /** Подписи под аудио для inline-результатов. */
-import { blockquote, bold, type FormattableString, format, italic, link } from "gramio";
+import { blockquote, bold, type FormatResult, format, italic, link } from "yaebal";
 import { trackUrl } from "../yandex/urls.ts";
 import { CAPTION_OPEN, CODEC_LABELS, degradedNote, kbps } from "./texts.ts";
 
@@ -32,7 +32,7 @@ export function buildTrackCaption(
   codec: string | null | undefined,
   bitrateKbps: number | null | undefined,
   degraded = false,
-): FormattableString {
+): FormatResult {
   const quality = formatCodecBitrate(codec, bitrateKbps);
   const url = trackUrl(trackId);
   // degraded — запрошено превосходное (FLAC), но недоступно и отдано lossy: пометка
@@ -57,7 +57,7 @@ export function splitLyricsLine(line: string): [string, string] {
 }
 
 /** blockquote-цитата строки лирики: первая часть жирная, вторая курсивная. */
-export function buildLyricsQuote(lyricsLine: string | null): FormattableString | null {
+export function buildLyricsQuote(lyricsLine: string | null): FormatResult | null {
   if (!lyricsLine) return null;
   const [first, second] = splitLyricsLine(lyricsLine);
   if (first && second) return blockquote(format`${bold(first)} ${italic(second)}`);

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Bot } from "gramio";
 import { registerPrivateFallback } from "../src/bot/handlers/common.ts";
 import { nowPlayingMarkup } from "../src/bot/markup.ts";
 import { helpText, startText } from "../src/bot/texts.ts";
+import type { AppBot as Bot } from "../src/bot/types.ts";
 
 const urlsOf = (kb: ReturnType<typeof nowPlayingMarkup>): string[] =>
   kb
@@ -43,7 +43,7 @@ test("registerPrivateFallback: подсказка в личке на текст;
   for (const ctx of [
     { chat: { type: "private" }, text: "/foo" },
     { chat: { type: "private" }, text: undefined },
-    { chat: { type: "private" }, text: "x", viaBot: {} },
+    { chat: { type: "private" }, text: "x", via_bot: {} },
     { chat: { type: "supergroup" }, text: "привет" },
   ]) {
     const r = await run(ctx);
@@ -53,19 +53,19 @@ test("registerPrivateFallback: подсказка в личке на текст;
 });
 
 test("тексты: старт и help без устаревших формулировок", () => {
-  assert.match(startText(true).toString(), /набери @nowymbot название в любом чате/);
-  assert.match(startText(false).toString(), /войди, это минута/);
-  const help = helpText().toString();
+  assert.match(startText(true).text, /набери @nowymbot название в любом чате/);
+  assert.match(startText(false).text, /войди, это минута/);
+  const help = helpText().text;
   assert.match(help, /плейлист/);
   assert.match(help, /ncore/);
   assert.match(help, /\/np/);
 });
 
 test("D7: тексты подставляют username бота из getMe, а не захардкоженный @nowymbot", async () => {
-  assert.match(startText(true, "otherbot").toString(), /набери @otherbot название/);
-  assert.ok(!startText(true, "otherbot").toString().includes("nowymbot"));
-  assert.match(helpText("otherbot").toString(), /@otherbot/);
-  assert.ok(!helpText("otherbot").toString().includes("nowymbot"));
+  assert.match(startText(true, "otherbot").text, /набери @otherbot название/);
+  assert.ok(!startText(true, "otherbot").text.includes("nowymbot"));
+  assert.match(helpText("otherbot").text, /@otherbot/);
+  assert.ok(!helpText("otherbot").text.includes("nowymbot"));
 
   let handler: ((ctx: unknown, next: () => Promise<void>) => Promise<void>) | undefined;
   registerPrivateFallback(

@@ -1,16 +1,16 @@
-import type { Bot } from "gramio";
-import { format } from "gramio";
+import { format } from "yaebal";
 import { getLogger } from "../../infra/logging.ts";
 import { PLAYLIST_URL_RE, PLAYLIST_UUID_URL_RE } from "../../infra/parsers.ts";
 import type { Container } from "../container.ts";
 import { PLAYLIST_NOT_FOUND, PLAYLIST_NOUN } from "../texts.ts";
+import type { ApiBot, AppBot } from "../types.ts";
 import { startUpload } from "./albums.ts";
 
 const log = getLogger("bot.playlists");
 
 /** зовут и из /start playlist_<owner>_<kind>, и из ссылки в личке. */
 export async function startPlaylistUpload(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   userId: number,
   owner: string,
@@ -22,8 +22,10 @@ export async function startPlaylistUpload(
   );
 }
 
-export function registerPlaylists(bot: Bot, container: Container): void {
-  bot.hears(PLAYLIST_URL_RE, async (ctx) => {
+export function registerPlaylists(bot: AppBot, container: Container): void {
+  // on("message"), не hears: yaebal-hears матчит и edited_message (см. albums.ts)
+  bot.on("message", async (ctx, next) => {
+    if (!PLAYLIST_URL_RE.test(ctx.text ?? "")) return next();
     if (ctx.chat?.type !== "private") return;
     const m = PLAYLIST_URL_RE.exec(ctx.text ?? "");
     if (!m) return;
@@ -31,7 +33,8 @@ export function registerPlaylists(bot: Bot, container: Container): void {
   });
 
   // ссылка «поделиться» (/playlists/<uuid>): резолвим в (uid, kind) и идём обычным путём плейлиста
-  bot.hears(PLAYLIST_UUID_URL_RE, async (ctx) => {
+  bot.on("message", async (ctx, next) => {
+    if (!PLAYLIST_UUID_URL_RE.test(ctx.text ?? "")) return next();
     if (ctx.chat?.type !== "private") return;
     const m = PLAYLIST_UUID_URL_RE.exec(ctx.text ?? "");
     if (!m) return;

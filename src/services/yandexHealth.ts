@@ -1,5 +1,5 @@
 /** Сбор и рендер health-панели Яндекс Музыки для админского /health. */
-import { bold, type FormattableString, format, join } from "gramio";
+import { bold, type FormatResult, format, join } from "yaebal";
 import type { Container } from "../bot/container.ts";
 import { getSettings } from "../settings.ts";
 import {
@@ -222,8 +222,8 @@ function oneLine(text: string, maxLen = 120): string {
   return clean.length > maxLen ? `${clean.slice(0, maxLen - 1)}…` : clean;
 }
 
-/** FormattableString: без parse_mode, только telegram-entities. */
-export function formatYandexHealth(report: YandexHealthReport): FormattableString {
+/** FormatResult: без parse_mode, только telegram-entities. */
+export function formatYandexHealth(report: YandexHealthReport): FormatResult {
   const lines = report.checks.map(
     (check) => format`${statusIcon(check)} ${check.label}: ${oneLine(check.detail)}${latency(check.latencyMs)}`,
   );

@@ -5,7 +5,7 @@
  * перезаписывается, старая пустышка удаляется фоном.
  *
  * Отправку в канал делегируем интерфейсу TelegramSender (ChannelSender поверх
- * GramIO; flood-control 429 обрабатывается его floodRetry). */
+ * yaebal bot.api; flood-control 429 обрабатывается его floodRetry). */
 
 import { sleep, withTimeout } from "../infra/async.ts";
 import type { HttpClient } from "../infra/http.ts";
@@ -43,7 +43,7 @@ export interface SendAudioOpts {
   thumbnail?: Buffer | null;
 }
 
-/** канало-привязанная отправка — обёртка над GramIO bot.api. */
+/** канало-привязанная отправка — обёртка над bot.api. */
 export interface TelegramSender {
   sendAudioToChannel(audio: Buffer, opts: SendAudioOpts): Promise<SentAudio>;
   deleteChannelMessage(messageId: number): Promise<void>;

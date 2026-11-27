@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%E2%89%A523.6-339933?logo=node.js&logoColor=white"></a>
   <a href="https://www.typescriptlang.org"><img alt="typescript" src="https://img.shields.io/badge/typescript-7.0-3178C6?logo=typescript&logoColor=white"></a>
-  <a href="https://gramio.dev"><img alt="gramio" src="https://img.shields.io/badge/framework-GramIO%200.15-2ea44f"></a>
+  <a href="https://yaebal.mom"><img alt="yaebal" src="https://img.shields.io/badge/framework-yaebal%200.2-2ea44f"></a>
   <img alt="stable" src="https://img.shields.io/badge/status-stable-2ea44f">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="private" src="https://img.shields.io/badge/repo-private-lightgrey">
@@ -13,7 +13,7 @@
 
 Бот для Яндекс Музыки в Telegram. Инлайн-поиск, карточка «сейчас играет»,
 выгрузка альбомов, лирика, свой кэш-канал вместо повторных закачек. На
-[GramIO](https://gramio.dev/) 0.15.
+[yaebal](https://yaebal.mom/) 0.2.
 
 ## Ништяки
 
@@ -151,8 +151,8 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 
 ## Стек
 
-[GramIO](https://gramio.dev/) 0.15 + `@gramio/dialogs` (меню/настройки) +
-`@gramio/format` + `@gramio/storage-redis` + `@napi-rs/canvas` (рендер
+[yaebal](https://yaebal.mom/) 0.2 + `@yaebal/morda` (меню/настройки) +
+`@yaebal/runner` (параллельный long-polling) + `ioredis` (стек диалогов) + `@napi-rs/canvas` (рендер
 карточки) + `undici`/`node-wreq`.
 
 ### Системные зависимости
@@ -160,7 +160,7 @@ Ambient-рендер «сейчас играет» — обложка, разм�
 Кроме Node.js нужны на машине (не npm-пакеты):
 
 - **PostgreSQL** — две базы (users/cache), см. ниже;
-- **Redis** — для `@gramio/dialogs`;
+- **Redis** — для стека диалогов (`@yaebal/morda`);
 - **ffmpeg** — только для аудио-эффектов (`ncore`/`speed`/`slow`, см. ниже);
   без него всё остальное работает, просто эта фича упадёт с понятной ошибкой;
 - **Docker** — опционально. Либо только для self-hosted Bot API сервера
@@ -278,7 +278,7 @@ sudo -u postgres psql -f docs/sql/init.sql   # свои пароли вмест�
 
 ### Redis
 
-Нужен для стека диалогов (`@gramio/dialogs`). Дефолт — `localhost:6379`, без
+Нужен для стека диалогов (`@yaebal/morda`). Дефолт — `localhost:6379`, без
 пароля. `sudo apt install redis-server && sudo systemctl enable --now redis-server`.
 
 ## Запуск
@@ -376,7 +376,7 @@ compose, определяется сам), делает `pg_restore --clean --if
 
 | Путь | Назначение |
 |---|---|
-| `src/bot/` | хендлеры, диалоги-меню (`@gramio/dialogs`), сборка карточки, DI-контейнер |
+| `src/bot/` | хендлеры, диалоги-меню (`@yaebal/morda`), сборка бота (`app.ts`), сборка карточки, DI-контейнер |
 | `src/bot/iconSet.ts` | резолвер премиум-эмодзи (`icon_custom_emoji_id`) под кнопки |
 | `src/bot/texts.ts` | все пользовательские тексты в едином стиле (правила в шапке файла, проверяет `test/texts.test.ts`) |
 | `src/services/` | рендер карточки (+ пул воркеров `cardRenderPool.ts`), поиск, кэш, альбомы, рассылка. `lyricsVideo.ts` — закомментированная заготовка, не живой код |

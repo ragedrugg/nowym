@@ -104,11 +104,21 @@ test("YandexClient.resolvePlaylistUuid: нет kind/uid или ошибка → 
   assert.equal(await client.resolvePlaylistUuid(UUID), null);
 });
 
-test("лс: uuid-ссылка на плейлист ловится своим hears", () => {
-  const regs: RegExp[] = [];
-  const bot = { hears: (re: RegExp) => regs.push(re) };
+test("лс: uuid-ссылка на плейлист ловится своим матчером", async () => {
+  // yaebal: матчеры ссылок — on("message") с next() на промах (hears yaebal ловил бы и правки)
+  const handlers: ((ctx: unknown, next: () => Promise<void>) => Promise<void>)[] = [];
+  const bot = { on: (_ev: string, h: (typeof handlers)[number]) => handlers.push(h) };
   registerPlaylists(bot as never, {} as never);
-  assert.ok(regs.some((re) => re.test(`https://music.yandex.ru/playlists/${UUID}`)));
+  let claimed = 0;
+  for (const h of handlers) {
+    let nexted = false;
+    // не личка: подходящий матчер забирает апдейт и сразу выходит, остальные зовут next()
+    await h({ chat: { type: "group" }, text: `https://music.yandex.ru/playlists/${UUID}` }, async () => {
+      nexted = true;
+    });
+    if (!nexted) claimed++;
+  }
+  assert.equal(claimed, 1);
 });
 
 // ---------- review-2 L3: сбой Яндекса на ссылках альбома/плейлиста ≠ «не найдено» ----------
@@ -170,13 +180,17 @@ test("лс: плейлист по ссылке при сбое Яндекса �
 });
 
 test("лс: плейлист по uuid-ссылке при сбое Яндекса → «Яндекс не отвечает»", async () => {
-  const handlers: { re: RegExp; fn: (ctx: unknown) => Promise<void> }[] = [];
+  const handlers: ((ctx: unknown, next: () => Promise<void>) => Promise<void>)[] = [];
   const h = dmUploadHarness({ resolvePlaylistUuid: strictDown, getPlaylist: strictDown });
-  const hears = (re: RegExp, fn: (ctx: unknown) => Promise<void>) => handlers.push({ re, fn });
-  registerPlaylists({ hears, api: (h.bot as unknown as { api: unknown }).api } as never, h.container);
+  const on = (_ev: string, fn: (typeof handlers)[number]) => handlers.push(fn);
+  registerPlaylists({ on, api: (h.bot as unknown as { api: unknown }).api } as never, h.container);
   const text = `https://music.yandex.ru/playlists/${UUID}`;
-  const hit = handlers.find((x) => x.re.test(text))!;
-  await hit.fn({ chat: { type: "private", id: 10 }, from: { id: 1 }, text });
+  // цепочка как у composer: каждый матчер на промахе зовёт next()
+  const dispatch = (i: number): Promise<void> =>
+    i < handlers.length
+      ? handlers[i]!({ chat: { type: "private", id: 10 }, from: { id: 1 }, text }, () => dispatch(i + 1))
+      : Promise.resolve();
+  await dispatch(0);
   assert.ok(h.texts.at(-1)!.includes("Яндекс не отвечает"), h.texts.at(-1));
 });
 

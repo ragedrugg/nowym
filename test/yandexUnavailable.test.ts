@@ -80,10 +80,9 @@ test("SearchService: сбой Яндекса пробрасывается (а н
 function inlineHarness(trackService: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   let handler!: (ctx: unknown) => Promise<void>;
   const bot = {
-    inlineQuery: (_re: RegExp, fn: (ctx: unknown) => Promise<void>) => {
-      handler = fn;
+    on: (ev: string, fn: (ctx: unknown) => Promise<void>) => {
+      if (ev === "inline_query") handler = fn;
     },
-    chosenInlineResult: () => undefined,
     callbackQuery: () => undefined,
   };
   const page0 = new Map<string, unknown>();
@@ -271,8 +270,7 @@ test("chosen: сбой Яндекса и кэш пуст → кнопка «Ян
 function loadHandler(container: Container, bot: unknown) {
   let fn!: (ctx: unknown) => Promise<void>;
   const reg = {
-    inlineQuery: () => undefined,
-    chosenInlineResult: () => undefined,
+    on: () => undefined,
     callbackQuery: (re: RegExp, h: (ctx: unknown) => Promise<void>) => {
       if (re.test("load:1")) fn = h;
     },
@@ -280,7 +278,7 @@ function loadHandler(container: Container, bot: unknown) {
   };
   registerInline(reg as never, container);
   container.inlineOwners.set("IM", 1);
-  return (data: string) => fn({ data, inlineMessageId: "IM", from: { id: 1 }, answer: async () => true } as unknown);
+  return (data: string) => fn({ data, inline_message_id: "IM", from: { id: 1 }, answer: async () => true } as unknown);
 }
 
 test("load: сбой Яндекса + трек в кэше → аудио из кэша", async () => {

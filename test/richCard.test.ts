@@ -1,7 +1,7 @@
 /** F1 L3: минт file_id карточки, rich-плейсхолдер инлайна и его разрешение после chosen. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import { mintCardFileId } from "../src/bot/cardBuilder.ts";
 import type { Container } from "../src/bot/container.ts";
 import {
@@ -39,11 +39,7 @@ function mkBot(opts: { failEditText?: boolean; sendPhotoFails?: unknown[]; photo
       editMessageText: async (params: Record<string, unknown>) => {
         calls.push({ method: "editMessageText", params });
         if (opts.failEditText)
-          throw new TelegramError(
-            { ok: false, error_code: 400, description: "Bad Request: rich_message not supported" } as never,
-            "editMessageText" as never,
-            {} as never,
-          );
+          throw new TelegramError("editMessageText", 400, "Bad Request: rich_message not supported");
         return true;
       },
       editMessageMedia: async (params: Record<string, unknown>) => {
@@ -111,7 +107,9 @@ test("mintCardFileId — пустой photo: бросает и удаляет с
 });
 
 test("mintCardFileId — 429 с retry_after=0 ретраится (floodRetry сохранён)", async () => {
-  const { bot, calls } = mkBot({ sendPhotoFails: [{ payload: { retry_after: 0 } }] });
+  const { bot, calls } = mkBot({
+    sendPhotoFails: [new TelegramError("sendPhoto", 429, "Too Many Requests", { retry_after: 0 })],
+  });
   const card = await mintCardFileId(bot, "chan", Buffer.from("x"), "t");
   assert.equal(card.fileId, "L");
   assert.equal(calls.filter((c) => c.method === "sendPhoto").length, 2);

@@ -2,6 +2,7 @@
  * Все зависимости передаются аргументами — модуль без побочных эффектов при импорте. */
 
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Update } from "@yaebal/types";
 import { sleep } from "./async.ts";
 import { getLogger } from "./logging.ts";
 import { counterSnapshot } from "./metrics.ts";
@@ -46,6 +47,52 @@ export interface HttpDeps {
   /** SSE: heartbeat и потолок соединений (для тестов) */
   streamHeartbeatMs?: number;
   streamMaxConnections?: number;
+}
+
+/** потолок тела webhook-апдейта (как MAX_BODY у yaebal): больше — 413, апдейт не читаем. */
+const WEBHOOK_MAX_BODY = 1 << 20;
+
+/** Webhook-хендлер с семантикой GramIO `webhookHandler(bot, "http")`: тело читается,
+ * Telegram сразу получает 200 «ok!», а апдейт обрабатывается в фоне (не держит запрос
+ * до конца хендлера — chosen_inline_result качает трек минутами). Ошибки обработки
+ * ловит bot.onError внутри handleUpdate; сюда долетает только сбой самого запуска.
+ * Битый JSON → реджект (createHttpApp отвечает 400). Секрет и путь проверяет createHttpApp. */
+export function createWebhookHandler(
+  handleUpdate: (update: Update) => Promise<void>,
+  maxBodyBytes = WEBHOOK_MAX_BODY,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return (req, res) =>
+    new Promise<void>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let tooLarge = false;
+      req.on("data", (chunk: Buffer) => {
+        if (tooLarge) return;
+        size += chunk.length;
+        if (size > maxBodyBytes) {
+          tooLarge = true;
+          // остаток тела не дочитываем: ответ и сразу закрыть соединение
+          res.writeHead(413, { connection: "close" }).end(() => req.destroy());
+          resolve();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("error", reject);
+      req.on("end", () => {
+        if (tooLarge) return;
+        let update: Update;
+        try {
+          update = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Update;
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        res.writeHead(200).end("ok!");
+        resolve();
+        void handleUpdate(update).catch((e: unknown) => log.error(`[webhook] обработка апдейта упала: ${e}`));
+      });
+    });
 }
 
 export function bearerMatches(header: string | undefined, token: string): boolean {

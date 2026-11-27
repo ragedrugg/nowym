@@ -1,22 +1,17 @@
-import { type DialogManager, StartMode } from "@gramio/dialogs";
-import type { Bot } from "gramio";
 import type { Container } from "../container.ts";
-import { startLogin, startLogout } from "../dialogs.ts";
+import { startLogin, startLogout, startMenu } from "../dialogs.ts";
+import type { AppBot } from "../types.ts";
 
-const dialogOf = (ctx: unknown): DialogManager => (ctx as { dialog: DialogManager }).dialog;
-
-export function registerAuth(bot: Bot, container: Container): void {
+export function registerAuth(bot: AppBot, container: Container): void {
   bot.command("login", async (ctx) => {
     if (ctx.chat?.type !== "private") return;
-    const dialog = dialogOf(ctx);
-    await dialog.start("menu", "main", { startMode: StartMode.ResetStack });
-    await startLogin(dialog, bot, container, ctx.from!.id);
+    await startMenu(ctx, container, "main");
+    await startLogin(ctx.dialog, bot, container, ctx.from!.id);
   });
 
   bot.command("logout", async (ctx) => {
     if (ctx.chat?.type !== "private") return;
-    const dialog = dialogOf(ctx);
-    await dialog.start("menu", "main", { startMode: StartMode.ResetStack });
-    await startLogout(dialog, container, ctx.from!.id);
+    await startMenu(ctx, container, "main");
+    await startLogout(ctx.dialog, container, ctx.from!.id);
   });
 }

@@ -1,24 +1,22 @@
-/** GramIO webhook через node:http(s) + кастомный роут /now-playing. Фоновые
- * задачи: stale-refresher, чистка пустышек, дочитывание упавших альбомов,
- * ws-наблюдатель Ynison владельца. */
+/** yaebal-бот: long-polling через @yaebal/runner (self-hosted Bot API) либо webhook
+ * через node:http(s) + кастомный роут /now-playing. Фоновые задачи: stale-refresher,
+ * чистка пустышек, дочитывание упавших альбомов, ws-наблюдатель Ynison владельца. */
 
 import { readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { createDialogs } from "@gramio/dialogs";
-import { redisStorage } from "@gramio/storage-redis";
-import { AllowedUpdatesFilter, Bot, webhookHandler } from "gramio";
+import type { DialogState } from "@yaebal/morda";
+import { type RunnerHandle, run } from "@yaebal/runner";
+import { Redis } from "ioredis";
+import { redisStorage } from "yaebal";
+import { ALLOWED_UPDATES, buildBot, RUNNER_CONCURRENCY } from "./bot/app.ts";
 import { registerCommands } from "./bot/commandsMenu.ts";
 import { Container } from "./bot/container.ts";
-import { buildMenuDialog } from "./bot/dialogs.ts";
-import { registerHandlers } from "./bot/handlers/index.ts";
 import { resolveIconSet } from "./bot/iconSet.ts";
-import { PollingWatchdog } from "./bot/pollingWatchdog.ts";
-import { safeAnswerCb } from "./bot/safeApi.ts";
-import { STALE_MENU } from "./bot/texts.ts";
+import { confirmPolledOffset, PollingWatchdog, watchedRunnerBot } from "./bot/pollingWatchdog.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
 import { schedulePeriodic, sleep } from "./infra/async.ts";
-import { closeServer, createHttpApp } from "./infra/httpServer.ts";
+import { closeServer, createHttpApp, createWebhookHandler } from "./infra/httpServer.ts";
 import { getLogger } from "./infra/logging.ts";
 import { incCounter } from "./infra/metrics.ts";
 import { NowPlayingWatcher } from "./services/nowPlayingWatcher.ts";
@@ -45,57 +43,37 @@ async function withRetry(label: string, fn: () => Promise<void>): Promise<void> 
 
 async function main(): Promise<void> {
   const s = getSettings();
-  // Плагин @gramio/auto-retry не годится для 429: переотправляет уже потреблённый
-  // payload (→ «there is no audio») без .catch — 429-флуд обрабатывает floodRetry в ChannelSender.
+  // autoRetry (@yaebal/again) не ставим: 429-флуд обрабатывает floodRetry в ChannelSender
+  // и rich-отправке — два слоя ретраев на один 429 удваивали бы ожидание.
   // BOT_API_BASE_URL задан → self-hosted Bot API server + long-polling; пусто → облако + webhook
   const localApi = Boolean(s.BOT_API_BASE_URL);
-  const bot = localApi ? new Bot(s.API_TOKEN, { api: { baseURL: s.BOT_API_BASE_URL } }) : new Bot(s.API_TOKEN);
   const container = new Container();
   const webhookUrl = s.WEBHOOK_HOST.replace(/\/+$/, "") + s.WEBHOOK_PATH;
 
-  // Резолвим ДО buildMenuDialog: тот зашивает icon-id кнопок при сборке, а
-  // getStickerSet не требует bot.init(). При сбое кнопки остаются на текстовых глифах.
-  await resolveIconSet(bot, s.ICON_SET_NAME);
+  // Хранилище стека диалогов (кнопки) — Redis (localhost:6379), prefix изолирует ключи.
+  // ttl: ключ продлевается (EXPIRE) на каждой записи; кнопки меню, не трогавшегося
+  // неделю, просто гасят спиннер (стека нет) — меню открывается заново через /start.
+  // Ключи morda (`nowym:dialogs:dlg:<chat>`) не пересекаются со старыми GramIO-ключами —
+  // те истекут по своему TTL.
+  const redis = new Redis(s.REDIS_HOST ? { host: s.REDIS_HOST, port: s.REDIS_PORT } : {});
+  const dialogStorage = redisStorage<DialogState>(redis, { prefix: "nowym:dialogs:", ttl: 7 * 24 * 3600 * 1000 });
 
-  // extend ДО registerHandlers: derive ctx.dialog должен стоять раньше хендлеров команд.
-  // Хранилище стека диалогов (кнопки) — Redis (localhost:6379), keyPrefix изолирует ключи.
-  // $ttl: без него storage-redis пишет SET без срока и ключи копятся вечно. SETEX
-  // продлевает срок на каждой записи; кнопки меню, не трогавшегося неделю, просто
-  // гасят спиннер (стека нет) — меню открывается заново через /start.
-  const dialogStorage = { keyPrefix: "nowym:dialogs:", $ttl: 7 * 24 * 3600 };
-  const { plugin: dialogsPlugin, background } = createDialogs([buildMenuDialog(bot, container)], {
-    storage: redisStorage(s.REDIS_HOST ? { ...dialogStorage, host: s.REDIS_HOST, port: s.REDIS_PORT } : dialogStorage),
-    events: {
-      // DialogEventCtx = CallbackCtx | MessageCtx: answer только на callback-ветке → каст
-      onStale: (ctx) => safeAnswerCb(ctx as never, STALE_MENU),
-    },
-  });
-  bot.extend(dialogsPlugin);
-  container.dialogBackground = background;
-
-  // Реестр «кто писал боту в личку» — источник получателей для /broadcast.
-  // knownChatsDb читаем лениво на каждый вызов: на момент апдейта container.start() уже заполнит поле.
-  bot.use((ctx, next) => {
-    const chatId = (ctx as { chat?: { id?: number; type?: string } }).chat;
-    if (chatId?.type === "private" && typeof chatId.id === "number") {
-      void container.knownChatsDb?.touch(chatId.id).catch((e: unknown) => log.debug(`[known_chats] touch: ${e}`));
-    }
-    return next();
-  });
-
-  registerHandlers(bot, container);
-
-  // Ловит исключения в хендлерах, чтобы throw не ронял обработку апдейта целиком.
   // + троттленный алерт админу в личку (первый сразу, дальше не чаще 5 мин).
-  const alerter = s.ADMIN_USER_ID
-    ? new AdminAlerter((text) => bot.api.sendMessage({ chat_id: s.ADMIN_USER_ID, text }).then(() => undefined))
-    : null;
-  bot.onError(({ kind, error }) => {
-    const msg = `${kind}: ${error?.message ?? error}`;
-    log.error(`[onError] ${msg}`);
-    incCounter("errors_total");
-    alerter?.report(msg);
+  let alerter: AdminAlerter | null = null;
+  const bot = buildBot({
+    token: s.API_TOKEN,
+    apiBaseUrl: s.BOT_API_BASE_URL,
+    container,
+    dialogStorage,
+    onHandlerError: (msg) => alerter?.report(msg),
   });
+  if (s.ADMIN_USER_ID) {
+    alerter = new AdminAlerter((text) => bot.api.sendMessage({ chat_id: s.ADMIN_USER_ID, text }).then(() => undefined));
+  }
+
+  // getStickerSet не требует bot.init(). При сбое кнопки остаются на текстовых глифах
+  // (иконки читаются при каждом рендере меню, порядок с buildBot не важен).
+  await resolveIconSet(bot, s.ICON_SET_NAME);
 
   // bot.onError ловит только хендлеры — шальной rejected-промис в фоне иначе валит
   // процесс без следа. unhandledRejection логируем без exit; uncaughtException
@@ -115,7 +93,9 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(1), 1000).unref();
   });
 
-  await withRetry("bot_init", () => bot.init());
+  await withRetry("bot_init", async () => {
+    await bot.init();
+  });
   await container.start(bot);
 
   // ── фоновые задачи ──────────────────────────────────────────────────
@@ -180,24 +160,48 @@ async function main(): Promise<void> {
 
   await withRetry("register_commands", () => registerCommands(bot));
   let watchdog: PollingWatchdog | null = null;
+  let runner: RunnerHandle | null = null;
+  let polled: ReturnType<typeof watchedRunnerBot> | null = null;
   if (localApi) {
     if (s.POLLING_STALL_SEC > 0) {
       // защита от зависшего long-polling (local Bot API server уходил в connect-timeout,
       // и цикл getUpdates молча вставал): обрыв запроса, при повторе — выход, pm2 поднимет
       const wd = new PollingWatchdog({
         stallMs: s.POLLING_STALL_SEC * 1000,
+        concurrency: RUNNER_CONCURRENCY,
         onFatal: (reason) => {
           incCounter("errors_total");
           alerter?.report(`polling завис: ${reason} — рестарт процесса`);
           setTimeout(() => process.exit(1), 1000).unref();
         },
       });
-      bot.onApiCall("getUpdates", wd.hook);
       watchdog = wd;
     }
     // long-polling: deleteWebhook снимает облачный вебхук (на случай переезда),
-    // allowedUpdates=all — чтобы inline_query/chosen/callback точно доходили
-    await bot.start({ deleteWebhook: true, allowedUpdates: AllowedUpdatesFilter.all });
+    // allowed_updates — явный список обрабатываемых типов (без него Telegram держит прежний
+    // набор), чтобы inline_query/chosen/callback точно доходили.
+    await withRetry("delete_webhook", async () => {
+      await bot.api.deleteWebhook();
+    });
+    // @yaebal/runner: апдейты параллельно, как очередь GramIO (bot.start() yaebal —
+    // строго по одному). sequentializeBy → undefined: без упорядочивания по чату/юзеру,
+    // иначе долгое скачивание в chosen_inline_result держало бы следующие инлайн-запросы
+    // того же юзера; состояние меню сериализует KeyedLock morda.
+    // getUpdates падает раз за разом (400 на allowed_updates, 401, 409) — сторож это зависанием
+    // не считает, раннер только логирует: алерт админу после 5 ошибок подряд
+    polled = watchedRunnerBot(bot, watchdog, {
+      failAlertAfter: 5,
+      onPollFailing: (n, e) => alerter?.report(`getUpdates падает ${n} раз подряд: ${e}`),
+    });
+    runner = run(polled, {
+      concurrency: RUNNER_CONCURRENCY,
+      sequentializeBy: () => undefined,
+      allowedUpdates: ALLOWED_UPDATES,
+      onError: (e, update) =>
+        update
+          ? log.error(`[polling] апдейт ${update.update_id} упал: ${e}`)
+          : log.warning(`[polling] getUpdates упал: ${e}`),
+    });
     watchdog?.start();
     log.info(`старт ок, long-polling через ${s.BOT_API_BASE_URL}`);
   } else {
@@ -205,6 +209,7 @@ async function main(): Promise<void> {
       await bot.api.setWebhook({
         url: webhookUrl,
         drop_pending_updates: true,
+        allowed_updates: ALLOWED_UPDATES,
         ...(s.WEBHOOK_SECRET ? { secret_token: s.WEBHOOK_SECRET } : {}),
       });
       log.info(`старт ок, webhook → ${webhookUrl}`);
@@ -212,7 +217,7 @@ async function main(): Promise<void> {
   }
 
   // ── http(s)-сервер: webhook + /now-playing ──────────────────────────
-  const tgHandler = webhookHandler(bot, "http");
+  const tgHandler = createWebhookHandler((update) => bot.handleUpdate(update));
 
   const httpApp = createHttpApp({
     localApi,
@@ -247,6 +252,8 @@ async function main(): Promise<void> {
   // ── graceful shutdown ───────────────────────────────────────────────
   const shutdown = async (): Promise<void> => {
     log.info("остановка...");
+    // дальше хендлеры могут падать на закрытых Redis/pg — ложные алерты на каждый деплой
+    alerter?.mute();
     watchdog?.stop();
     if (npWatcher) await npWatcher.stop();
     // трек, уже начатый до stopped-флага, может тянуться до таймаута скачивания
@@ -255,8 +262,17 @@ async function main(): Promise<void> {
       log.warning(`[stale] stop на shutdown упал: ${e}`),
     );
     stopStubCleaner();
-    if (localApi) {
-      await Promise.race([bot.stop(), sleep(5000)]).catch((e) => log.warning(`[polling] stop на shutdown упал: ${e}`));
+    if (runner) {
+      // stop() раннера сразу абортит long-poll, но ждёт дренажа апдейтов в работе (скачивание —
+      // минуты) — не дольше 5с. Полученные пачки подтверждаем сразу, не дожидаясь дренажа:
+      // иначе после рестарта Telegram пришлёт их снова (повторные выгрузки/скачивания).
+      const stopping = runner.stop().catch((e) => log.warning(`[polling] stop на shutdown упал: ${e}`));
+      if (polled) {
+        await confirmPolledOffset(bot.api, polled.maxUpdateId()).catch((e) =>
+          log.warning(`[polling] подтверждение offset на shutdown упало: ${e}`),
+        );
+      }
+      await Promise.race([stopping, sleep(5000)]);
     } else {
       try {
         await Promise.race([bot.api.deleteWebhook(), sleep(5000)]);
@@ -265,6 +281,7 @@ async function main(): Promise<void> {
       }
     }
     await container.stop();
+    await redis.quit().catch((e: unknown) => log.warning(`[redis] quit на shutdown упал: ${e}`));
     await closeServer(server, httpApp);
     log.info("стоп");
   };

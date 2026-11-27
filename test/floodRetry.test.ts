@@ -5,11 +5,12 @@
  * если проверку «упростят» обратно на truthy. */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { TelegramError } from "yaebal";
 import { floodRetry } from "../src/infra/floodRetry.ts";
 
-/** ошибка GramIO вида 429 с управляемым retry_after. */
+/** ошибка yaebal вида 429 с управляемым retry_after (лежит в .parameters). */
 const flood = (retryAfter: number): Error =>
-  Object.assign(new Error("Too Many Requests: 429"), { payload: { retry_after: retryAfter } });
+  new TelegramError("sendAudio", 429, "Too Many Requests: retry after", { retry_after: retryAfter });
 
 test("floodRetry: retry_after=0 — это ретрай, а не «не 429»", async () => {
   const seen: number[] = [];

@@ -1,5 +1,4 @@
-import type { Bot } from "gramio";
-import { format } from "gramio";
+import { format } from "yaebal";
 import { getLogger } from "../../../infra/logging.ts";
 import type { CachedTrack } from "../../../storage/types.ts";
 import { type YandexClient, YandexUnavailableError } from "../../../yandex/client.ts";
@@ -22,7 +21,7 @@ import {
   tooOften,
   YANDEX_DOWN,
 } from "../../texts.ts";
-import type { TgUser } from "../../types.ts";
+import type { ApiBot, TgUser } from "../../types.ts";
 import { type EnsureResult, ensureFileId, resolveTrack } from "./ensure.ts";
 import { chatAudioExtras } from "./shared.ts";
 
@@ -38,7 +37,7 @@ export interface CardPosition {
 /** rich-ветка sendTrackToChat (настройка «карточка+трек» вкл.): карточка и трек одним
  * сообщением; при сбое — отдельные карточка и трек из тех же file_id (фолбэк молча). */
 async function sendRichCardTrackToChat(a: {
-  bot: Bot;
+  bot: ApiBot;
   chatId: number;
   userId: number;
   user: TgUser;
@@ -154,7 +153,7 @@ async function sendRichCardTrackToChat(a: {
 /** общий путь для deep-link и «что играет». card+user — только если вызывающий хочет
  * карточку; она рисуется при включённой настройке rich_messages. */
 export async function sendTrackToChat(args: {
-  bot: Bot;
+  bot: ApiBot;
   chatId: number;
   userId: number;
   container: Container;

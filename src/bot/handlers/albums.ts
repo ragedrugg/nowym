@@ -1,5 +1,4 @@
-import type { Bot } from "gramio";
-import { bold, type FormattableString, format } from "gramio";
+import { bold, type FormatResult, format } from "yaebal";
 import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
 import { pluralTracks } from "../../infra/text.ts";
@@ -28,11 +27,12 @@ import {
   uploadingTracks,
   YANDEX_DOWN,
 } from "../texts.ts";
+import { type ApiBot, type AppBot, tgUserOf } from "../types.ts";
 import { startTrackUploadReply } from "./common.ts";
 
 const log = getLogger("bot.albums");
 
-function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormattableString {
+function albumHeader(artist: string, title: string, metaLine: string, albumType: string): FormatResult {
   const head = format`${albumEmoji(albumType)} ${bold(`${artist} — ${title}`)}`;
   return metaLine ? format`${head}\n${metaLine}` : head;
 }
@@ -41,13 +41,13 @@ function albumHeader(artist: string, title: string, metaLine: string, albumType:
  *  Отличаются только фетчем и текстами — плейлист приходит той же AlbumData
  *  (buildPlaylistAlbumData), так что и мета-строку получает ту же. */
 export async function startUpload(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   userId: number,
   container: Container,
   /** им. падеж, он же вин.: «альбом» / «плейлист» — для «⏳ ищу …». */
   noun: string,
-  notFoundText: FormattableString,
+  notFoundText: FormatResult,
   fetch: (yandex: YandexClient) => Promise<AlbumData | null>,
 ): Promise<void> {
   const [allowed, retryAfter] = container.downloadLimiter.check(userId);
@@ -130,7 +130,7 @@ export async function startUpload(
 
 /** зовут и из /start album_<id>, и из URL в личке. */
 export async function startAlbumUpload(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   userId: number,
   albumId: number,
@@ -141,25 +141,21 @@ export async function startAlbumUpload(
   );
 }
 
-export function registerAlbums(bot: Bot, container: Container): void {
-  // ссылки на альбом и трек; плейлист — отдельный hears в playlists.ts
-  bot.hears(
-    (ctx) => {
-      const t = parseSearchQuery(ctx.text ?? "").type;
-      return t === "album_link" || t === "track_link";
-    },
-    async (ctx) => {
-      if (ctx.chat?.type !== "private") return;
-      const parsed = parseSearchQuery(ctx.text ?? "");
-      const from = ctx.from!;
-      if (parsed.type === "album_link") {
-        await startAlbumUpload(bot, ctx.chat.id, from.id, parsed.album_id, container);
-      } else if (parsed.type === "track_link") {
-        const user = { id: from.id, username: from.username ?? null, firstName: from.firstName ?? null };
-        await startTrackUploadReply(bot, ctx.chat.id, user, String(parsed.track_id), container);
-      }
-    },
-  );
+export function registerAlbums(bot: AppBot, container: Container): void {
+  // ссылки на альбом и трек; плейлист — отдельный матчер в playlists.ts.
+  // on("message"), не hears: yaebal-hears матчит и edited_message/channel_post —
+  // правка сообщения со ссылкой запускала бы выгрузку повторно (GramIO-hears = только message).
+  bot.on("message", async (ctx, next) => {
+    const parsed = parseSearchQuery(ctx.text ?? "");
+    if (parsed.type !== "album_link" && parsed.type !== "track_link") return next();
+    if (ctx.chat?.type !== "private") return;
+    const from = ctx.from!;
+    if (parsed.type === "album_link") {
+      await startAlbumUpload(bot, ctx.chat.id, from.id, parsed.album_id, container);
+    } else {
+      await startTrackUploadReply(bot, ctx.chat.id, tgUserOf(from), String(parsed.track_id), container);
+    }
+  });
 
   bot.callbackQuery("cancel_album", async (ctx) => {
     const cancelled = container.albumService.cancel(ctx.from.id);
@@ -200,7 +196,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
       return;
     }
 
-    const progressMsg = ctx.message ? new ProgressMessage(bot, ctx.message.chat.id, ctx.message.id) : null;
+    const progressMsg = ctx.message ? new ProgressMessage(bot, ctx.message.chat.id, ctx.message.message_id) : null;
     const started = await container.albumService.retryFailed({
       chatId: buf.chatId,
       userId: buf.userId,
@@ -209,7 +205,7 @@ export function registerAlbums(bot: Bot, container: Container): void {
       progressMsg,
       yandex: buf.yandex,
     });
-    await ctx.answer(started ? CB_RETRYING : { text: CB_UPLOAD_BUSY, show_alert: true });
+    await ctx.answer(started ? { text: CB_RETRYING } : { text: CB_UPLOAD_BUSY, show_alert: true });
   });
 
   log.debug("album-хендлеры зарегистрированы");

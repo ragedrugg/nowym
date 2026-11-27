@@ -15,10 +15,14 @@ process.env.POSTGRES_USERS_DSN = "postgres://test/test";
 process.env.POSTGRES_CACHE_DSN = "postgres://test/test";
 process.env.BOT_API_BASE_URL = "http://127.0.0.1:8081/bot";
 
-import type { Bot } from "gramio";
 import type { Container } from "../src/bot/container.ts";
 import { isAdmin, registerAdmin } from "../src/bot/handlers/admin.ts";
 import { ADMIN } from "../src/bot/texts.ts";
+import type { AppBot as Bot } from "../src/bot/types.ts";
+
+/** текст FormatResult yaebal (`{ text, entities }`, без toString как у GramIO) или строки. */
+const textOf = (v: unknown): string =>
+  typeof v === "object" && v !== null && "text" in v ? String(v.text) : String(v);
 
 test("isAdmin — true только для точного ADMIN_USER_ID", () => {
   assert.equal(isAdmin(12345), true);
@@ -46,9 +50,9 @@ test("D16: /health — сбой сборки статуса заменяет «�
   await commands.get("health")!({
     chat: { type: "private", id: 7 },
     from: { id: 12345 },
-    reply: async () => ({ id: 99 }),
+    reply: async () => ({ message_id: 99 }),
   });
   assert.equal(edits.length, 1);
   assert.equal(edits[0]!.message_id, 99);
-  assert.ok(String(edits[0]!.text).includes(ADMIN.collectFailed));
+  assert.ok(textOf(edits[0]!.text).includes(ADMIN.collectFailed));
 });

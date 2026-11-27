@@ -43,3 +43,18 @@ test("AdminAlerter: сбой send не роняет report", async () => {
   await tick();
   assert.ok(true);
 });
+
+test("AdminAlerter: mute() на shutdown — ни новых, ни накопленных за cooldown алертов", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const sent: string[] = [];
+  const a = new AdminAlerter(async (m) => void sent.push(m), 10_000);
+  a.report("до остановки");
+  await Promise.resolve();
+  a.report("накоплено в cooldown"); // уйдёт таймером после cooldown — если не заглушить
+  a.mute();
+  a.report("Connection is closed");
+  t.mock.timers.tick(20_000);
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, /до остановки/);
+});

@@ -2,22 +2,18 @@
  *
  * Модуль чистый: без БД, таймеров и импортов из handlers/**. file_id карточки и
  * трека получаем через инжектируемые колбэки, отправку делаем через переданный bot.api.
- * В rich_message кладём ТОЛЬКО file_id (gramio не умеет multipart для rich_message,
- * а Bot API запрещает аплоад при правке inline-сообщения).
+ * В rich_message кладём ТОЛЬКО file_id (multipart внутри rich_message Bot API не
+ * подтверждён, а при правке inline-сообщения аплоад запрещён вовсе).
  * Сбой с ответом API => один warning `[rich]` и результат "fallback": вызывающий код
  * отдаёт карточку и трек по отдельности из уже полученных file_id (без повторного
  * рендера/скачивания). Наружу ничего не бросается. */
-import {
-  type Bot,
-  type FormattableString,
-  type InlineKeyboard,
-  TelegramError,
-  type TelegramInputRichMessage,
-} from "gramio";
+import type { InputRichMessage as TelegramInputRichMessage } from "@yaebal/types";
+import { type FormatResult, type InlineKeyboard, TelegramError } from "yaebal";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import { nowPlayingMarkup, trackMarkup } from "./markup.ts";
 import { DEGRADED_NOTE } from "./texts.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("bot.rich");
 
@@ -63,7 +59,7 @@ export class PartialDeliveryError extends Error {
 
 /** caption/reply_markup отдельного аудио в чат (sendAudio) — по track_layout. */
 export interface AudioExtras {
-  caption?: FormattableString | string;
+  caption?: FormatResult | string;
   reply_markup?: InlineKeyboard;
 }
 
@@ -71,14 +67,6 @@ export interface FallbackInput {
   cardFileId: string | null;
   audio: RichAudio | null;
 }
-
-type RichCaptionText = NonNullable<
-  Extract<NonNullable<TelegramInputRichMessage["blocks"]>[number], { type: "audio" }>["caption"]
->["text"];
-
-/** Типы @gramio/types описывают RichText только как объекты (без обычной строки),
- * хотя Bot API принимает строку — единственный каст ради подписи блока. */
-const richText = (s: string): RichCaptionText => s as unknown as RichCaptionText;
 
 /** photo-блок (карточка) + audio-блок (трек): форма, проверенная вживую. */
 export function buildRichCardTrack(cardFileId: string, audio: RichAudio): TelegramInputRichMessage {
@@ -96,7 +84,7 @@ export function buildRichCardTrack(cardFileId: string, audio: RichAudio): Telegr
           ...(performer ? { performer } : {}),
           ...(duration > 0 ? { duration } : {}),
         },
-        ...(audio.degraded ? { caption: { text: richText(DEGRADED_NOTE) } } : {}),
+        ...(audio.degraded ? { caption: { text: DEGRADED_NOTE } } : {}),
       },
     ],
   } satisfies TelegramInputRichMessage;
@@ -125,7 +113,7 @@ export function isApiError(e: unknown): boolean {
 
 /** Отправка rich_message в цель; бросает при сбое, «not modified» = успех. */
 export function makeRichSend(
-  bot: Bot,
+  bot: ApiBot,
   target: RichTarget,
   reply_markup?: InlineKeyboard,
 ): (rich: TelegramInputRichMessage) => Promise<void> {
@@ -210,7 +198,7 @@ export async function deliverCardAndTrack(o: {
 /** sendRich/fallback для обычного чата: rich-сообщение или отдельные карточка + трек
  * (ровно как без rich: sendPhoto с nowPlayingMarkup, затем sendAudio). */
 export function chatRichSenders(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number | string,
   o: {
     trackId: string;

@@ -1,12 +1,12 @@
 /** меню команд бота (setMyCommands). */
-import type { Bot } from "gramio";
 import { getLogger } from "../infra/logging.ts";
 import { getSettings } from "../settings.ts";
 import { ADMIN_COMMANDS, PUBLIC_COMMANDS } from "./texts.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("bot.commands_menu");
 
-export async function registerCommands(bot: Bot): Promise<void> {
+export async function registerCommands(bot: ApiBot): Promise<void> {
   const s = getSettings();
   await bot.api.setMyCommands({
     commands: PUBLIC_COMMANDS,

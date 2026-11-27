@@ -1,7 +1,7 @@
 // выгрузка альбома/плейлиста: качество «экономичное», слишком длинные треки
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Bot } from "gramio";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 import type { HttpClient } from "../src/infra/http.ts";
 import type { DownloadConcurrency } from "../src/infra/queue.ts";
 import { AlbumService } from "../src/services/albums.ts";
@@ -10,6 +10,10 @@ import type { CacheDb } from "../src/storage/cache.ts";
 import type { UserSettings } from "../src/storage/settings.ts";
 import type { YandexClient } from "../src/yandex/client.ts";
 import type { AlbumData, YaTrack } from "../src/yandex/types.ts";
+
+/** текст FormatResult yaebal (`{ text, entities }`, без toString как у GramIO) или строки. */
+const textOf = (v: unknown): string =>
+  typeof v === "object" && v !== null && "text" in v ? String(v.text) : String(v);
 
 const album = (tracks: YaTrack[]): AlbumData =>
   ({
@@ -129,7 +133,7 @@ test("альбом: трек > 4.5 ч — «(слишком длинный)», �
     } as unknown as YandexClient,
   });
   const last = h.edits.at(-1)!;
-  const text = String((last.text as { toString(): string }).toString());
+  const text = String((last.text as { text: string }).text);
   assert.ok(text.includes("t3 (слишком длинный)"), text);
   assert.ok(text.includes("- t2"), text);
   assert.ok(text.includes("1/3"), text);
@@ -145,7 +149,7 @@ test("альбом: только слишком длинные не удалис
   const h = harness("best");
   await h.send([t("1"), t("3", FIVE_HOURS)]);
   const last = h.edits.at(-1)!;
-  assert.ok(String(last.text).includes("(слишком длинный)"));
+  assert.ok(textOf(last.text).includes("(слишком длинный)"));
   assert.equal(last.reply_markup, undefined);
   assert.equal(h.svc.peekRetry(99), null);
 });

@@ -1,7 +1,7 @@
-/** мелкие хелперы для GramIO-контекстов (доступ к сырым полям update). */
+/** мелкие хелперы для контекстов (доступ к сырым полям update). */
 
 /** сырая строка callback_data — работает и для string-, и для RegExp-матчеров
- * (при RegExp GramIO заменяет ctx.data на ctx.queryData, поэтому читаем update). */
+ * (фолбэк на update — для контекстов без поля data). */
 export function cbData(ctx: unknown): string {
   const c = ctx as {
     data?: string;

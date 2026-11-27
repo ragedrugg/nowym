@@ -271,8 +271,7 @@ test("renderAndSwapCard: стэш чужого пользователя → не
 function likeHarness(yandex: Record<string, unknown>) {
   const handlers: { re: RegExp; fn: (ctx: unknown) => Promise<void> }[] = [];
   const bot = {
-    inlineQuery: () => undefined,
-    chosenInlineResult: () => undefined,
+    on: () => undefined,
     callbackQuery: (re: RegExp, fn: (ctx: unknown) => Promise<void>) => handlers.push({ re, fn }),
   };
   const container = {
@@ -404,10 +403,9 @@ function captureStdout(): { out: string[]; restore: () => void } {
 test("D24: текст inline-запроса и result_id chosen — на DEBUG, не на INFO", async () => {
   let inlineHandler!: (ctx: unknown) => Promise<void>;
   const bot = {
-    inlineQuery: (_re: RegExp, fn: (ctx: unknown) => Promise<void>) => {
-      inlineHandler = fn;
+    on: (ev: string, fn: (ctx: unknown) => Promise<void>) => {
+      if (ev === "inline_query") inlineHandler = fn;
     },
-    chosenInlineResult: () => undefined,
     callbackQuery: () => undefined,
   };
   const container = {
@@ -461,8 +459,7 @@ test("renderAndSwapCard: рендер карточки упал → «загру
 function crdHarness(container: unknown, bot: { api: unknown }) {
   let fn!: (ctx: unknown) => Promise<void>;
   const reg = {
-    inlineQuery: () => undefined,
-    chosenInlineResult: () => undefined,
+    on: () => undefined,
     callbackQuery: (re: RegExp, h: (ctx: unknown) => Promise<void>) => {
       if (re.test("crd:npc:1:2:3")) fn = h;
     },
@@ -473,7 +470,7 @@ function crdHarness(container: unknown, bot: { api: unknown }) {
   const tap = (data: string, from = 1) =>
     fn({
       data,
-      inlineMessageId: "IM",
+      inline_message_id: "IM",
       from: { id: from },
       answer: async (p: unknown) => {
         toasts.push(p);

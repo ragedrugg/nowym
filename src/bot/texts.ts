@@ -13,7 +13,7 @@
  *  • без точки в конце; многоточие — символ «…»; «ситуация — действие» через « — »;
  *  • одна формулировка на ситуацию: вход — LOGIN_FIRST, лимит — tooOften,
  *    ошибка — ERROR_RETRY / CB_FAILED, деградация — degradedNote. */
-import { blockquote, bold, code, type FormattableString, format, italic, link } from "gramio";
+import { blockquote, bold, code, type FormatResult, format, italic, link } from "yaebal";
 import { botMention, pluralTracks, waitSeconds } from "../infra/text.ts";
 import { CARD_TOGGLES, type UserSettings } from "../storage/settings.ts";
 
@@ -39,13 +39,13 @@ export const ADMIN_COMMANDS = [
 const typeAnywhere = (botUsername: string | null): string =>
   `набери ${botMention(botUsername)} название в любом чате — или жми кнопки ниже`;
 
-export function startText(loggedIn: boolean, botUsername: string | null = null): FormattableString {
+export function startText(loggedIn: boolean, botUsername: string | null = null): FormatResult {
   const base = format`👋 привет\n\nэто бот для одного жёлтого музыкального сервиса. кидает треки прямо в телеграм — по названию, по ссылке или просто тот, который у тебя сейчас играет\n\n`;
   const tail = loggedIn ? typeAnywhere(botUsername) : "чтобы всё заработало — войди, это минута";
   return format`${base}${tail}`;
 }
 
-export function helpText(botUsername: string | null = null): FormattableString {
+export function helpText(botUsername: string | null = null): FormatResult {
   return format`🎵 ${bold("что я умею")}
 кидаю треки, альбомы и плейлисты прямо в телеграм — по названию, ссылке, цитате из песни или тот, что играет у тебя сейчас
 
@@ -91,7 +91,7 @@ export const LOGIN_START_FAILED = "сервис входа не ответил";
 export const LOGIN_INTERNAL_FAILED = "сбой на стороне бота";
 export const LOGIN_TIMEOUT_REASON = "код истёк";
 export const LOGIN_CANCELLED = "вход отменён";
-export const loginFailed = (why: string): FormattableString =>
+export const loginFailed = (why: string): FormatResult =>
   format`❌ не вышло войти — попробуй ещё раз${why ? format`\n\n${italic(why)}` : ""}`;
 export const LOGOUT_DONE = "✅ ты вышел из аккаунта\n\nвойти снова — кнопка ниже";
 export const LOGOUT_DONE_FALLBACK = "✅ ты вышел из аккаунта";
@@ -103,7 +103,7 @@ export interface LoginInfo {
   mins: number;
 }
 
-export const deviceFlowText = (l: LoginInfo): FormattableString => format`${LOGIN_EMOJI} ${bold("вход в аккаунт")}
+export const deviceFlowText = (l: LoginInfo): FormatResult => format`${LOGIN_EMOJI} ${bold("вход в аккаунт")}
 
 1. жми «продолжить»
 2. введи код: ${code(l.userCode)}
@@ -162,7 +162,7 @@ export const NO_VARIANTS = "нет вариантов скачивания";
 export type EnsureFailKind = "not_found" | "too_long" | "no_variants" | "failed" | "unavailable";
 
 /** итог неудачной закачки — сообщением в чат. */
-export function ensureErrorText(kind: EnsureFailKind): FormattableString {
+export function ensureErrorText(kind: EnsureFailKind): FormatResult {
   if (kind === "unavailable") return format`${YANDEX_DOWN}`;
   const text = ensureErrorButton(kind);
   return text ? format`❌ ${text}` : format`❌ не вышло скачать — попробуй ещё раз`;
@@ -213,7 +213,7 @@ export const CARD_RESULT = { label: "оформить карточкой", place
 export const RICH_RESULT = { label: "карточка + трек", placeholder: "готовлю карточку и трек…" };
 export const LYRICS_RESULT = { label: "карточка с текстом", placeholder: "готовлю карточку с текстом…" };
 
-export function cardCaptionText(trackUrl: string, artist: string, title: string): FormattableString {
+export function cardCaptionText(trackUrl: string, artist: string, title: string): FormatResult {
   const a = (artist || "").trim();
   const t = (title || "").trim();
   const head = a ? `🎵 ${a} — ${t}` : `🎵 ${t}`;
@@ -222,17 +222,17 @@ export function cardCaptionText(trackUrl: string, artist: string, title: string)
 
 /** «качаю X — Y» → на choose заменяется аудио. */
 export const textMediaTitle = (head: string): string => `⬇️ ${head}`;
-export const textMediaBody = (head: string): FormattableString => format`⬇️ качаю ${bold(head)}`;
+export const textMediaBody = (head: string): FormatResult => format`⬇️ качаю ${bold(head)}`;
 export const TEXT_MEDIA_DESCRIPTION = "нажми — заменю текст на трек";
 
 export const UNTITLED = "без названия";
 export const searchTrackCount = (n: number): string => pluralTracks(n);
 export const albumResultTitle = (title: string): string => `📀 ${title}`;
-export const albumResultText = (head: string, suffix: string, url: string): FormattableString =>
+export const albumResultText = (head: string, suffix: string, url: string): FormatResult =>
   suffix ? format`📀 ${bold(head)}\n${italic(suffix)}\n\n${url}` : format`📀 ${bold(head)}\n\n${url}`;
 export const ALBUM_TO_DM = "выгрузить альбом мне в личку";
 export const playlistResultTitle = (title: string): string => `🎵 ${title}`;
-export const playlistResultText = (title: string, suffix: string, url: string): FormattableString =>
+export const playlistResultText = (title: string, suffix: string, url: string): FormatResult =>
   suffix ? format`🎵 ${bold(title)}\n${italic(suffix)}\n\n${url}` : format`🎵 ${bold(title)}\n\n${url}`;
 export const PLAYLIST_DESCRIPTION = "плейлист";
 export const PLAYLIST_TO_DM = "выгрузить плейлист мне в личку";
@@ -256,9 +256,9 @@ export const EFFECT_SUFFIX = {
 export const ALBUM_NOUN = "альбом";
 export const PLAYLIST_NOUN = "плейлист";
 export const UPLOAD_BUSY = "⏳ у тебя уже идёт выгрузка — дождись или жми «отменить»";
-export const findingRelease = (noun: string): FormattableString => format`⏳ ищу ${noun}…`;
+export const findingRelease = (noun: string): FormatResult => format`⏳ ищу ${noun}…`;
 export const NO_TRACKS = "❌ нет доступных треков";
-export const uploadingTracks = (caption: FormattableString, tracks: string): FormattableString =>
+export const uploadingTracks = (caption: FormatResult, tracks: string): FormatResult =>
   format`${caption}\n\n⬇️ качаю ${tracks}…`;
 export const ALBUM_NOT_FOUND = "❌ альбом не найден или недоступен";
 export const PLAYLIST_NOT_FOUND = "❌ плейлист не найден, недоступен или пуст";
@@ -271,20 +271,20 @@ export const CB_RETRYING = "повторяю…";
 export const BTN_CANCEL_UPLOAD = "отменить";
 export const albumRetryButton = (tracks: string): string => `повторить ${tracks}`;
 
-export const resumeNeedsLogin = (noun: string): FormattableString =>
+export const resumeNeedsLogin = (noun: string): FormatResult =>
   format`❌ не вышло продолжить — войди через /login и кинь ${noun} ещё раз`;
-export const resumeGone = (noun: string): FormattableString => format`❌ ${noun} больше недоступен`;
-export const resumeAlreadyDone = (noun: string): FormattableString => format`✅ ${noun} уже отправлен`;
-export const resumeContinue = (done: number, total: number, remaining: number): FormattableString =>
+export const resumeGone = (noun: string): FormatResult => format`❌ ${noun} больше недоступен`;
+export const resumeAlreadyDone = (noun: string): FormatResult => format`✅ ${noun} уже отправлен`;
+export const resumeContinue = (done: number, total: number, remaining: number): FormatResult =>
   format`🔄 продолжаю с того места: ${done}/${total} уже отправлено, осталось ${remaining}`;
-export const uploadCancelled = (header: FormattableString, sent: number, total: number): FormattableString =>
+export const uploadCancelled = (header: FormatResult, sent: number, total: number): FormatResult =>
   format`${header}\n⛔ отменено — отправлено ${sent}/${total}`;
 export const nowSendingTrack = (title: string): string => `«${title}»`;
 export const nowSendingBatch = (n: number): string => pluralTracks(n);
 export const etaLeft = (eta: string): string => `, осталось ~${eta}`;
-export const sendingNow = (what: string): FormattableString => format`📨 отправляю ${what}`;
+export const sendingNow = (what: string): FormatResult => format`📨 отправляю ${what}`;
 export const PREPARING_SEND = "📨 готовлю отправку…";
-export const downloadingInParallel = (tracks: string): FormattableString => format`⬇️ параллельно качаю ${tracks}`;
+export const downloadingInParallel = (tracks: string): FormatResult => format`⬇️ параллельно качаю ${tracks}`;
 export const FAILED_LIST_HEADER = "❌ не вышло:";
 /** пометка трека >4.5 ч в итоге выгрузки — «повторить» его не касается. */
 export const TOO_LONG_MARK = "(слишком длинный)";
@@ -329,7 +329,7 @@ export const toggleSummary = (t: Record<string, boolean>): string => {
   return on.length > 0 ? on.join(", ") : "ничего не выбрано";
 };
 
-export const settingsMainText = (s: UserSettings): FormattableString => format`${bold("⚙️ настройки")}
+export const settingsMainText = (s: UserSettings): FormatResult => format`${bold("⚙️ настройки")}
 
 ${bold("🎧 трек")}
 качество: ${bold(trackQualityLabel(s.track_quality))}
@@ -343,31 +343,31 @@ ${bold("🖼 карточка")}
 поля: ${italic(toggleSummary(s.card_toggles))}
 карточка + трек: ${bold(onOffLabel(s.rich_messages))}`;
 
-export const trackRootText = (s: UserSettings): FormattableString => format`${bold("🎧 трек")}
+export const trackRootText = (s: UserSettings): FormatResult => format`${bold("🎧 трек")}
 
 качество: ${bold(trackQualityLabel(s.track_quality))}
 подпись и кнопки: ${bold(trackLayoutLabel(s.track_layout))}
 способ отправки: ${bold(trackSendModeLabel(s.track_send_mode))}`;
 
-export const layoutPickText = (): FormattableString => format`${bold("подпись и кнопки трека")}
+export const layoutPickText = (): FormatResult => format`${bold("подпись и кнопки трека")}
 
 ${bold("кнопка")} — под аудио кнопки лайка и «открыть»
 ${bold("текст")} — подпись со ссылкой «открыть»
 ${bold("всё")} — и подпись, и кнопки
 ${bold("ничего")} — только аудиофайл`;
 
-export const sendModePickText = (): FormattableString => format`${bold("способ отправки (в inline)")}
+export const sendModePickText = (): FormatResult => format`${bold("способ отправки (в inline)")}
 
 ${bold("пустышка")} — сразу аудиофайл, который подменяется на трек
 ${bold("текст → медиа")} — сначала «качаю артист — название», потом это сообщение становится треком`;
 
-export const qualityPickText = (): FormattableString => format`${bold("качество звука")}
+export const qualityPickText = (): FormatResult => format`${bold("качество звука")}
 
 ${bold(CODEC_LABELS.mp3)} — mp3 до 320 кбит/с
 ${bold(CODEC_LABELS.aac)} — до 192 кбит/с, легче и быстрее
 ${bold(CODEC_LABELS.flac)} — flac без потерь, файлы тяжёлые`;
 
-export const cardRootText = (s: UserSettings): FormattableString => format`${bold("🖼 карточка")}
+export const cardRootText = (s: UserSettings): FormatResult => format`${bold("🖼 карточка")}
 
 поля: ${italic(toggleSummary(s.card_toggles))}
 прогресс: ${bold(cardProgressLabel(s.card_progress))}
@@ -377,22 +377,22 @@ export const cardRootText = (s: UserSettings): FormattableString => format`${bol
 ${bold("карточка + трек")}: ${bold(onOffLabel(s.rich_messages))}
 ${italic("карточка и трек приходят одним сообщением; если не выйдет — пришлю двумя")}`;
 
-export const cardAspectPickText = (): FormattableString => format`${bold("соотношение сторон")}
+export const cardAspectPickText = (): FormatResult => format`${bold("соотношение сторон")}
 
 ${bold("16:9")} — широкоэкранный (по умолчанию)
 ${bold("9:16")} — вертикальный`;
 
-export const cardLayoutPickText = (): FormattableString => format`${bold("подпись и кнопки карточки")}
+export const cardLayoutPickText = (): FormatResult => format`${bold("подпись и кнопки карточки")}
 
 ${bold("кнопка")} — под фото кнопки «${BTN_LISTEN_DM}» / «${BTN_LISTEN_PLAYER}»
 ${bold("текст")} — подпись со ссылкой «в плеере»
 ${bold("всё")} — и подпись, и кнопки
 ${bold("ничего")} — только фото`;
 
-export const cardFieldsText = (t: Record<string, boolean>): FormattableString =>
+export const cardFieldsText = (t: Record<string, boolean>): FormatResult =>
   format`${bold("поля карточки")}\n\n${italic(toggleSummary(t))}`;
 
-export const cardProgressText = (): FormattableString => format`${bold("прогресс трека")}
+export const cardProgressText = (): FormatResult => format`${bold("прогресс трека")}
 
 ${bold("волна")} — волнистый
 ${bold("полоска")} — прямая`;
@@ -437,7 +437,7 @@ export const ADMIN = {
   unavailable: "недоступно",
   broadcastCompose: format`пришли ${bold("одно")} сообщение для рассылки — любой тип (текст, фото, видео, файл, голос, стикер)\n/cancel — отмена`,
   broadcastCancelled: "рассылка отменена",
-  broadcastConfirm: (n: number): FormattableString => format`разослать это сообщение ${bold(String(n))} пользователям?`,
+  broadcastConfirm: (n: number): FormatResult => format`разослать это сообщение ${bold(String(n))} пользователям?`,
   cancelled: "отменено",
   draftStale: "черновик рассылки устарел — начни заново через /broadcast",
   broadcastStarted: "начинаю рассылку…",

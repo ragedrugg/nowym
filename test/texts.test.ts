@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { format } from "gramio";
+import { format } from "yaebal";
 import * as T from "../src/bot/texts.ts";
 import type { UserSettings } from "../src/storage/settings.ts";
 
@@ -105,13 +105,13 @@ interface Rendered {
   text: string;
 }
 
-function isFormattable(v: unknown): v is { toString(): string } {
+function isFormattable(v: unknown): v is { text: string } {
   return typeof v === "object" && v !== null && "entities" in v && "text" in v;
 }
 
 function collect(path: string, v: unknown, out: Rendered[]): void {
   if (typeof v === "string") out.push({ path, text: v });
-  else if (isFormattable(v)) out.push({ path, text: v.toString() });
+  else if (isFormattable(v)) out.push({ path, text: v.text });
   else if (typeof v === "function") {
     const samples = SAMPLES[path];
     assert.ok(samples, `${path}: нет образца аргументов в SAMPLES — добавь, чтобы текст проверялся`);
@@ -208,7 +208,7 @@ test("тексты: одна формулировка на ситуацию", ()
 
 test("тексты: вход везде с 🔐, 🔓 в исходниках нет", () => {
   assert.ok(T.LOGIN_INLINE_BUTTON.startsWith(`${T.LOGIN_EMOJI} `));
-  assert.ok(T.deviceFlowText({ userCode: "A", verificationUrl: "u", mins: 1 }).toString().startsWith(T.LOGIN_EMOJI));
+  assert.ok(T.deviceFlowText({ userCode: "A", verificationUrl: "u", mins: 1 }).text.startsWith(T.LOGIN_EMOJI));
   for (const f of srcFiles()) {
     // iconSet.ts: 🔓 — только ключ алиаса для поиска иконки (L6), в текст не попадает
     if (f.replaceAll("\\", "/").endsWith("bot/iconSet.ts")) continue;
@@ -225,8 +225,8 @@ test("тексты: нет захардкоженного @nowymbot (тольк�
       .join("\n");
     assert.ok(!code.includes("@nowymbot"), `${f}: @nowymbot → botMention(container.botUsername)`);
   }
-  assert.match(T.startText(true, "otherbot").toString(), /@otherbot/);
-  assert.ok(!T.startText(true, "otherbot").toString().includes("nowymbot"));
+  assert.match(T.startText(true, "otherbot").text, /@otherbot/);
+  assert.ok(!T.startText(true, "otherbot").text.includes("nowymbot"));
 });
 
 test("тексты: число треков склоняется (1 трек / 2 трека / 5 треков)", () => {
@@ -238,13 +238,13 @@ test("тексты: число треков склоняется (1 трек / 2
 });
 
 test("тексты: /help не обещает поиск альбомов по названию и не выдаёт кнопку за команду", () => {
-  const help = T.helpText().toString();
+  const help = T.helpText().text;
   assert.ok(!help.includes("поиск треков и альбомов"));
   assert.ok(help.includes(`кнопка «${T.MENU_BTN.current}» в меню`));
 });
 
 test("тексты: эффекты по-русски в /help и в названии трека", () => {
-  const help = T.helpText().toString();
+  const help = T.helpText().text;
   for (const k of ["ncore", "speed", "slow"] as const) {
     assert.ok(help.includes(T.EFFECT_NAMES[k]), `в /help нет «${T.EFFECT_NAMES[k]}»`);
     assert.equal(T.EFFECT_SUFFIX[k], `(${T.EFFECT_NAMES[k]})`);

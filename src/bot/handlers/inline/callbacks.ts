@@ -1,4 +1,3 @@
-import type { Bot } from "gramio";
 import { getLogger } from "../../../infra/logging.ts";
 import type { AudioQuality } from "../../../yandex/metadata.ts";
 import type { Container } from "../../container.ts";
@@ -18,6 +17,7 @@ import {
   LOGIN_FIRST,
   tooOftenButton,
 } from "../../texts.ts";
+import type { ApiBot } from "../../types.ts";
 import { isCardResultId, peekCardPending, renderAndSwapCard } from "../inlineCard.ts";
 import { ensureFileId, resolveTrack } from "./ensure.ts";
 import {
@@ -40,7 +40,7 @@ export async function onLoadCallback(
     answer(params?: string | { text?: string; show_alert?: boolean }): Promise<unknown>;
   },
   container: Container,
-  bot: Bot,
+  bot: ApiBot,
 ): Promise<void> {
   const data = cbData(ctx);
   const raw = data.includes(":") ? (data.split(":", 2)[1] ?? "") : "";
@@ -126,7 +126,7 @@ export async function onCardRetryCallback(
     answer(params?: string | { text?: string; show_alert?: boolean }): Promise<unknown>;
   },
   container: Container,
-  bot: Bot,
+  bot: ApiBot,
 ): Promise<void> {
   const resultId = cbData(ctx).slice("crd:".length);
   const inlineMsgId = ctx.inlineMessageId ?? null;

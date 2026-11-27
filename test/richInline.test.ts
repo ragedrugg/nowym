@@ -1,7 +1,7 @@
 /** F1 L5: rich-плейсхолдер первым в инлайн-выдаче и его разрешение на chosen_inline_result. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import type { Container } from "../src/bot/container.ts";
 import { buildEmptyResults, chosenRichCardTrack, onChosenResult } from "../src/bot/handlers/inline/index.ts";
 import { buildRichNowPlayingResult } from "../src/bot/handlers/inlineCard.ts";
@@ -20,11 +20,7 @@ function mkBot(opts: { failEditText?: boolean } = {}) {
     async (params: Record<string, unknown>) => {
       calls.push({ method, params });
       if (method === "editMessageText" && opts.failEditText)
-        throw new TelegramError(
-          { ok: false, error_code: 400, description: "Bad Request" } as never,
-          "editMessageText" as never,
-          {} as never,
-        );
+        throw new TelegramError("editMessageText", 400, "Bad Request");
       return ret;
     };
   const bot = {

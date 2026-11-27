@@ -13,6 +13,10 @@ import {
 } from "../src/bot/handlers/inlineCard.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
+/** текст FormatResult yaebal (`{ text, entities }`, без toString как у GramIO) или строки. */
+const textOf = (v: unknown): string =>
+  typeof v === "object" && v !== null && "text" in v ? String(v.text) : String(v);
+
 function mkTrack(id: number | string = 1): YaTrack {
   return { id, title: "Song", artists: [{ name: "Artist" }], coverUri: "avatars.yandex.net/get/%%" };
 }
@@ -38,7 +42,7 @@ test("hashPhrase — детерминирован, разные фразы об�
 test("cardCaption — без артиста не дублирует «—»", () => {
   const withArtist = cardCaption(1, "Artist", "Title");
   const noArtist = cardCaption(1, "", "Title");
-  assert.notEqual(String(withArtist), String(noArtist));
+  assert.notEqual(textOf(withArtist), textOf(noArtist));
 });
 
 test("cardMediaAndMarkup — layout 'none': без caption и markup", () => {

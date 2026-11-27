@@ -1,6 +1,6 @@
 {
   "name": "nowym-ts",
-  "version": "1.9.0",
+  "version": "2.0.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -14,27 +14,34 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import ./test/setup.ts --test \"test/**/*.test.ts\"",
     "lint": "biome check .",
-    "lint:fix": "biome check --write ."
+    "lint:fix": "biome check --write .",
+    "smoke": "node --expose-gc scripts/smoke-fake-api.ts"
   },
   "dependencies": {
     "@dvxch/yandex-music": "^0.4.1",
-    "@gramio/dialogs": "^0.3.1",
-    "@gramio/storage-redis": "^1.0.5",
     "@napi-rs/canvas": "~1.0.13",
-    "gramio": "^0.15.3",
+    "@yaebal/core": "0.4.6",
+    "@yaebal/morda": "1.0.7",
+    "@yaebal/runner": "0.0.8",
+    "@yaebal/types": "10.5.0",
     "ioredis": "^5.11.1",
     "node-html-parser": "^9.0.7",
     "node-wreq": "^3.2.2",
     "pg": "^8.23.1",
     "taglib-wasm": "~1.6.1",
     "undici": "^8.13.1",
-    "ws": "^8.23.0"
+    "ws": "^8.23.0",
+    "yaebal": "0.2.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
     "@types/node": "^22.20.7",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
+    "@yaebal/test": "1.0.6",
     "typescript": "~7.0.2"
+  },
+  "overrides": {
+    "@yaebal/types": "10.5.0"
   }
 }

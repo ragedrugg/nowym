@@ -1,9 +1,8 @@
 /** DI-контейнер: держит все сервисы и кэши, резолвит per-user YandexClient/
  * SearchService, проактивно обновляет токен. Создаётся в main, стартует с
- * готовым GramIO-ботом. */
+ * готовым yaebal-ботом. */
 
-import type { DialogManager } from "@gramio/dialogs";
-import type { Bot } from "gramio";
+import type { User } from "yaebal";
 import { GeniusClient } from "../genius/client.ts";
 import { crypto } from "../infra/crypto.ts";
 import { HttpClient } from "../infra/http.ts";
@@ -26,14 +25,19 @@ import { SettingsDb, type UserSettings } from "../storage/settings.ts";
 import { UsersDb } from "../storage/users.ts";
 import { TaggingService } from "../tagging/service.ts";
 import { type YandexClient, YandexClientFactory } from "../yandex/client.ts";
+import type { MenuDialogs } from "./dialogs.ts";
 import { ChannelSender } from "./telegramSender.ts";
+import type { ApiBot } from "./types.ts";
+
+/** бот после init(): yaebal кладёт getMe в bot.info. */
+type BotWithInfo = ApiBot & { readonly info?: User };
 
 const log = getLogger("bot.container");
 
 /** username бота: main.ts уже сделал bot.init() (с ретраями), он кладёт getMe в
  * bot.info — второй getMe с собственным циклом ретраев не нужен. Фолбэк на
  * getMe — только если init не вызывали. */
-export async function resolveBotUsername(bot: Pick<Bot, "info" | "api">): Promise<string | null> {
+export async function resolveBotUsername(bot: BotWithInfo): Promise<string | null> {
   const info = bot.info ?? (await bot.api.getMe());
   return info?.username ?? null;
 }
@@ -67,9 +71,9 @@ export class Container {
   genius: GeniusClient | null = null;
   botUsername: string | null = null;
   channelId!: string;
-  // фабрика background-менеджера диалога — рендерит/редактит сообщение диалога
-  // извне хендлера (нужно для device-flow login, где ответ приходит асинхронно).
-  dialogBackground: ((bot: Bot, stackKey: string) => Promise<DialogManager>) | null = null;
+  // morda-диалоги вне хендлера: background() рендерит/редактит сообщение диалога
+  // (device-flow login, где ответ приходит асинхронно), reset() — свежее меню на /start.
+  dialogs: MenuDialogs | null = null;
 
   // TTL, не голый Map: без него оба кэша росли бы весь lifetime процесса —
   // на 5000+ лайфтайм-юзерах это гигабайты закэшированных YaTrack/http-клиентов.
@@ -88,7 +92,7 @@ export class Container {
    *  invalidateTokenCacheForUser (logout/смена аккаунта/refresh), в кэш не кладём. */
   private invalidationGen = new Map<number, number>();
 
-  async start(bot: Bot): Promise<void> {
+  async start(bot: BotWithInfo): Promise<void> {
     log.info("инициализация контейнера...");
     const s = getSettings();
 

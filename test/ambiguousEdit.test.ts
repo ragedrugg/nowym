@@ -2,7 +2,7 @@
  * повторяем ту же правку один раз, а не ставим «загрузить снова» под уже доставленное медиа. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import type { Container } from "../src/bot/container.ts";
 import { onChosenResult, registerInline } from "../src/bot/handlers/inline/index.ts";
 import { buildNowPlayingCardResult, renderAndSwapCard } from "../src/bot/handlers/inlineCard.ts";
@@ -12,12 +12,7 @@ import type { YaTrack } from "../src/yandex/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };
 
-const apiErr = () =>
-  new TelegramError(
-    { ok: false, error_code: 400, description: "Bad Request: wrong file" } as never,
-    "editMessageMedia" as never,
-    {} as never,
-  );
+const apiErr = () => new TelegramError("editMessageMedia", 400, "Bad Request: wrong file");
 const netErr = () => new TypeError("fetch failed");
 
 /** editFails — что бросают первые вызовы editMessageMedia по очереди (дальше успех). */
@@ -109,15 +104,14 @@ test("chosen: ответ API на edit → без повтора, «загруз
 function loadTap(bot: { api: unknown }) {
   let fn!: (ctx: unknown) => Promise<void>;
   const reg = {
-    inlineQuery: () => undefined,
-    chosenInlineResult: () => undefined,
+    on: () => undefined,
     callbackQuery: (re: RegExp, h: (ctx: unknown) => Promise<void>) => {
       if (re.test("load:1")) fn = h;
     },
     api: bot.api,
   };
   registerInline(reg as never, trackContainer());
-  return fn({ data: "load:42", inlineMessageId: "IM", from: { id: 1 }, answer: async () => true });
+  return fn({ data: "load:42", inline_message_id: "IM", from: { id: 1 }, answer: async () => true });
 }
 
 test("load: сетевой сбой edit → повтор того же edit, без «загрузить снова»", async () => {

@@ -1,7 +1,7 @@
 /** Сборка карточки «сейчас играет»: параллельно тянет обложку, аватар и (если
  * нужно) wave-цвет, затем рендерит. Общая точка входа для /np и inline-карточки.
  * `enrichCardMetaLiked` не вызывается — лайк живёт кнопкой на треке, не на карточке. */
-import { type Bot, MediaUpload } from "gramio";
+import { media } from "yaebal";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { LyricsBlock } from "../services/card/index.ts";
@@ -11,6 +11,7 @@ import { enrichCardMetaColor, metaNeedsWaveColor } from "../yandex/metadata.ts";
 import type { CardMeta } from "../yandex/types.ts";
 import type { Container } from "./container.ts";
 import { errText, type MintedCard } from "./richMessage.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("bot.card_builder");
 
@@ -19,7 +20,7 @@ const AVATAR_NEG_TTL = 30 * 60;
 
 /** Аватар юзера из Telegram → круглый кроп рисует карточка. Кэшируется
  * (и положительный, и отрицательный ответ), чтобы не ходить в API на каждый рендер. */
-async function fetchUserAvatar(bot: Bot, userId: number, container: Container): Promise<Buffer | null> {
+async function fetchUserAvatar(bot: ApiBot, userId: number, container: Container): Promise<Buffer | null> {
   const key = `avatar:${userId}`;
   const cache = container.avatarCache;
   const cached = cache.get(key);
@@ -33,8 +34,8 @@ async function fetchUserAvatar(bot: Bot, userId: number, container: Container): 
     }
     const sizes = photos.photos[0]!;
     const photo = sizes[sizes.length - 1]!;
-    const ab = await bot.downloadFile(photo.file_id);
-    const data = Buffer.from(ab as ArrayBuffer);
+    const { bytes } = await bot.api.downloadFile(photo.file_id);
+    const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     cache.set(key, data);
     return data;
   } catch (e) {
@@ -47,7 +48,7 @@ async function fetchUserAvatar(bot: Bot, userId: number, container: Container): 
 }
 
 export interface CardBuildInput {
-  bot: Bot;
+  bot: ApiBot;
   container: Container;
   userId: number;
   /** нужен только для wave-цвета (yandex-клиент). null → карточка рендерится без enrich. */
@@ -119,13 +120,13 @@ export async function buildCardImage(input: CardBuildInput): Promise<Buffer> {
  * ловит 429 — ретраим по retry_after. release() удаляет копию в канале (best-effort,
  * не бросает, идемпотентен): file_id ссылается на файл в хранилище tg, не на сообщение. */
 export async function mintCardFileId(
-  bot: Bot,
+  bot: ApiBot,
   channelId: number | string,
   image: Buffer,
   tag: string,
 ): Promise<MintedCard> {
   const msg = await floodRetry(
-    () => bot.api.sendPhoto({ chat_id: channelId, photo: MediaUpload.buffer(image, "now_playing.jpg") }),
+    () => bot.api.sendPhoto({ chat_id: channelId, photo: media.buffer(image, "now_playing.jpg") }),
     {
       attempts: 3,
       graceMs: 500,

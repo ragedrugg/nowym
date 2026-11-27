@@ -5,8 +5,8 @@
  * iconFor(emoji): есть ID — рисуем премиум-иконку, иначе фолбэк на текстовый глиф.
  *
  * Рендерится у владельца с Premium для сообщений, что бот шлёт в лс/группы. */
-import type { Bot } from "gramio";
 import { getLogger } from "../infra/logging.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("iconset");
 
@@ -30,7 +30,7 @@ export function iconFor(emoji: string): string | undefined {
 
 /** Подтягивает набор кастом-эмодзи и заполняет карту emoji→id.
  * Тихо логирует и оставляет карту пустой при сбое (кнопки откатятся на глифы). */
-export async function resolveIconSet(bot: Bot, setName: string): Promise<void> {
+export async function resolveIconSet(bot: ApiBot, setName: string): Promise<void> {
   try {
     const set = await bot.api.getStickerSet({ name: setName });
     const map = new Map<string, string>();

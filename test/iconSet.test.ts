@@ -1,8 +1,8 @@
 /** L6 (review-1): iconFor — алиасы, если в наборе нет точного эмодзи (🔐 → 🔓). */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import type { Bot } from "gramio";
 import { iconFor, resolveIconSet } from "../src/bot/iconSet.ts";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 
 function botWith(stickers: { emoji: string; custom_emoji_id: string }[]): Bot {
   return { api: { getStickerSet: async () => ({ stickers }) } } as unknown as Bot;

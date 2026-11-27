@@ -10,6 +10,7 @@ export class AdminAlerter {
   private lastMsg = "";
   private flushing = false;
   private scheduled = false;
+  private muted = false;
 
   private readonly send: (text: string) => Promise<void>;
   private readonly cooldownMs: number;
@@ -19,14 +20,25 @@ export class AdminAlerter {
     this.cooldownMs = cooldownMs;
   }
 
+  /** глушит дальнейшие алерты (shutdown: хендлеры, недоработавшие к закрытию Redis/pg,
+   * падают «Connection is closed» — это не ошибка, а деплой). Накопленное тоже не уйдёт. */
+  mute(): void {
+    this.muted = true;
+    this.pending = 0;
+  }
+
   report(msg: string): void {
+    if (this.muted) {
+      log.debug(`[admin_alerter] shutdown, алерт не отправлен: ${msg}`);
+      return;
+    }
     this.pending += 1;
     this.lastMsg = msg;
     void this.maybeFlush();
   }
 
   private async maybeFlush(): Promise<void> {
-    if (this.flushing) return;
+    if (this.flushing || this.muted) return;
     const now = Date.now();
     const remaining = this.cooldownMs - (now - this.lastSentAt);
     if (remaining > 0) {

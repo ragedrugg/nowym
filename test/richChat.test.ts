@@ -1,7 +1,7 @@
 /** F1 L6: «карточка+трек» одним rich-сообщением в /np, кнопках меню и deep link track_<id>. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import type { Container } from "../src/bot/container.ts";
 import { deepLinkCardPosition, renderNowPlaying, sendCurrentTrack } from "../src/bot/handlers/common.ts";
 import { sendTrackToChat } from "../src/bot/handlers/inline/index.ts";
@@ -23,11 +23,7 @@ function mkBot(opts: { failRich?: boolean } = {}) {
     async (params: Record<string, unknown>) => {
       calls.push({ method, params });
       if (method === "sendRichMessage" && opts.failRich)
-        throw new TelegramError(
-          { ok: false, error_code: 400, description: "Bad Request: rich" } as never,
-          "sendRichMessage" as never,
-          {} as never,
-        );
+        throw new TelegramError("sendRichMessage", 400, "Bad Request: rich");
       if (method === "sendPhoto" && params.chat_id === "chan") return { message_id: 9, photo: [{ file_id: "CARD" }] };
       return ret;
     };

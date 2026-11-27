@@ -2,12 +2,13 @@
  *
  * Одна политика подавления ожидаемых телеграм-ошибок редактирования (гонки:
  * «not modified», протухший inline-query, удалённое/нередактируемое сообщение). */
-import type { Bot, FormattableString } from "gramio";
+import type { FormatResult } from "yaebal";
 import { getLogger } from "../infra/logging.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("bot.safeapi");
 
-type Text = FormattableString | string;
+type Text = FormatResult | string;
 type Markup = unknown;
 
 /** цель редактирования: обычное сообщение (chat+id) либо inline-сообщение. */
@@ -38,7 +39,7 @@ function markupParam(markup?: Markup): Record<string, unknown> {
 }
 
 /** editMessageText через bot.api; глотает ожидаемые гонки, остальное логирует warning. */
-export async function safeEditApi(bot: Bot, target: EditTarget, text: Text, markup?: Markup): Promise<void> {
+export async function safeEditApi(bot: ApiBot, target: EditTarget, text: Text, markup?: Markup): Promise<void> {
   try {
     await bot.api.editMessageText({ ...targetParams(target), text, ...markupParam(markup) } as never);
   } catch (e) {
@@ -50,7 +51,7 @@ export async function safeEditApi(bot: Bot, target: EditTarget, text: Text, mark
  * колбэков (device-flow): anchor может быть удалён за минуты ожидания, и тогда
  * edit молча терялся бы — юзер не узнал бы результат. */
 export async function editOrSend(
-  bot: Bot,
+  bot: ApiBot,
   anchor: { chatId: number; messageId: number },
   text: Text,
   markup?: Markup,
@@ -73,7 +74,7 @@ export async function editOrSend(
 
 /** editMessageMedia; глотает «not modified», прочие ошибки пробрасывает наверх
  * (вызывающий уже логирует их в своём catch). */
-export async function safeEditMedia(bot: Bot, target: EditTarget, media: unknown, markup?: Markup): Promise<void> {
+export async function safeEditMedia(bot: ApiBot, target: EditTarget, media: unknown, markup?: Markup): Promise<void> {
   try {
     await bot.api.editMessageMedia({ ...targetParams(target), media, ...markupParam(markup) } as never);
   } catch (e) {
@@ -86,7 +87,7 @@ export async function safeEditMedia(bot: Bot, target: EditTarget, media: unknown
 }
 
 /** editMessageReplyMarkup для inline-сообщения; best-effort, всё глотает. */
-export async function safeSetReplyMarkup(bot: Bot, inlineMsgId: string, markup: Markup): Promise<void> {
+export async function safeSetReplyMarkup(bot: ApiBot, inlineMsgId: string, markup: Markup): Promise<void> {
   try {
     await bot.api.editMessageReplyMarkup({ inline_message_id: inlineMsgId, reply_markup: markup } as never);
   } catch (e) {
@@ -108,7 +109,7 @@ export async function safeAnswerCb(
 }
 
 /** статус-строка: правит существующее статус-сообщение, иначе шлёт новое. */
-export async function say(bot: Bot, chatId: number, statusMsgId: number | null, text: Text): Promise<void> {
+export async function say(bot: ApiBot, chatId: number, statusMsgId: number | null, text: Text): Promise<void> {
   if (statusMsgId !== null) {
     try {
       await bot.api.editMessageText({ chat_id: chatId, message_id: statusMsgId, text } as never);

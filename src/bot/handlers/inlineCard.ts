@@ -1,5 +1,4 @@
-import type { Bot } from "gramio";
-import { type FormattableString, InlineQueryResult, InputMessageContent } from "gramio";
+import { type FormatResult, InlineQueryResult, InputMessageContent } from "yaebal";
 import { withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
@@ -26,7 +25,7 @@ import {
 } from "../richMessage.ts";
 import { safeEditMedia } from "../safeApi.ts";
 import { BTN_PREPARING, CARD_RESULT, cardCaptionText, LYRICS_RESULT, RICH_RESULT } from "../texts.ts";
-import type { TgUser } from "../types.ts";
+import type { ApiBot, TgUser } from "../types.ts";
 
 const log = getLogger("bot.inline_card");
 
@@ -248,7 +247,7 @@ export function hashPhrase(s: string): number {
   return h;
 }
 
-export function cardCaption(trackId: number | string, artist: string, title: string): FormattableString {
+export function cardCaption(trackId: number | string, artist: string, title: string): FormatResult {
   return cardCaptionText(trackUrl(trackId), artist, title);
 }
 
@@ -312,7 +311,7 @@ export async function fetchLyricsWithFallback(
 
 /** payload из стэша → JPEG (worker-пул) → file_id в служебном канале. */
 export async function renderPendingCard(
-  bot: Bot,
+  bot: ApiBot,
   container: Container,
   payload: CardPayload,
   tag: string,
@@ -357,7 +356,7 @@ export async function renderPendingCard(
 
 /** ленивый рендер, подмена placeholder-текста на фото через editMessageMedia. */
 export async function renderAndSwapCard(
-  bot: Bot,
+  bot: ApiBot,
   container: Container,
   resultId: string,
   inlineMsgId: string,
@@ -438,7 +437,7 @@ export async function renderAndSwapCard(
 /** sendRich/fallback для inline-сообщения. Фолбэк: фото карточки (кнопка «слушать в лс»
  * ведёт к треку), иначе аудио — в одном inline-сообщении может быть только одно медиа. */
 export function inlineRichSenders(
-  bot: Bot,
+  bot: ApiBot,
   inlineMessageId: string,
   o: {
     trackId: string | number;
@@ -489,7 +488,7 @@ export function inlineRichSenders(
  * inline-сообщение; сбой → фолбэк из тех же file_id. "expired" (стэш вытеснен) и "none"
  * ставят кнопку «загрузить снова» (load:<track>) вместо вечного плейсхолдера. Не бросает. */
 export async function resolveRichCard(
-  bot: Bot,
+  bot: ApiBot,
   container: Container,
   resultId: string,
   inlineMsgId: string,

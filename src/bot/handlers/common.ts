@@ -1,6 +1,4 @@
-import { type DialogManager, StartMode } from "@gramio/dialogs";
-import type { Bot } from "gramio";
-import { format, MediaUpload } from "gramio";
+import { format, media, type User } from "yaebal";
 import { getLogger } from "../../infra/logging.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
@@ -8,7 +6,7 @@ import type { CurrentTrack } from "../../yandex/ynison.ts";
 import { senderHandleOf } from "../captions.ts";
 import { buildCardImage } from "../cardBuilder.ts";
 import type { Container } from "../container.ts";
-import { startLogin } from "../dialogs.ts";
+import { startLogin, startMenu } from "../dialogs.ts";
 import { nowPlayingMarkup } from "../markup.ts";
 import { errText } from "../richMessage.ts";
 import { say } from "../safeApi.ts";
@@ -23,16 +21,10 @@ import {
   privateHint,
   tooOften,
 } from "../texts.ts";
-import type { TgUser } from "../types.ts";
+import { type ApiBot, type AppBot, type TgUser, tgUserOf } from "../types.ts";
 import { startAlbumUpload } from "./albums.ts";
 import { type CardPosition, sendTrackToChat } from "./inline/chat.ts";
 import { startPlaylistUpload } from "./playlists.ts";
-
-/** ResetStack: дефолтный Normal пушил бы новый диалог на стек на каждый /start|/help|/settings,
- *  и кнопки прежних меню «протухали бы». */
-async function startMenu(ctx: unknown, state: string): Promise<void> {
-  await (ctx as { dialog: DialogManager }).dialog.start("menu", state, { startMode: StartMode.ResetStack });
-}
 
 const log = getLogger("bot.common");
 
@@ -45,7 +37,7 @@ export const START_PLAYLIST_RE = /^playlist_([\w-]+)_(\d+)$/;
 
 /** общий гейт для карточки и аудио: statusMsgId отличается у каждого вызывающего. */
 async function checkLimitAndToken(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   container: Container,
@@ -81,7 +73,7 @@ async function currentTrackOf(
 const busyUsers = new Set<number>();
 
 async function withUserLock(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   userId: number,
   statusMsgId: number | null,
@@ -101,7 +93,7 @@ async function withUserLock(
 
 /** лимит — общий с /np. */
 export function renderNowPlaying(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   container: Container,
@@ -113,7 +105,7 @@ export function renderNowPlaying(
 }
 
 async function renderNowPlayingLocked(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   container: Container,
@@ -175,7 +167,7 @@ async function renderNowPlayingLocked(
 
     await bot.api.sendPhoto({
       chat_id: chatId,
-      photo: MediaUpload.buffer(image, "now_playing.jpg"),
+      photo: media.buffer(image, "now_playing.jpg"),
       reply_markup: nowPlayingMarkup(track.id!, container.botUsername),
     });
     if (statusMsgId !== null) {
@@ -193,7 +185,7 @@ async function renderNowPlayingLocked(
 
 /** лимит общий с /np. */
 export function sendCurrentTrack(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   container: Container,
@@ -205,7 +197,7 @@ export function sendCurrentTrack(
 }
 
 async function sendCurrentTrackLocked(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   container: Container,
@@ -248,14 +240,15 @@ async function sendCurrentTrackLocked(
   });
 }
 
-function ctxUser(ctx: { from?: TgUser | null }): TgUser {
+/** ctx.from yaebal — сырой Bot API User (first_name); TgUser — camelCase. */
+function ctxUser(ctx: { from?: User }): TgUser {
   if (!ctx.from) throw new Error("ctx.from отсутствует");
-  return ctx.from;
+  return tgUserOf(ctx.from);
 }
 
 const isGroupChat = (type: string | undefined): boolean => type === "group" || type === "supergroup";
 
-export function registerCommon(bot: Bot, container: Container): void {
+export function registerCommon(bot: AppBot, container: Container): void {
   bot.command("start", async (ctx) => {
     if (isGroupChat(ctx.chat?.type)) {
       await ctx.reply(groupHint(container.botUsername));
@@ -263,7 +256,7 @@ export function registerCommon(bot: Bot, container: Container): void {
     }
     if (ctx.chat?.type !== "private") return;
     const user = ctxUser(ctx);
-    const args = (ctx.args ?? "").trim();
+    const args = (ctx.payload ?? "").trim();
     if (args) {
       const ma = START_ALBUM_RE.exec(args);
       if (ma) {
@@ -281,14 +274,14 @@ export function registerCommon(bot: Bot, container: Container): void {
         return;
       }
       if (args === "login") {
-        await startMenu(ctx, "main");
+        await startMenu(ctx, container, "main");
         if (!(await container.usersDb.getToken(user.id))) {
-          await startLogin((ctx as unknown as { dialog: DialogManager }).dialog, bot, container, user.id);
+          await startLogin(ctx.dialog, bot, container, user.id);
         }
         return;
       }
     }
-    await startMenu(ctx, "main");
+    await startMenu(ctx, container, "main");
   });
 
   bot.command("help", async (ctx) => {
@@ -297,34 +290,34 @@ export function registerCommon(bot: Bot, container: Container): void {
       return;
     }
     if (ctx.chat?.type !== "private") return;
-    await startMenu(ctx, "help");
+    await startMenu(ctx, container, "help");
   });
 
   bot.command("settings", async (ctx) => {
     if (ctx.chat?.type !== "private") return;
-    await startMenu(ctx, "settings");
+    await startMenu(ctx, container, "settings");
   });
 
   bot.command("np", async (ctx) => {
     if (ctx.chat?.type !== "private") return;
     const status = await ctx.reply(format`${FINDING_PLAYING}`);
-    await renderNowPlaying(bot, ctx.chat.id, ctxUser(ctx), container, status.id);
+    await renderNowPlaying(bot, ctx.chat.id, ctxUser(ctx), container, status.message_id);
   });
 }
 
 /** замыкающий обработчик: личка, обычный текст (не команда) — подсказка вместо тишины.
  *  Регистрировать ПОСЛЕ всех hears/command, иначе перехватит ссылки и команды. */
-export function registerPrivateFallback(bot: Bot, container: Pick<Container, "botUsername"> | null = null): void {
+export function registerPrivateFallback(bot: AppBot, container: Pick<Container, "botUsername"> | null = null): void {
   bot.on("message", async (ctx, next) => {
     const text = ctx.text;
-    if (ctx.chat?.type !== "private" || !text || text.startsWith("/") || ctx.viaBot) return next();
+    if (ctx.chat?.type !== "private" || !text || text.startsWith("/") || ctx.via_bot) return next();
     await ctx.reply(privateHint(container?.botUsername ?? null));
   });
 }
 
 /** зовут и из /start track_<id>, и из ссылки на трек в личке. */
 export function startTrackUploadReply(
-  bot: Bot,
+  bot: ApiBot,
   chatId: number,
   user: TgUser,
   trackId: string,

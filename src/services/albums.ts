@@ -1,7 +1,7 @@
 /** Выгрузка альбома: параллельная подготовка → пачками по 10 через sendMediaGroup. */
 
-import type { Bot } from "gramio";
-import { bold, code, type FormattableString, format, join, MediaInput, MediaUpload } from "gramio";
+import type { InputMediaAudio } from "@yaebal/types";
+import { bold, code, type FormatResult, format, join, media } from "yaebal";
 import { albumRetryMarkup, cancelAlbumMarkup } from "../bot/markup.ts";
 import {
   ALBUM_NOUN,
@@ -21,6 +21,7 @@ import {
   UPLOAD_DONE,
   uploadCancelled,
 } from "../bot/texts.ts";
+import type { ApiBot } from "../bot/types.ts";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { collectGarbage } from "../infra/gc.ts";
 import type { HttpClient } from "../infra/http.ts";
@@ -97,17 +98,17 @@ export function formatEta(seconds: number): string {
 /** обёртка над editMessageText по chat_id+message_id — работает и для resume,
  * где известен только id сообщения. */
 export class ProgressMessage {
-  private bot: Bot;
+  private bot: ApiBot;
   public chatId: number;
   public messageId: number;
 
-  constructor(bot: Bot, chatId: number, messageId: number) {
+  constructor(bot: ApiBot, chatId: number, messageId: number) {
     this.bot = bot;
     this.chatId = chatId;
     this.messageId = messageId;
   }
 
-  async edit(text: FormattableString, markup?: ReturnType<typeof cancelAlbumMarkup>): Promise<void> {
+  async edit(text: FormatResult, markup?: ReturnType<typeof cancelAlbumMarkup>): Promise<void> {
     try {
       await this.bot.api.editMessageText({
         chat_id: this.chatId,
@@ -174,7 +175,7 @@ export class AlbumService {
   private cache: CacheService;
   private downloadQueue: DownloadConcurrency;
   private http: HttpClient;
-  private bot: Bot;
+  private bot: ApiBot;
   private getUserSettings: (userId: number) => Promise<UserSettings>;
 
   constructor(
@@ -182,7 +183,7 @@ export class AlbumService {
     cache: CacheService,
     downloadQueue: DownloadConcurrency,
     http: HttpClient,
-    bot: Bot,
+    bot: ApiBot,
     getUserSettings: (userId: number) => Promise<UserSettings>,
   ) {
     this.db = db;
@@ -407,14 +408,14 @@ export class AlbumService {
     }
   }
 
-  async sendCover(chatId: number, coverUrl: string, caption: FormattableString): Promise<Buffer | null> {
+  async sendCover(chatId: number, coverUrl: string, caption: FormatResult): Promise<Buffer | null> {
     if (!coverUrl) return null;
     try {
       const data = await fetchCover(coverUrl, this.http);
       if (!data) return null;
       await this.bot.api.sendPhoto({
         chat_id: chatId,
-        photo: MediaUpload.buffer(data, "cover.jpg"),
+        photo: media.buffer(data, "cover.jpg"),
         caption,
       });
       return data;
@@ -730,7 +731,7 @@ export class AlbumService {
     progress: ProgressState,
     total: number,
     progressMsg: ProgressMessage | null,
-    headerFull: FormattableString,
+    headerFull: FormatResult,
     markDoneSafe: (tid: string) => Promise<void>,
   ): Promise<void> {
     if (batch.length === 0) return;
@@ -820,22 +821,25 @@ export class AlbumService {
     await this.renderProgress(progressMsg, headerFull, progress, total);
   }
 
-  private buildInputMedia(entry: PreparedEntry): ReturnType<typeof MediaInput.audio> {
+  /** InputMediaAudio по file_id (у yaebal нет хелпера MediaInput.audio — литерал той же формы). */
+  private buildInputMedia(entry: PreparedEntry): InputMediaAudio {
     const [artist, title] = formatTrackBasics(entry.track, "");
-    return MediaInput.audio(entry.fileId!, {
+    return {
+      type: "audio",
+      media: entry.fileId!,
       title,
       performer: artist,
       duration: entry.metadata.duration || 0,
-    });
+    };
   }
 
   private async renderProgress(
     progressMsg: ProgressMessage | null,
-    headerFull: FormattableString,
+    headerFull: FormatResult,
     progress: ProgressState,
     total: number,
   ): Promise<void> {
-    let text: FormattableString | null = null;
+    let text: FormatResult | null = null;
     await progress.lock.run(async () => {
       const now = performance.now() / 1000;
       if (now - progress.lastRender < 1.5 && progress.sent < total) return;
@@ -865,7 +869,7 @@ export class AlbumService {
 
   private async safeEdit(
     msg: ProgressMessage | null,
-    text: FormattableString,
+    text: FormatResult,
     markup?: ReturnType<typeof cancelAlbumMarkup>,
   ): Promise<void> {
     if (msg === null) return;
@@ -874,7 +878,7 @@ export class AlbumService {
 
   private async finishMessage(args: {
     msg: ProgressMessage | null;
-    headerShort: FormattableString;
+    headerShort: FormatResult;
     total: number;
     failed: YaTrack[];
     tooLong?: YaTrack[];

@@ -11,8 +11,8 @@
 // import { tmpdir } from "node:os";
 // import path from "node:path";
 // import { unlink, writeFile } from "node:fs/promises";
-// import { MediaUpload } from "gramio";
-// import type { Bot } from "gramio";
+// import { MediaUpload } from "yaebal";
+// import type { Bot } from "yaebal";
 // import type { Container } from "../bot/container.ts";
 // import { fetchUserAvatar } from "../bot/cardBuilder.ts";
 // import { getLogger } from "../infra/logging.ts";

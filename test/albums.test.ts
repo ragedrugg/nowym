@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Bot } from "gramio";
+import { TelegramError } from "yaebal";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 import type { HttpClient } from "../src/infra/http.ts";
 import type { DownloadConcurrency } from "../src/infra/queue.ts";
 import { Semaphore } from "../src/infra/semaphore.ts";
@@ -316,7 +317,7 @@ function floodBot(calls: string[]): Bot {
   const flaky = (method: string, result: () => unknown) => async () => {
     calls.push(method);
     n += 1;
-    if (n === 1) throw Object.assign(new Error("429"), { payload: { retry_after: 0 } });
+    if (n === 1) throw new TelegramError(method, 429, "Too Many Requests", { retry_after: 0 });
     return result();
   };
   return {

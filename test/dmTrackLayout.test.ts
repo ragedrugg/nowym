@@ -7,6 +7,10 @@ import { chatRichSenders, DEGRADED_NOTE } from "../src/bot/richMessage.ts";
 import type { CachedTrack } from "../src/storage/types.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
+/** текст FormatResult yaebal (`{ text, entities }`, без toString как у GramIO) или строки. */
+const textOf = (v: unknown): string =>
+  typeof v === "object" && v !== null && "text" in v ? String(v.text) : String(v);
+
 type Call = { method: string; params: Record<string, unknown> };
 
 function mkBot() {
@@ -70,14 +74,14 @@ test("лс-трек, layout=button: ♥ + «открыть» кнопками, �
 
 test("лс-трек, layout=text: подпись с качеством и «открыть», без кнопок", async () => {
   const p = await sendWith("text");
-  assert.ok(String(p.caption).includes("оптимальное 320"), String(p.caption));
-  assert.ok(String(p.caption).includes("открыть"));
+  assert.ok(textOf(p.caption).includes("оптимальное 320"), textOf(p.caption));
+  assert.ok(textOf(p.caption).includes("открыть"));
   assert.equal(p.reply_markup, undefined);
 });
 
 test("лс-трек, layout=both: и подпись, и ♥", async () => {
   const p = await sendWith("both");
-  assert.ok(String(p.caption).includes("открыть"));
+  assert.ok(textOf(p.caption).includes("открыть"));
   assert.ok(kbJson(p.reply_markup).includes("like:t:42"));
 });
 

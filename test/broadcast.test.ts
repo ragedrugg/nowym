@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import type { Bot } from "gramio";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 import { BroadcastService } from "../src/services/broadcast.ts";
 import type { KnownChatsDb } from "../src/storage/knownChats.ts";
 

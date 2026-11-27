@@ -1,8 +1,8 @@
 /** safeApi — единые безопасные обёртки над bot.api (дедуп safeEdit/say/editOrSend). */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import type { Bot } from "gramio";
 import { editOrSend, safeAnswerCb, safeEditApi, safeEditMedia, safeSetReplyMarkup, say } from "../src/bot/safeApi.ts";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 
 type Call = { method: string; params: unknown };
 

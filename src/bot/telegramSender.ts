@@ -1,19 +1,19 @@
-/** Реализация TelegramSender (services/cache.ts) поверх GramIO bot.api.
+/** Реализация TelegramSender (services/cache.ts) поверх yaebal bot.api.
  *
  * Канало-привязанная отправка вынесена в отдельный адаптер; 429-флуд берёт
  * на себя локальный floodRetry (см. ниже). */
-import type { Bot } from "gramio";
-import { MediaUpload } from "gramio";
+import { media } from "yaebal";
 import { floodRetry } from "../infra/floodRetry.ts";
 import { getLogger } from "../infra/logging.ts";
 import type { SendAudioOpts, SentAudio, TelegramSender } from "../services/cache.ts";
+import type { ApiBot } from "./types.ts";
 
 const log = getLogger("bot.telegram_sender");
 
 const FLOOD_ATTEMPTS = 3;
 
 // 429-флуд берёт на себя общий floodRetry (infra/floodRetry.ts). build ОБЯЗАН
-// пересоздавать payload на каждой попытке: MediaUpload одноразов.
+// пересоздавать payload на каждой попытке: media одноразов.
 const flood = <T>(build: () => Promise<T>): Promise<T> =>
   floodRetry(build, {
     attempts: FLOOD_ATTEMPTS,
@@ -21,10 +21,10 @@ const flood = <T>(build: () => Promise<T>): Promise<T> =>
   });
 
 export class ChannelSender implements TelegramSender {
-  private bot: Bot;
+  private bot: ApiBot;
   private channelId: string;
 
-  constructor(bot: Bot, channelId: string) {
+  constructor(bot: ApiBot, channelId: string) {
     this.bot = bot;
     this.channelId = channelId;
   }
@@ -33,11 +33,11 @@ export class ChannelSender implements TelegramSender {
     const msg = await flood(() =>
       this.bot.api.sendAudio({
         chat_id: this.channelId,
-        audio: MediaUpload.buffer(audio, opts.filename),
+        audio: media.buffer(audio, opts.filename),
         title: opts.title,
         performer: opts.performer,
         duration: opts.duration,
-        ...(opts.thumbnail ? { thumbnail: MediaUpload.buffer(opts.thumbnail, "cover.jpg") } : {}),
+        ...(opts.thumbnail ? { thumbnail: media.buffer(opts.thumbnail, "cover.jpg") } : {}),
       }),
     );
     // FLAC официально не audio — telegram может вернуть его как document.

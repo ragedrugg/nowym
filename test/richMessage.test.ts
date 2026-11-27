@@ -1,7 +1,7 @@
 /** richMessage — адаптер Telegram Rich Messages (карточка + трек одним сообщением). */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { type Bot, TelegramError } from "gramio";
+import { TelegramError } from "yaebal";
 import {
   buildRichCardTrack,
   chatRichSenders,
@@ -12,6 +12,7 @@ import {
   type RichAudio,
   richTrackMarkup,
 } from "../src/bot/richMessage.ts";
+import type { ApiBot as Bot } from "../src/bot/types.ts";
 
 type Call = { method: string; params: Record<string, unknown> };
 
@@ -179,11 +180,7 @@ function setup(
     sendRich: async () => {
       log.push("sendRich");
       if (over.sendRich === "throw") {
-        throw new TelegramError(
-          { ok: false, error_code: 400, description: "Bad Request: 400" } as never,
-          "sendRichMessage" as never,
-          {} as never,
-        );
+        throw new TelegramError("sendRichMessage", 400, "Bad Request: 400");
       }
     },
     fallback: async (got: unknown) => {

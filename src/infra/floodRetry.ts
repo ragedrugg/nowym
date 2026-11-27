@@ -4,9 +4,9 @@
  * одноразовый — повтор того же объекта уходит без файла. */
 import { sleep } from "./async.ts";
 
-/** retry_after из payload ошибки GramIO, если это 429 (иначе undefined). */
+/** retry_after ответа 429: yaebal TelegramError кладёт его в .parameters (иначе undefined). */
 function retryAfterOf(e: unknown): number | undefined {
-  return (e as { payload?: { retry_after?: number } })?.payload?.retry_after;
+  return (e as { parameters?: { retry_after?: number } })?.parameters?.retry_after;
 }
 
 export interface FloodRetryOpts {
