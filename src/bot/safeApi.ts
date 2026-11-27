@@ -89,8 +89,9 @@ export async function safeEditMedia(bot: Bot, target: EditTarget, media: unknown
 export async function safeSetReplyMarkup(bot: Bot, inlineMsgId: string, markup: Markup): Promise<void> {
   try {
     await bot.api.editMessageReplyMarkup({ inline_message_id: inlineMsgId, reply_markup: markup } as never);
-  } catch {
-    /* query too old / not modified */
+  } catch (e) {
+    // query too old / not modified — норма; 429/сеть глотаем тоже, но оставляем след
+    if (!isBenign(e)) log.debug(`[safeSetReplyMarkup] не вышло: ${e}`);
   }
 }
 

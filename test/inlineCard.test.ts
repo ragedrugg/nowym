@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type { Container } from "../src/bot/container.ts";
 import {
   buildLyricsCardResult,
   buildNowPlayingCardResult,
   cardCaption,
   cardMediaAndMarkup,
+  fetchLyricsWithFallback,
   hashPhrase,
   isCardResultId,
   trackCardBasics,
@@ -129,4 +130,37 @@ test("buildLyricsCardResult — resultId тоже содержит userId, ра�
   assert.notEqual(id1, id2, "разные юзеры — разные id");
   assert.notEqual(id1, id3, "разные фразы — разные id");
   assert.match(id1, /^lyc:1:777:/);
+});
+
+test("D11: зависший Genius не держит лирик-карточку — таймаут 8с и фолбэк на Яндекс", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const container = {
+      genius: { lyricsForPhrase: () => new Promise<string>(() => {}) },
+      getYandexService: async () => ({ getTrackLyrics: async () => "yandex text" }),
+    } as unknown as Container;
+    const p = fetchLyricsWithFallback(container, "tok", 1, 42, "phrase");
+    await Promise.resolve();
+    mock.timers.tick(8000);
+    assert.equal(await p, "yandex text");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("D11: зависший Яндекс — через 6с null, а не вечный плейсхолдер", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const container = {
+      genius: null,
+      getYandexService: async () => ({ getTrackLyrics: () => new Promise<string>(() => {}) }),
+    } as unknown as Container;
+    const p = fetchLyricsWithFallback(container, "tok", 1, 42, "phrase");
+    // getYandexService — async: даём микрозадачам дойти до withTimeout
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    mock.timers.tick(6000);
+    assert.equal(await p, null);
+  } finally {
+    mock.timers.reset();
+  }
 });

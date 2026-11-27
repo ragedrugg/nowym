@@ -16,7 +16,7 @@ import { resolveIconSet } from "./bot/iconSet.ts";
 import { PollingWatchdog } from "./bot/pollingWatchdog.ts";
 import { safeAnswerCb } from "./bot/safeApi.ts";
 import { AdminAlerter } from "./infra/adminAlerter.ts";
-import { sleep } from "./infra/async.ts";
+import { schedulePeriodic, sleep } from "./infra/async.ts";
 import { closeServer, createHttpApp } from "./infra/httpServer.ts";
 import { getLogger } from "./infra/logging.ts";
 import { incCounter } from "./infra/metrics.ts";
@@ -127,7 +127,9 @@ async function main(): Promise<void> {
   });
   staleRefresher.start();
 
-  const stubCleaner = setInterval(
+  // первый прогон через 5 мин, а не через 24ч: при рестартах чаще раза в сутки
+  // голый setInterval не срабатывал бы никогда.
+  const stopStubCleaner = schedulePeriodic(
     () => {
       void container.cacheDb
         .deleteOldStubs(7)
@@ -136,9 +138,9 @@ async function main(): Promise<void> {
         })
         .catch((e) => log.error(`[stub_cleaner] ошибка: ${e}`));
     },
+    5 * 60 * 1000,
     24 * 3600 * 1000,
   );
-  stubCleaner.unref?.();
 
   // альбомы, упавшие в прошлом запуске — дочитываем в фоне
   void container.albumService
@@ -214,7 +216,7 @@ async function main(): Promise<void> {
     webhookSecret: s.WEBHOOK_SECRET,
     tgHandler,
     nowPlayingToken: s.NOW_PLAYING_TOKEN,
-    metricsToken: process.env.METRICS_TOKEN ?? "",
+    metricsToken: s.METRICS_TOKEN,
     watcher: npWatcher,
     usersPool,
     cachePool,
@@ -248,7 +250,7 @@ async function main(): Promise<void> {
     await Promise.race([staleRefresher.stop(), sleep(5000)]).catch((e) =>
       log.warning(`[stale] stop на shutdown упал: ${e}`),
     );
-    clearInterval(stubCleaner);
+    stopStubCleaner();
     if (localApi) {
       await Promise.race([bot.stop(), sleep(5000)]).catch((e) => log.warning(`[polling] stop на shutdown упал: ${e}`));
     } else {

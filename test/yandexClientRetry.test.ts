@@ -148,3 +148,26 @@ test("getLosslessDownload: сервер проигнорировал raw (encraw
   assert.equal(await client.getLosslessDownload({ id: "123" } as never), null);
   assert.equal(state.downloads, 0);
 });
+
+test("D19: 401 → refresh → повтор не тратит попытку (работает и при YANDEX_MAX_RETRIES=0)", async () => {
+  const { UnauthorizedError } = await import("@dvxch/yandex-music");
+  const client = new YandexClient("t", null, {}, async () => assert.fail("не должен спать"));
+  (client as unknown as { maxRetries: number }).maxRetries = 0;
+  let refreshes = 0;
+  (client as unknown as { tryRefreshToken: () => Promise<boolean> }).tryRefreshToken = async () => {
+    refreshes += 1;
+    return true;
+  };
+  let calls = 0;
+  (client as unknown as { lib: unknown }).lib = {
+    tracks: async () => {
+      calls += 1;
+      if (calls === 1) throw new UnauthorizedError("expired");
+      return [{ id: 42 }];
+    },
+  };
+  const res = await client.getTrackById(42);
+  assert.deepEqual(res, { id: 42 });
+  assert.equal(refreshes, 1);
+  assert.equal(calls, 2);
+});

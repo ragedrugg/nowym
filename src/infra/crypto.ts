@@ -7,6 +7,9 @@
  * при следующей записи значение само станет зашифрованным.
  */
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { getLogger } from "./logging.ts";
+
+const log = getLogger("infra.crypto");
 
 export const ENC_PREFIX = "enc:v1:";
 
@@ -30,9 +33,9 @@ class Crypto {
 
   init(key: string): void {
     if (!key) {
+      // та же команда, что в .env.example: node есть везде, где запущен бот
       throw new Error(
-        'TOKEN_ENCRYPTION_KEY пустой — сгенерируй: python -c "from ' +
-          'cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"',
+        String.raw`TOKEN_ENCRYPTION_KEY пустой — сгенерируй: node -e 'console.log(require("crypto").randomBytes(32).toString("base64").replace(/\+/g,"-").replace(/\//g,"_"))'`,
       );
     }
     const raw = b64urlDecode(key);
@@ -65,7 +68,7 @@ class Crypto {
       return out.toString("utf-8");
     } catch {
       // ключ сменился или токен бит — поведение как у Python (лог + None)
-      console.error("[crypto] не расшифровать значение — ключ сменился?");
+      log.error("не расшифровать значение — ключ сменился?");
       return null;
     }
   }

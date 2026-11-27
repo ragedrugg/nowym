@@ -127,3 +127,8 @@ test("secretMatches: fail closed при пустом expected", () => {
   assert.equal(secretMatches("ab", "abc"), false);
   assert.equal(secretMatches(undefined, "abc"), false);
 });
+
+test("D15: METRICS_TOKEN идёт через Settings (дефолт — пусто)", () => {
+  assert.equal(buildSettings(prodEnv()).METRICS_TOKEN, "");
+  assert.equal(buildSettings({ ...prodEnv(), METRICS_TOKEN: "m-tok" }).METRICS_TOKEN, "m-tok");
+});

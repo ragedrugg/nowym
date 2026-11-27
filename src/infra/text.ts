@@ -11,3 +11,13 @@ export function plural(n: number, one: string, few: string, many: string): strin
 export function pluralTracks(n: number): string {
   return plural(n, "трек", "трека", "треков");
 }
+
+/** секунды ожидания для «подожди N сек»: вверх и не меньше 1 — Math.round давал «подожди 0 сек». */
+export function waitSeconds(sec: number): number {
+  return Math.max(1, Math.ceil(sec));
+}
+
+/** «@username» бота для пользовательских текстов; до getMe (или в тестах) — @nowymbot. */
+export function botMention(username: string | null | undefined): string {
+  return `@${username || "nowymbot"}`;
+}

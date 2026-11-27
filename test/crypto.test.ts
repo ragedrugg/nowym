@@ -37,3 +37,29 @@ test("битый ключ → null, без исключения", () => {
   crypto.init("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
   assert.equal(crypto.decrypt(PY_TOKEN), null);
 });
+
+test("D22: пустой ключ — подсказка с node-командой (как в .env.example), не Python", () => {
+  assert.throws(
+    () => crypto.init(""),
+    (e: Error) =>
+      e.message.includes(
+        String.raw`node -e 'console.log(require("crypto").randomBytes(32).toString("base64").replace(/\+/g,"-").replace(/\//g,"_"))'`,
+      ) && !/python/i.test(e.message),
+  );
+});
+
+test("D22: ошибка расшифровки идёт через логгер, а не голый console.error", () => {
+  crypto.init("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+  const out: string[] = [];
+  const orig = process.stderr.write;
+  process.stderr.write = ((c: string | Uint8Array) => {
+    out.push(String(c));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    assert.equal(crypto.decrypt(PY_TOKEN), null);
+  } finally {
+    process.stderr.write = orig;
+  }
+  assert.match(out.join(""), /ERROR\s+\[infra\.crypto\] не расшифровать значение/);
+});

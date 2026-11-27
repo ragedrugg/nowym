@@ -20,22 +20,32 @@ export class DatabasePool {
 
   private readonly dsnFactory: () => string;
   private readonly name: string;
-  private readonly minSize: number;
-  private readonly maxSize: number;
+  // не заданы — берутся из Settings в initialize(): на импорте env мог быть
+  // ещё не загружен и шёл мимо валидации.
+  private readonly minSize: number | undefined;
+  private readonly maxSize: number | undefined;
 
-  constructor(dsnFactory: () => string, name: string, minSize: number, maxSize: number) {
+  constructor(dsnFactory: () => string, name: string, minSize?: number, maxSize?: number) {
     this.dsnFactory = dsnFactory;
     this.name = name;
     this.minSize = minSize;
     this.maxSize = maxSize;
   }
 
+  /** размеры пула: явные из конструктора, иначе DB_POOL_MIN/MAX из Settings. */
+  private sizes(): { min: number; max: number } {
+    if (this.minSize !== undefined && this.maxSize !== undefined) return { min: this.minSize, max: this.maxSize };
+    const s = getSettings();
+    return { min: this.minSize ?? s.DB_POOL_MIN, max: this.maxSize ?? s.DB_POOL_MAX };
+  }
+
   async initialize(): Promise<void> {
     if (this.pool !== null) return;
+    const { min, max } = this.sizes();
     this.pool = new Pool({
       connectionString: this.dsnFactory(),
-      min: this.minSize,
-      max: this.maxSize,
+      min,
+      max,
       statement_timeout: 30_000,
       // зависшая транзакция не должна вечно держать локи/коннект
       idle_in_transaction_session_timeout: 30_000,
@@ -48,7 +58,7 @@ export class DatabasePool {
     // прогреваем одно соединение, чтобы упасть на старте при кривом DSN
     const c = await this.pool.connect();
     c.release();
-    log.info(`[pool/${this.name}] готов (min=${this.minSize}, max=${this.maxSize})`);
+    log.info(`[pool/${this.name}] готов (min=${min}, max=${max})`);
   }
 
   async query<R extends pg.QueryResultRow = pg.QueryResultRow>(
@@ -103,13 +113,9 @@ export class DatabasePool {
   }
 }
 
-// min/max нужны в конструкторе — читаем env напрямую с теми же дефолтами что в settings.ts
-const DB_POOL_MIN = parseInt(process.env.DB_POOL_MIN ?? "1", 10);
-const DB_POOL_MAX = parseInt(process.env.DB_POOL_MAX ?? "5", 10);
+export const usersPool = new DatabasePool(() => getSettings().POSTGRES_USERS_DSN, "users");
 
-export const usersPool = new DatabasePool(() => getSettings().POSTGRES_USERS_DSN, "users", DB_POOL_MIN, DB_POOL_MAX);
-
-export const cachePool = new DatabasePool(() => getSettings().POSTGRES_CACHE_DSN, "cache", DB_POOL_MIN, DB_POOL_MAX);
+export const cachePool = new DatabasePool(() => getSettings().POSTGRES_CACHE_DSN, "cache");
 
 export async function initializeAll(): Promise<void> {
   await usersPool.initialize();

@@ -83,6 +83,15 @@ export class AuthService {
       return null;
     }
 
+    // двойной тап «войти»: параллельный start мог проскочить проверку existing
+    // выше и уже завести свой poll-цикл, пока мы ждали requestDeviceCode —
+    // отменяем его, иначе он сохранит токен и отрендерит окно мимо нас.
+    const raced = this.active.get(userId);
+    if (raced) {
+      raced.cancelled = true;
+      this.active.delete(userId);
+    }
+
     const entry: ActiveAuth = {
       cancelled: false,
       state: {
@@ -195,6 +204,11 @@ export class AuthService {
           continue;
         }
         const token = outcome;
+        // logout/«отмена» могли прийти, пока poll был в полёте — токен не сохраняем.
+        if (entry.cancelled) {
+          log.info(`авторизация отменена ${userId} (токен пришёл после отмены)`);
+          return;
+        }
 
         await this.usersDb.save(userId, token.accessToken!, token.refreshToken ?? null, token.expiresIn ?? null);
         log.info(`авторизация ок для ${userId}`);

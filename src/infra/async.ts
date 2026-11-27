@@ -59,3 +59,20 @@ export function withTimeout<T>(p: Promise<T>, ms: number, label = "timeout"): Pr
     );
   });
 }
+
+/** Периодическая фоновая задача: первый прогон через firstDelayMs, дальше раз в
+ * intervalMs. Таймеры unref — не держат процесс. Возвращает stop(). Нужна там,
+ * где голый setInterval при частых рестартах не доживал бы до первого прогона. */
+export function schedulePeriodic(fn: () => void, firstDelayMs: number, intervalMs: number): () => void {
+  let interval: ReturnType<typeof setInterval> | null = null;
+  const first = setTimeout(() => {
+    fn();
+    interval = setInterval(fn, intervalMs);
+    interval.unref?.();
+  }, firstDelayMs);
+  first.unref?.();
+  return () => {
+    clearTimeout(first);
+    if (interval !== null) clearInterval(interval);
+  };
+}

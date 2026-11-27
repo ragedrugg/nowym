@@ -93,6 +93,8 @@ export interface Settings {
   WEBHOOK_SECRET: string;
 
   NOW_PLAYING_TOKEN: string;
+  /** пусто — /metrics и детали /health открыты. */
+  METRICS_TOKEN: string;
   GENIUS_TOKEN: string;
   OWNER_ID: number;
   ICON_SET_NAME: string;
@@ -161,6 +163,7 @@ export function buildSettings(e: Env): Settings {
     WEBHOOK_SECRET: env_("WEBHOOK_SECRET"),
 
     NOW_PLAYING_TOKEN: env_("NOW_PLAYING_TOKEN"),
+    METRICS_TOKEN: env_("METRICS_TOKEN"),
     GENIUS_TOKEN: env_("GENIUS_TOKEN"),
     OWNER_ID: envInt_("OWNER_ID", String(ADMIN_USER_ID)),
     // Имя Telegram custom-emoji стикерпака для иконок кнопок (iconFor() в

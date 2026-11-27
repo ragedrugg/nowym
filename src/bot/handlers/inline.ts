@@ -3,6 +3,7 @@ import { format } from "gramio";
 import { createInterruptibleSleep, withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
+import { botMention, waitSeconds } from "../../infra/text.ts";
 import type { InlineResult, SearchService } from "../../services/search.ts";
 import { getSettings } from "../../settings.ts";
 import type { CachedTrack } from "../../storage/types.ts";
@@ -554,7 +555,7 @@ export async function sendTrackToChat(args: {
   if (args.checkLimit !== false) {
     const [allowed, retryAfter] = container.downloadLimiter.check(userId);
     if (!allowed) {
-      await say(bot, chatId, statusMsgId, format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`);
+      await say(bot, chatId, statusMsgId, format`⏳ слишком часто, подожди ${waitSeconds(retryAfter)} сек`);
       return;
     }
   }
@@ -931,13 +932,14 @@ async function onInlineQuery(
   const userId = ctx.from.id;
   const text = ctx.query.trim();
   const offset = (ctx.offset ?? "").trim();
-  log.info(`[inline] user=${userId} query=${JSON.stringify(text)} offset=${JSON.stringify(offset)}`);
+  // текст запроса — DEBUG: приватность и объём лога (INFO пишется на каждый символ набора)
+  log.debug(`[inline] user=${userId} query=${JSON.stringify(text)} offset=${JSON.stringify(offset)}`);
 
   const [allowed, retryAfter] = container.inlineLimiter.check(userId);
   if (!allowed) {
     await ctx.answer([], {
       cache_time: 5,
-      button: { text: `⏳ подожди ${Math.round(retryAfter)}с`, start_parameter: "start" },
+      button: { text: `⏳ подожди ${waitSeconds(retryAfter)}с`, start_parameter: "start" },
     });
     return;
   }
@@ -1145,7 +1147,7 @@ export async function chosenRichCardTrack(
       await safeSetReplyMarkup(
         bot,
         inlineMsgId,
-        progressMarkup(trackId, `слишком часто, подожди ${Math.round(retryAfter)} сек`),
+        progressMarkup(trackId, `слишком часто, подожди ${waitSeconds(retryAfter)} сек`),
       );
       return;
     }
@@ -1189,7 +1191,7 @@ export async function onChosenResult(
   const userId = ctx.from.id;
   const resultId = ctx.resultId;
   const inlineMsgId = ctx.inlineMessageId ?? null;
-  log.info(`[chosen] user=${userId} result=${resultId}`);
+  log.debug(`[chosen] user=${userId} result=${resultId}`);
 
   const queryText = (ctx.query ?? "").trim();
   const effect = parseEffect(queryText);
@@ -1201,7 +1203,8 @@ export async function onChosenResult(
     if (effect) container.inlineEffects.set(inlineMsgId, effect.tier);
   }
 
-  if (resultId.startsWith("album:")) return;
+  // альбом/плейлист — article со ссылкой на бота, качать на chosen нечего
+  if (resultId.startsWith("album:") || resultId.startsWith("playlist:")) return;
 
   if (isRichResultId(resultId)) {
     if (inlineMsgId) await chosenRichCardTrack(bot, container, resultId, inlineMsgId, userId);
@@ -1323,11 +1326,14 @@ export async function onChosenResult(
       await safeSetReplyMarkup(
         bot,
         inlineMsgId,
-        progressMarkup(trackId, `слишком часто, подожди ${Math.round(e.retryAfterSec)} сек`),
+        progressMarkup(trackId, `слишком часто, подожди ${waitSeconds(e.retryAfterSec)} сек`),
       );
       return;
     }
     log.error(`[chosen] ошибка user=${userId} track=${trackId}: ${e}`);
+    // без этого кнопка навсегда остаётся «качаю...»/«отправляю...» от тикера
+    await cancelTicker();
+    await safeSetReplyMarkup(bot, inlineMsgId, retryMarkup(trackId));
   } finally {
     await cancelTicker();
   }
@@ -1363,7 +1369,7 @@ async function onLoadCallback(
   if (owner !== null && owner !== userId) {
     log.info(`[load] чужой инлайн: tapper=${userId} owner=${owner} track=${trackId}`);
     await safeAnswerCb(ctx, {
-      text: `это не твой трек — набери @${container.botUsername ?? "nowymbot"} и найди сам`,
+      text: `это не твой трек — набери ${botMention(container.botUsername)} и найди сам`,
       show_alert: true,
     });
     return;
@@ -1415,7 +1421,7 @@ async function onLoadCallback(
       await safeSetReplyMarkup(
         bot,
         inlineMsgId,
-        progressMarkup(trackId, `слишком часто, подожди ${Math.round(e.retryAfterSec)} сек`),
+        progressMarkup(trackId, `слишком часто, подожди ${waitSeconds(e.retryAfterSec)} сек`),
       );
       return;
     }

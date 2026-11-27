@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Bot } from "gramio";
-import { editOrSend, safeAnswerCb, safeEditApi, safeEditMedia, say } from "../src/bot/safeApi.ts";
+import { editOrSend, safeAnswerCb, safeEditApi, safeEditMedia, safeSetReplyMarkup, say } from "../src/bot/safeApi.ts";
 
 type Call = { method: string; params: unknown };
 
@@ -88,4 +88,34 @@ test("safeAnswerCb: глотает throw на протухшем query", async (
     },
   });
   assert.ok(true);
+});
+
+test("D27: safeSetReplyMarkup — 429/сеть глотает, но пишет debug; benign — молча", async () => {
+  const mkErrBot = (msg: string) =>
+    ({
+      api: {
+        editMessageReplyMarkup: async () => {
+          throw new Error(msg);
+        },
+      },
+    }) as unknown as Bot;
+  const prev = process.env.LOG_LEVEL;
+  process.env.LOG_LEVEL = "DEBUG";
+  const out: string[] = [];
+  const orig = process.stdout.write;
+  process.stdout.write = ((c: string | Uint8Array) => {
+    out.push(String(c));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await safeSetReplyMarkup(mkErrBot("Too Many Requests: retry after 5"), "IM", {});
+    await safeSetReplyMarkup(mkErrBot("Bad Request: message is not modified"), "IM", {});
+  } finally {
+    process.stdout.write = orig;
+    if (prev === undefined) delete process.env.LOG_LEVEL;
+    else process.env.LOG_LEVEL = prev;
+  }
+  const all = out.join("");
+  assert.match(all, /DEBUG.*safeSetReplyMarkup.*Too Many Requests/);
+  assert.ok(!all.includes("not modified"), "benign-гонка не логируется");
 });

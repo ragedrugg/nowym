@@ -17,5 +17,5 @@ export function registerHandlers(bot: Bot, container: Container): void {
   registerAlbums(bot, container);
   registerPlaylists(bot, container);
   registerInline(bot, container);
-  registerPrivateFallback(bot); // строго последним: ловит только то, что не взял никто выше
+  registerPrivateFallback(bot, container); // строго последним: ловит только то, что не взял никто выше
 }

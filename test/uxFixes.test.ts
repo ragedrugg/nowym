@@ -59,3 +59,42 @@ test("тексты: старт и help без устаревших формул�
   assert.match(help, /ncore/);
   assert.match(help, /\/np/);
 });
+
+test("D7: тексты подставляют username бота из getMe, а не захардкоженный @nowymbot", async () => {
+  assert.match(startText(true, "otherbot").toString(), /набери @otherbot название/);
+  assert.ok(!startText(true, "otherbot").toString().includes("nowymbot"));
+  assert.match(helpText("otherbot").toString(), /@otherbot/);
+  assert.ok(!helpText("otherbot").toString().includes("nowymbot"));
+
+  let handler: ((ctx: unknown, next: () => Promise<void>) => Promise<void>) | undefined;
+  registerPrivateFallback(
+    {
+      on: (_: string, h: typeof handler) => {
+        handler = h;
+      },
+    } as unknown as Bot,
+    { botUsername: "otherbot" },
+  );
+  const replies: string[] = [];
+  await handler!(
+    { chat: { type: "private" }, text: "привет", reply: async (t: string) => void replies.push(t) },
+    async () => {},
+  );
+  assert.match(replies[0]!, /набери @otherbot название/);
+});
+
+test("D7: TaggingService пишет encoded_by из username бота", async () => {
+  const { TaggingService } = await import("../src/tagging/service.ts");
+  const pairs = (svc: InstanceType<typeof TaggingService>) => [
+    ...(svc as unknown as { metaPairs(m: unknown): Iterable<[string, string]> }).metaPairs({ artist: "A", title: "B" }),
+  ];
+  assert.deepEqual(
+    pairs(new TaggingService("otherbot")).find(([k]) => k === "encoded_by"),
+    ["encoded_by", "@otherbot"],
+  );
+  assert.deepEqual(
+    pairs(new TaggingService()).find(([k]) => k === "encoded_by"),
+    ["encoded_by", "@nowymbot"],
+    "без username — прежний дефолт",
+  );
+});

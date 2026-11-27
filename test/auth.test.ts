@@ -365,3 +365,80 @@ test("refreshToken — библиотека бросает DeviceAuthError (не
   assert.equal(await auth.refreshToken(5, "RT"), null);
   assert.deepEqual(saved, []);
 });
+
+test("D4: cancelAuth, пока poll в полёте, — пришедший токен не сохраняется", async () => {
+  const { db, saved } = mkUsersDb();
+  let auth!: AuthService;
+  const lib: DeviceAuthTransport = {
+    requestDeviceCode: codeOf(300),
+    pollDeviceTokenOnce: async () => {
+      // logout/«отмена» прилетает ровно во время сетевого запроса
+      auth.cancelAuth(1);
+      return { accessToken: "AT", refreshToken: "RT", expiresIn: 10 } as never;
+    },
+    refreshAccessToken: noRefresh,
+  };
+  auth = new AuthService(db, lib, fastClock().opts);
+  let called = false;
+  const state = await auth.startDeviceAuth(
+    1,
+    () => {
+      called = true;
+    },
+    () => {
+      called = true;
+    },
+  );
+  await state!.done;
+  assert.deepEqual(saved, [], "токен после отмены не должен попасть в БД");
+  assert.equal(called, false, "ни onSuccess, ни onFailure");
+});
+
+test("D5: двойной тап «войти» — первый поток отменяется, токен сохраняет только последний", async () => {
+  const { db, saved } = mkUsersDb();
+  // первый requestDeviceCode отвечает позже второго: оба start'а проходят
+  // проверку existing до того, как кто-то из них записался в active.
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((r) => {
+    releaseFirst = r;
+  });
+  let reqN = 0;
+  const lib: DeviceAuthTransport = {
+    requestDeviceCode: async () => {
+      reqN += 1;
+      const n = reqN;
+      if (n === 1) await firstGate;
+      return { deviceCode: `dc${n}`, userCode: `U${n}`, verificationUrl: "u", expiresIn: 300, interval: 3 } as never;
+    },
+    pollDeviceTokenOnce: async (deviceCode: string) => ({ accessToken: `AT-${deviceCode}` }) as never,
+    refreshAccessToken: noRefresh,
+  };
+  // poll-циклы стоят на первом sleep, пока оба start'а не отработали (в жизни
+  // интервал опроса ≥3с, а requestDeviceCode — сотни мс).
+  let releasePolls!: () => void;
+  const pollGate = new Promise<void>((r) => {
+    releasePolls = r;
+  });
+  const clock = fastClock();
+  const auth = new AuthService(db, lib, {
+    ...clock.opts,
+    sleepFn: async (ms) => {
+      await pollGate;
+      await clock.opts.sleepFn(ms);
+    },
+  });
+  const successes: number[] = [];
+  const onOk = (uid: number) => {
+    successes.push(uid);
+  };
+  const p1 = auth.startDeviceAuth(1, onOk, () => {});
+  const p2 = auth.startDeviceAuth(1, onOk, () => {});
+  const s2 = await p2; // второй стартовал первым и уже в active
+  releaseFirst();
+  const s1 = await p1; // первый дошёл позже — он и есть «последний тап», второй отменяется
+  releasePolls();
+  await Promise.all([s1!.done, s2!.done]);
+  assert.equal(saved.length, 1, "сохранение ровно одно");
+  assert.equal(saved[0]!.access, "AT-dc1");
+  assert.deepEqual(successes, [1]);
+});

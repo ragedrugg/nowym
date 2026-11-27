@@ -300,7 +300,10 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
           lastError = e;
           if (await this.tryRefreshToken()) {
             refreshTried = true;
-            continue; // повтор без счётчика — это смена токена, не наш rate limit
+            // повтор без счётчика — это смена токена, не наш rate limit; без
+            // attempt-- при YANDEX_MAX_RETRIES=0 повтора с новым токеном не было бы
+            attempt--;
+            continue;
           }
           throw e;
         }
@@ -1181,7 +1184,10 @@ export class YandexClient implements WaveColorProvider, LikeProvider, AlbumShort
       if (t) orderedTracks.push(t);
     }
 
-    return buildPlaylistAlbumData(kind, playlist.title || "", playlist.cover?.uri || "", orderedTracks);
+    const data = buildPlaylistAlbumData(kind, playlist.title || "", playlist.cover?.uri || "", orderedTracks);
+    // owner нужен resume: по одному kind плейлист не перезапросить.
+    if (data) data.playlist_owner = owner;
+    return data;
   }
 
   async close(): Promise<void> {

@@ -22,6 +22,7 @@ import {
 import type { Bot } from "gramio";
 import { bold, code, type FormattableString, format, italic } from "gramio";
 import { getLogger } from "../infra/logging.ts";
+import { botMention } from "../infra/text.ts";
 import type { DeviceAuthState } from "../services/auth.ts";
 import { CARD_ASPECTS, CARD_TOGGLES, type CardToggleName, type UserSettings } from "../storage/settings.ts";
 import type { Container } from "./container.ts";
@@ -193,7 +194,8 @@ type LoginData = {
 };
 
 const ALREADY_IN = "✅ ты уже вошёл\n\nсменить аккаунт — кнопка ниже или /logout";
-const LOGIN_OK = "✅ готово, ты в аккаунте\n\nтеперь пиши @nowymbot название в любом чате или жми кнопки ниже";
+const loginOk = (botUsername: string | null): string =>
+  `✅ готово, ты в аккаунте\n\nтеперь пиши ${botMention(botUsername)} название в любом чате или жми кнопки ниже`;
 
 const toLoginInfo = (st: DeviceAuthState): LoginInfo => ({
   userCode: st.userCode,
@@ -240,7 +242,7 @@ export async function startLogin(dialog: DialogManager, bot: Bot, container: Con
   };
   const onSuccess = async (uid: number): Promise<void> => {
     container.invalidateTokenCacheForUser(uid);
-    await finishLogin(uid, "login_done", { loginMsg: LOGIN_OK });
+    await finishLogin(uid, "login_done", { loginMsg: loginOk(container.botUsername) });
   };
   const onFailure = (uid: number, reason: string): Promise<void> =>
     finishLogin(uid, "login_fail", { failReason: reason });
@@ -261,6 +263,7 @@ export async function startLogout(dialog: DialogManager, container: Container, u
   // иначе закэшированный YandexClient/SearchService переживает logout — держит
   // расшифрованный токен и историю юзера в памяти до истечения TTL кэша
   container.invalidateTokenCacheForUser(userId);
+  container.albumService.forgetUser(userId);
   await dialog.switchTo("logout_done", {
     data: {
       logoutMsg: deleted ? "вышел из аккаунта ✅\nкогда понадобится — жми кнопку" : "ты пока не входил в аккаунт",
@@ -314,6 +317,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
     container.authService.cancelAuth(userId);
     await container.usersDb.delete(userId);
     container.invalidateTokenCacheForUser(userId);
+    container.albumService.forgetUser(userId);
     await startLogin(ctx.dialog, bot, container, userId);
   };
   const onCancelLogin: OnClick = async (ctx) => {
@@ -368,7 +372,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   const main = new Window<MenuData>({
     state: "main",
     getter: async (ctx) => ({ loggedIn: await isLoggedIn(uidOf(ctx)) }),
-    text: (d) => startText(d.loggedIn),
+    text: (d) => startText(d.loggedIn, container.botUsername),
     disableWebPreview: true,
     keyboard: Group([
       Group(
@@ -391,7 +395,7 @@ export function buildMenuDialog(bot: Bot, container: Container): Dialog {
   const help = new Window<MenuData>({
     state: "help",
     getter: async (ctx) => ({ loggedIn: await isLoggedIn(uidOf(ctx)) }),
-    text: () => helpText(),
+    text: () => helpText(container.botUsername),
     disableWebPreview: true,
     keyboard: authGated(
       [

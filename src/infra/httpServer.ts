@@ -3,8 +3,11 @@
 
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { sleep } from "./async.ts";
+import { getLogger } from "./logging.ts";
 import { counterSnapshot } from "./metrics.ts";
 import { secretMatches } from "./secret.ts";
+
+const log = getLogger("infra.http_server");
 
 type WatcherHealth = { running: boolean; connected: boolean; lastStateAgeMs: number | null; hasTrack: boolean };
 
@@ -222,7 +225,12 @@ export function createHttpApp(deps: HttpDeps): HttpApp {
         res.writeHead(401).end();
         return;
       }
-      void deps.tgHandler(req, res);
+      // реджект (битый JSON и т.п.) без catch = unhandledRejection + алерт и
+      // висящий запрос; отвечаем 400, если хендлер ещё не ответил сам.
+      (async () => deps.tgHandler(req, res))().catch((e) => {
+        log.warning(`webhook-хендлер упал: ${e}`);
+        if (!res.headersSent) res.writeHead(400).end();
+      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/now-playing") {

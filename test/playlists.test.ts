@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { START_PLAYLIST_RE } from "../src/bot/handlers/common.ts";
-import { buildPlaylistAlbumData } from "../src/yandex/client.ts";
+import { buildPlaylistAlbumData, YandexClient } from "../src/yandex/client.ts";
 import type { YaTrack } from "../src/yandex/types.ts";
 
 test("deep-link playlist_<owner>_<kind>: owner с '_' не съедает kind", () => {
@@ -56,4 +56,14 @@ test("buildPlaylistAlbumData — поля AlbumData под переисполь�
 test("buildPlaylistAlbumData — пустой coverUri не роняет normalizeCoverUrl", () => {
   const album = buildPlaylistAlbumData(1, "x", "", [mkTrack(1)]);
   assert.equal(album!.cover_url, "");
+});
+
+test("D3: YandexClient.getPlaylist кладёт owner в AlbumData (нужен resume)", async () => {
+  const client = new YandexClient("token");
+  (client as unknown as { lib: unknown }).lib = {
+    usersPlaylists: async () => ({ title: "p", tracks: [{ id: 1, track: { id: 1, title: "t", available: true } }] }),
+  };
+  const data = await client.getPlaylist("alice", 42);
+  assert.equal(data?.id, 42);
+  assert.equal(data?.playlist_owner, "alice");
 });

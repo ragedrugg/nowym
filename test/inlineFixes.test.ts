@@ -349,3 +349,89 @@ test("chatRichSenders.fallback: без карточки сбой sendAudio — �
     (e: unknown) => !(e instanceof PartialDeliveryError),
   );
 });
+
+// ---------- D9/D10: общий catch onChosenResult, playlist: ----------
+
+test("D9: исключение в onChosenResult → кнопка «загрузить снова», а не вечное «качаю...»", async () => {
+  const { container } = chosenContainer({ cached: null, limiterAllows: true });
+  (container as unknown as { getUserSettings: () => Promise<never> }).getUserSettings = async () => {
+    throw new Error("pg down");
+  };
+  const { bot, calls } = mkBot();
+  await onChosenResult({ from: { id: 1 }, resultId: "42", inlineMessageId: "IM", query: "song" }, container, bot);
+  const last = calls.filter((c) => c.method === "editMessageReplyMarkup").at(-1);
+  assert.ok(last, "разметка должна быть заменена");
+  assert.ok(JSON.stringify(last.params.reply_markup).includes("load:42"));
+});
+
+test("D10: выбор playlist: пропускается молча, как album: (без warning «невалидный result_id»)", async () => {
+  const { container } = chosenContainer({ cached: null, limiterAllows: true });
+  let tokenCalls = 0;
+  (container as unknown as { resolveToken: () => Promise<string> }).resolveToken = async () => {
+    tokenCalls++;
+    return "tok";
+  };
+  const { bot, calls } = mkBot();
+  const out: string[] = [];
+  const origWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await onChosenResult({ from: { id: 1 }, resultId: "playlist:alice:3", inlineMessageId: "IM" }, container, bot);
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  assert.equal(tokenCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.ok(!out.some((l) => l.includes("невалидный result_id")), out.join(""));
+  assert.equal(container.inlineOwners.get("IM"), 1, "владелец всё равно запоминается");
+});
+
+// ---------- D24: тексты запросов не пишутся на INFO ----------
+
+function captureStdout(): { out: string[]; restore: () => void } {
+  const out: string[] = [];
+  const orig = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  return { out, restore: () => (process.stdout.write = orig) };
+}
+
+test("D24: текст inline-запроса и result_id chosen — на DEBUG, не на INFO", async () => {
+  let inlineHandler!: (ctx: unknown) => Promise<void>;
+  const bot = {
+    inlineQuery: (_re: RegExp, fn: (ctx: unknown) => Promise<void>) => {
+      inlineHandler = fn;
+    },
+    chosenInlineResult: () => undefined,
+    callbackQuery: () => undefined,
+  };
+  const container = {
+    inlineLimiter: { check: () => [false, 3] as [boolean, number] },
+    inlineOwners: new Map<string, number>(),
+    inlineEffects: new Map<string, string>(),
+  } as unknown as Container;
+  registerInline(bot as never, container);
+  const prev = process.env.LOG_LEVEL;
+  process.env.LOG_LEVEL = "INFO";
+  const cap = captureStdout();
+  try {
+    await inlineHandler({ from: { id: 1 }, query: "секретный запрос", offset: "", answer: async () => true });
+    await onChosenResult(
+      { from: { id: 1 }, resultId: "album:secret-77", inlineMessageId: "IM" },
+      container,
+      mkBot().bot,
+    );
+  } finally {
+    cap.restore();
+    if (prev === undefined) delete process.env.LOG_LEVEL;
+    else process.env.LOG_LEVEL = prev;
+  }
+  const all = cap.out.join("");
+  assert.ok(!all.includes("секретный запрос"), all);
+  assert.ok(!all.includes("secret-77"), all);
+});

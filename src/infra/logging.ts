@@ -1,7 +1,10 @@
 /**
  * Лёгкий логгер с уровнями и human/json-форматом, без зависимостей.
  * Уровень/формат читаются прямо из env, а не через settings — чтобы не тянуть
- * валидацию обязательных переменных в утилитарный модуль.
+ * валидацию обязательных переменных в утилитарный модуль. Читаются при каждом
+ * emit, а не на импорте: модуль импортируется раньше, чем settings.ts грузит
+ * .env (запуск без pm2), и иначе LOG_LEVEL/LOG_FORMAT из .env игнорировались бы.
+ * Валидацию значений делает settings.ts.
  */
 
 type Level = "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
@@ -14,17 +17,29 @@ const ORDER: Record<Level, number> = {
   CRITICAL: 50,
 };
 
-const LEVEL: Level = ((): Level => {
-  const v = (process.env.LOG_LEVEL ?? "INFO").toUpperCase();
+function currentLevel(): Level {
+  const v = (process.env.LOG_LEVEL || "INFO").toUpperCase();
   return v in ORDER ? (v as Level) : "INFO";
-})();
+}
 
-const JSON_FORMAT = (process.env.LOG_FORMAT ?? "human").toLowerCase() === "json";
+// секреты, которые могут прийти в лог внутри текста ошибок: токен бота в URL
+// Bot API (…/bot123:ABC/sendMessage) и OAuth-заголовок Яндекса.
+const SECRET_PATTERNS: [RegExp, string][] = [
+  [/bot\d+:[\w-]+/g, "bot<token>"],
+  [/OAuth [\w.-]+/g, "OAuth <token>"],
+];
 
-function emit(level: Level, name: string, msg: string): void {
-  if (ORDER[level] < ORDER[LEVEL]) return;
+export function maskSecrets(msg: string): string {
+  let out = msg;
+  for (const [re, repl] of SECRET_PATTERNS) out = out.replace(re, repl);
+  return out;
+}
+
+function emit(level: Level, name: string, rawMsg: string): void {
+  if (ORDER[level] < ORDER[currentLevel()]) return;
+  const msg = maskSecrets(rawMsg);
   const ts = new Date().toISOString();
-  if (JSON_FORMAT) {
+  if ((process.env.LOG_FORMAT ?? "human").toLowerCase() === "json") {
     process.stdout.write(JSON.stringify({ ts, level, logger: name, msg }) + "\n");
   } else {
     const line = `${ts} ${level.padEnd(8)} [${name}] ${msg}\n`;

@@ -117,6 +117,8 @@ export interface AlbumData {
   album_type: string;
   tracks: YaTrack[];
   volumes: YaTrack[][];
+  /** только у плейлиста (album_type "playlist"): владелец из URL; id = kind внутри owner. */
+  playlist_owner?: string;
 }
 
 /** поля, возвращаемые buildCardMeta — для meta-строки карточки. */

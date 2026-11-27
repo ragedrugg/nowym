@@ -98,6 +98,9 @@ export class CacheDb {
         started_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `);
+    // аддитивно: у плейлиста album_id = kind, без owner его не перезапросить при resume
+    // (и kind коллизирует с id альбомов). NULL = альбом — старые строки совместимы.
+    await cachePool.query("ALTER TABLE album_inflight ADD COLUMN IF NOT EXISTS playlist_owner TEXT");
     await cachePool.query("CREATE INDEX IF NOT EXISTS idx_album_inflight_user ON album_inflight (user_id)");
   }
 
@@ -227,13 +230,17 @@ export class CacheDb {
     user_id: number;
     chat_id: number;
     album_id: number;
+    playlist_owner: string | null;
     progress_message_id: number | null;
   }): Promise<number> {
     return cachePool.transaction(async (c) => {
-      await c.query("DELETE FROM album_inflight WHERE user_id = $1 AND album_id = $2", [args.user_id, args.album_id]);
+      await c.query(
+        "DELETE FROM album_inflight WHERE user_id = $1 AND album_id = $2 AND playlist_owner IS NOT DISTINCT FROM $3",
+        [args.user_id, args.album_id, args.playlist_owner],
+      );
       const res = await c.query<{ id: number }>(
-        "INSERT INTO album_inflight (user_id, chat_id, album_id, progress_message_id) VALUES ($1, $2, $3, $4) RETURNING id",
-        [args.user_id, args.chat_id, args.album_id, args.progress_message_id],
+        "INSERT INTO album_inflight (user_id, chat_id, album_id, playlist_owner, progress_message_id) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        [args.user_id, args.chat_id, args.album_id, args.playlist_owner, args.progress_message_id],
       );
       return res.rows[0]!.id;
     });
@@ -252,7 +259,7 @@ export class CacheDb {
 
   async listInflight(maxAgeHours = 6): Promise<InflightAlbum[]> {
     const res = await cachePool.query<Record<string, unknown>>(
-      `SELECT id, user_id, chat_id, album_id, progress_message_id, completed_track_ids
+      `SELECT id, user_id, chat_id, album_id, playlist_owner, progress_message_id, completed_track_ids
        FROM album_inflight
        WHERE started_at > NOW() - $1 * INTERVAL '1 hour'
        ORDER BY started_at ASC`,
@@ -263,6 +270,7 @@ export class CacheDb {
       user_id: r.user_id as number,
       chat_id: r.chat_id as number,
       album_id: r.album_id as number,
+      playlist_owner: (r.playlist_owner as string | null) ?? null,
       progress_message_id: (r.progress_message_id as number | null) ?? null,
       completed_track_ids: ((r.completed_track_ids as number[]) ?? []).map(Number),
     }));

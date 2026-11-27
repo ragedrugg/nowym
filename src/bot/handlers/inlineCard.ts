@@ -1,5 +1,6 @@
 import type { Bot } from "gramio";
 import { type FormattableString, format, InlineQueryResult, InputMessageContent, link } from "gramio";
+import { withTimeout } from "../../infra/async.ts";
 import { getLogger } from "../../infra/logging.ts";
 import { LRUMap } from "../../infra/lruMap.ts";
 import type { LyricsBlock } from "../../services/card.ts";
@@ -273,8 +274,10 @@ export function cardMediaAndMarkup(args: {
 }
 
 /** текст трека для лирик-карточки: Genius по фразе → (если пусто) Яндекс.
- * Genius уже искал эту песню на inline-запросе, так что скрейп обычно из кэша. */
-async function fetchLyricsWithFallback(
+ * Genius уже искал эту песню на inline-запросе, так что скрейп обычно из кэша.
+ * Таймауты те же, что у fetchLyricsForQuery (inline.ts): зависший источник
+ * не должен держать плейсхолдер карточки бесконечно. */
+export async function fetchLyricsWithFallback(
   container: Container,
   token: string | null,
   userId: number,
@@ -285,7 +288,7 @@ async function fetchLyricsWithFallback(
   // с цитатой; у Яндекса покрытие дырявое — он фолбэк.
   if (container.genius) {
     try {
-      const raw = await container.genius.lyricsForPhrase(phrase);
+      const raw = await withTimeout(container.genius.lyricsForPhrase(phrase), 8000);
       if (raw) return raw;
     } catch (e) {
       log.warning(`[chosen] genius-лирика track=${trackId}: ${errText(e)}`);
@@ -294,7 +297,7 @@ async function fetchLyricsWithFallback(
   if (token) {
     try {
       const yandex = await container.getYandexService(token, userId);
-      const raw = await yandex.getTrackLyrics(trackId);
+      const raw = await withTimeout(yandex.getTrackLyrics(trackId), 6000);
       if (raw) {
         log.info(`[chosen] лирика для карточки взята из Яндекса track=${trackId}`);
         return raw;

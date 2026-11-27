@@ -97,13 +97,25 @@ export function registerAdmin(bot: Bot, container: Container): void {
   bot.command("health", async (ctx) => {
     if (ctx.chat?.type !== "private" || !isAdmin(ctx.from!.id)) return;
     const status = await ctx.reply("⏳ собираю статус...");
-    const { text, markup } = await buildMainHealth(bot, container);
-    await bot.api.editMessageText({
-      chat_id: ctx.chat.id,
-      message_id: status.id,
-      text,
-      reply_markup: markup,
-    } as never);
+    try {
+      const { text, markup } = await buildMainHealth(bot, container);
+      await bot.api.editMessageText({
+        chat_id: ctx.chat.id,
+        message_id: status.id,
+        text,
+        reply_markup: markup,
+      } as never);
+    } catch (e) {
+      // иначе «⏳ собираю статус...» висит навсегда
+      log.warning(`[admin] /health упал: ${e}`);
+      await safeEditApi(
+        bot,
+        { chatId: ctx.chat.id, messageId: status.id },
+        format`❌ не удалось собрать статус
+${errorDetail(e)}`,
+        healthMarkup(),
+      );
+    }
   });
 
   bot.callbackQuery("health:ym", async (ctx) => {

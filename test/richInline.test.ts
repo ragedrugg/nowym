@@ -173,7 +173,7 @@ test("chosen npr: лимитер отказал: без рендера, плей
     ["editMessageReplyMarkup"],
   );
   const kb = JSON.stringify(calls[0]!.params.reply_markup);
-  assert.ok(kb.includes("слишком часто, подожди 7 сек"));
+  assert.ok(kb.includes("слишком часто, подожди 8 сек"), "retryAfter 7.2 → вверх, 8 (D12)");
   assert.ok(kb.includes("load:777"));
 });
 

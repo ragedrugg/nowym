@@ -4,6 +4,7 @@ import type { Bot } from "gramio";
 import { bold, code, type FormattableString, format, join, MediaInput, MediaUpload } from "gramio";
 import { albumRetryMarkup, cancelAlbumMarkup } from "../bot/markup.ts";
 import { sleep } from "../infra/async.ts";
+import { floodRetry } from "../infra/floodRetry.ts";
 import type { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
 import { LRUMap } from "../infra/lruMap.ts";
@@ -47,6 +48,15 @@ const MEDIA_GROUP_MAX = 10; // лимит tg на одну sendMediaGroup-пач
 // освобождают буферы, вместо накопления до 25 (на lossless-альбоме это
 // разница между ~800мб и ~5гб при тяжёлых FLAC).
 const PREPARE_CHUNK = MEDIA_GROUP_MAX;
+
+// 429 в чат юзера на больших альбомах: без ретрая вся пачка из 10 уходила в «❌ не вышло».
+const FLOOD_ATTEMPTS = 3;
+const floodToUser = <T>(build: () => Promise<T>): Promise<T> =>
+  floodRetry(build, {
+    attempts: FLOOD_ATTEMPTS,
+    graceMs: 500,
+    onWait: (ra, attempt) => log.warning(`flood 429 в чат: ждём ${ra}s (попытка ${attempt}/${FLOOD_ATTEMPTS})`),
+  });
 
 export function renderProgressBar(current: number, total: number): string {
   if (total <= 0) return BAR_EMPTY.repeat(BAR_WIDTH);
@@ -200,6 +210,13 @@ export class AlbumService {
     return item.buf;
   }
 
+  /** logout/смена аккаунта: retry-буфер держит YandexClient (токен) юзера до 30 мин — выкидываем. */
+  forgetUser(userId: number): void {
+    for (const [mid, { buf }] of this.retryBuffer.entries()) {
+      if (buf.userId === userId) this.retryBuffer.delete(mid);
+    }
+  }
+
   private putRetry(messageId: number, buf: RetryBuf): void {
     const now = Date.now();
     for (const [mid, { ts }] of this.retryBuffer.entries()) {
@@ -288,6 +305,7 @@ export class AlbumService {
       user_id: number;
       chat_id: number;
       album_id: number;
+      playlist_owner: string | null;
       progress_message_id: number | null;
       completed_track_ids: number[];
     },
@@ -295,6 +313,9 @@ export class AlbumService {
     const userId = row.user_id;
     const chatId = row.chat_id;
     const albumId = row.album_id;
+    // плейлист: album_id = kind, перезапрашиваем по (owner, kind), а не getAlbum(kind)
+    const owner = row.playlist_owner;
+    const noun = owner ? "плейлист" : "альбом";
     const doneIds = new Set(row.completed_track_ids.map(Number));
     const inflightId = row.id;
 
@@ -308,58 +329,63 @@ export class AlbumService {
       return;
     }
 
-    const token = await deps.resolveToken(userId);
-    if (!token) {
-      if (proxy) await proxy.edit(format`❌ не получилось продолжить — войди /login и кинь альбом ещё раз`);
-      await this.db.deleteInflight(inflightId);
-      this.release(userId);
-      return;
-    }
-
-    const yandex = await deps.getYandexClient(token, userId);
-    let album: AlbumData | null;
+    // после tryBegin всё под try/finally: resolveToken/getYandexClient (сетевой
+    // lib.init)/deleteInflight могут бросить — без finally слот утёк бы до рестарта.
+    let handedOff = false;
     try {
-      album = await yandex.getAlbum(albumId);
-    } catch (e) {
-      log.warning(`[resume] альбом ${albumId} user=${userId}: ${e}`);
-      album = null;
+      const token = await deps.resolveToken(userId);
+      if (!token) {
+        if (proxy) await proxy.edit(format`❌ не получилось продолжить — войди /login и кинь ${noun} ещё раз`);
+        await this.db.deleteInflight(inflightId);
+        return;
+      }
+
+      const yandex = await deps.getYandexClient(token, userId);
+      let album: AlbumData | null;
+      try {
+        album = owner ? await yandex.getPlaylist(owner, albumId) : await yandex.getAlbum(albumId);
+      } catch (e) {
+        log.warning(`[resume] ${noun} ${owner ? `${owner}/` : ""}${albumId} user=${userId}: ${e}`);
+        album = null;
+      }
+
+      if (!album) {
+        if (proxy) await proxy.edit(format`❌ ${noun} больше недоступен`);
+        await this.db.deleteInflight(inflightId);
+        return;
+      }
+
+      const remaining = album.tracks.filter((t) => !doneIds.has(Number(t.id)));
+      const totalOrig = album.tracks.length;
+
+      if (remaining.length === 0) {
+        if (proxy) await proxy.edit(format`✅ ${noun} уже залит 🎶`);
+        await this.db.deleteInflight(inflightId);
+        return;
+      }
+
+      const done = totalOrig - remaining.length;
+      if (proxy) {
+        await proxy.edit(
+          format`🔄 продолжаю с того места: ${done}/${totalOrig} уже залито, остаётся ${remaining.length}`,
+        );
+      }
+
+      handedOff = true; // дальше слот ведёт sendAlbumTracks (его finally чистит active)
+      await this.sendAlbumTracks({
+        chatId,
+        userId,
+        tracks: remaining,
+        albumData: album,
+        progressMsg: proxy,
+        yandex,
+        coverBytes: null,
+        persistInflight: true,
+        inflightId,
+      });
+    } finally {
+      if (!handedOff) this.release(userId);
     }
-
-    if (!album) {
-      if (proxy) await proxy.edit(format`❌ альбом больше недоступен`);
-      await this.db.deleteInflight(inflightId);
-      this.release(userId);
-      return;
-    }
-
-    const remaining = album.tracks.filter((t) => !doneIds.has(Number(t.id)));
-    const totalOrig = album.tracks.length;
-
-    if (remaining.length === 0) {
-      if (proxy) await proxy.edit(format`✅ альбом уже залит 🎶`);
-      await this.db.deleteInflight(inflightId);
-      this.release(userId);
-      return;
-    }
-
-    const done = totalOrig - remaining.length;
-    if (proxy) {
-      await proxy.edit(
-        format`🔄 продолжаю с того места: ${done}/${totalOrig} уже залито, остаётся ${remaining.length}`,
-      );
-    }
-
-    await this.sendAlbumTracks({
-      chatId,
-      userId,
-      tracks: remaining,
-      albumData: album,
-      progressMsg: proxy,
-      yandex,
-      coverBytes: null,
-      persistInflight: true,
-      inflightId,
-    });
   }
 
   async sendCover(chatId: number, coverUrl: string, caption: FormattableString): Promise<Buffer | null> {
@@ -392,193 +418,206 @@ export class AlbumService {
   }): Promise<void> {
     const { chatId, userId, tracks, albumData, progressMsg, yandex, coverBytes } = args;
     const total = tracks.length;
-    if (total === 0) return;
-
-    // режим качества юзера: lossless → весь альбом во FLAC (отдельный тир кэша),
-    // с пофайловым фолбэком на lossy, если у трека нет lossless.
-    const quality = (await this.getUserSettings(userId)).track_quality as AudioQuality;
-    const losslessMode = quality === "lossless";
-    const tier = losslessMode ? "lossless" : "lossy";
-
     let inflightId = args.inflightId ?? null;
-    if (args.persistInflight && inflightId === null) {
-      try {
-        inflightId = await this.db.insertInflightAlbum({
-          user_id: userId,
-          chat_id: chatId,
-          album_id: albumData.id || 0,
-          progress_message_id: progressMsg?.messageId ?? null,
+    // весь путь — под одним try/finally: слот active (занятый tryBegin вызывающей
+    // стороной) обязан освободиться, даже если упал getUserSettings/insertInflight
+    // (pg моргнул) — иначе «у тебя уже идёт выгрузка» навсегда до рестарта.
+    try {
+      if (total === 0) return;
+
+      // режим качества юзера: lossless → весь альбом во FLAC (отдельный тир кэша),
+      // с пофайловым фолбэком на lossy, если у трека нет lossless.
+      const quality = (await this.getUserSettings(userId)).track_quality as AudioQuality;
+      const losslessMode = quality === "lossless";
+      const tier = losslessMode ? "lossless" : "lossy";
+
+      if (args.persistInflight && inflightId === null) {
+        try {
+          inflightId = await this.db.insertInflightAlbum({
+            user_id: userId,
+            chat_id: chatId,
+            album_id: albumData.id || 0,
+            playlist_owner: albumData.playlist_owner ?? null,
+            progress_message_id: progressMsg?.messageId ?? null,
+          });
+        } catch (e) {
+          log.warning(`[inflight] не вышло записать row: ${e}`);
+          inflightId = null;
+        }
+      }
+
+      const multiDisc = (albumData.volumes?.length ?? 0) > 1;
+      const trackTotal = albumData.tracks.length;
+      const discTotal = albumData.volumes?.length || null;
+
+      const headerShort = format`${albumEmoji(albumData.album_type)} ${bold(`${albumData.artist} — ${albumData.title}`)}`;
+      const metaParts = [albumData.year, albumData.label, pluralTracks(trackTotal)].filter(Boolean) as string[];
+      if (LABELED_ALBUM_TYPES.has(albumData.album_type.toLowerCase())) {
+        const typeLabel = albumTypeRu(albumData.album_type, trackTotal);
+        if (typeLabel) metaParts.unshift(typeLabel);
+      }
+      const metaLine = metaParts.join(", ");
+      const headerFull = metaLine ? format`${headerShort}\n${metaLine}` : headerShort;
+
+      const buildMeta = (track: YaTrack, i: number): CacheMetadata => {
+        const trackNumber = track._trackNumber ?? i;
+        const discNumber = multiDisc ? (track._discNumber ?? 1) : null;
+        const meta: CacheMetadata = buildTrackMetadata(track, {
+          title: albumData.title,
+          year: albumData.year,
+          label: albumData.label,
+          genre: albumData.genre || undefined,
+          cover_url: albumData.cover_url,
+          track_number: trackNumber,
+          track_total: trackTotal,
+          ...(discNumber !== null ? { disc_number: discNumber } : {}),
+          ...(discTotal !== null ? { disc_total: discTotal } : {}),
         });
-      } catch (e) {
-        log.warning(`[inflight] не вышло записать row: ${e}`);
-        inflightId = null;
-      }
-    }
+        if (coverBytes !== null) meta.cover_data = coverBytes;
+        return meta;
+      };
 
-    const multiDisc = (albumData.volumes?.length ?? 0) > 1;
-    const trackTotal = albumData.tracks.length;
-    const discTotal = albumData.volumes?.length || null;
+      // переиспользуем резерв tryBegin (если был), иначе cancel между резервом и стартом терялся бы
+      const state = this.active.get(userId) ?? { cancelled: false };
+      this.active.set(userId, state);
 
-    const headerShort = format`${albumEmoji(albumData.album_type)} ${bold(`${albumData.artist} — ${albumData.title}`)}`;
-    const metaParts = [albumData.year, albumData.label, pluralTracks(trackTotal)].filter(Boolean) as string[];
-    if (LABELED_ALBUM_TYPES.has(albumData.album_type.toLowerCase())) {
-      const typeLabel = albumTypeRu(albumData.album_type, trackTotal);
-      if (typeLabel) metaParts.unshift(typeLabel);
-    }
-    const metaLine = metaParts.join(", ");
-    const headerFull = metaLine ? format`${headerShort}\n${metaLine}` : headerShort;
+      const progress: ProgressState = {
+        sent: 0,
+        downloading: 0,
+        failed: [],
+        lock: new Semaphore(1),
+        startedAt: performance.now() / 1000,
+        lastRender: 0,
+        nowSending: null,
+      };
 
-    const buildMeta = (track: YaTrack, i: number): CacheMetadata => {
-      const trackNumber = track._trackNumber ?? i;
-      const discNumber = multiDisc ? (track._discNumber ?? 1) : null;
-      const meta: CacheMetadata = buildTrackMetadata(track, {
-        title: albumData.title,
-        year: albumData.year,
-        label: albumData.label,
-        genre: albumData.genre || undefined,
-        cover_url: albumData.cover_url,
-        track_number: trackNumber,
-        track_total: trackTotal,
-        ...(discNumber !== null ? { disc_number: discNumber } : {}),
-        ...(discTotal !== null ? { disc_total: discTotal } : {}),
-      });
-      if (coverBytes !== null) meta.cover_data = coverBytes;
-      return meta;
-    };
+      const sem = new Semaphore(Math.max(1, getSettings().ALBUM_PARALLEL_TRACKS));
 
-    // переиспользуем резерв tryBegin (если был), иначе cancel между резервом и стартом терялся бы
-    const state = this.active.get(userId) ?? { cancelled: false };
-    this.active.set(userId, state);
+      const markDoneSafe = async (tid: string): Promise<void> => {
+        if (inflightId === null) return;
+        try {
+          await this.db.markInflightTrackDone(inflightId, Number(tid));
+        } catch (e) {
+          log.debug(`[inflight] mark_done track=${tid}: ${e}`);
+        }
+      };
 
-    const progress: ProgressState = {
-      sent: 0,
-      downloading: 0,
-      failed: [],
-      lock: new Semaphore(1),
-      startedAt: performance.now() / 1000,
-      lastRender: 0,
-      nowSending: null,
-    };
+      const prepared: (PreparedEntry | null)[] = new Array(total).fill(null);
 
-    const sem = new Semaphore(Math.max(1, getSettings().ALBUM_PARALLEL_TRACKS));
+      const prepare = async (idx: number, track: YaTrack): Promise<void> => {
+        const trackId = String(track.id);
+        const metadata = buildMeta(track, idx + 1);
 
-    const markDoneSafe = async (tid: string): Promise<void> => {
-      if (inflightId === null) return;
-      try {
-        await this.db.markInflightTrackDone(inflightId, Number(tid));
-      } catch (e) {
-        log.debug(`[inflight] mark_done track=${tid}: ${e}`);
-      }
-    };
-
-    const prepared: (PreparedEntry | null)[] = new Array(total).fill(null);
-
-    const prepare = async (idx: number, track: YaTrack): Promise<void> => {
-      const trackId = String(track.id);
-      const metadata = buildMeta(track, idx + 1);
-
-      if (trackIsTooLong(track)) {
-        log.info(`[album] трек ${trackId} «${track.title}» длинный, пропускаю`);
-        prepared[idx] = { kind: "failed", track, trackId, metadata, fileId: null, payload: null, codec: "mp3", tier };
-        return;
-      }
-
-      let cached: CachedTrack | null;
-      try {
-        cached = await this.db.get(trackId, tier);
-      } catch {
-        cached = null;
-      }
-
-      if (cached && cached.is_cached) {
-        prepared[idx] = {
-          kind: "cached",
-          track,
-          trackId,
-          metadata,
-          fileId: cached.telegram_file_id,
-          payload: null,
-          codec: "mp3",
-          tier,
-        };
-        return;
-      }
-
-      await sem.run(async () => {
-        if (state.cancelled) {
+        if (trackIsTooLong(track)) {
+          log.info(`[album] трек ${trackId} «${track.title}» длинный, пропускаю`);
           prepared[idx] = { kind: "failed", track, trackId, metadata, fileId: null, payload: null, codec: "mp3", tier };
           return;
         }
 
-        await this.mutateProgress(progress, (p) => {
-          p.downloading += 1;
-        });
-        await this.renderProgress(progressMsg, headerFull, progress, total);
-
-        let codec = "mp3";
-        let payload: [Buffer, Buffer | null] | null = null;
-        let actualTier = "lossy";
+        let cached: CachedTrack | null;
         try {
-          const result = await this.downloadQueue.enqueue(async () => {
-            // lossless-режим: raw flac-mp4 через get-file-info (lossy-ответ = null → фолбэк в lossy-тир).
-            if (losslessMode) {
-              const ll = await yandex.getLosslessDownload(track);
-              if (ll !== null) {
-                metadata.codec = ll.codec;
-                metadata.bitrate_kbps = ll.bitrate;
-                // каждая racing-попытка берёт случайный url; протухший список обновляется один раз.
-                const pickUrl = losslessUrlPicker(ll, () => yandex.getLosslessDownload(track));
-                const llCodec = ll.codec ?? "flac";
-                const p = await this.cache.prepareTrackPayload(trackId, pickUrl, metadata, llCodec, "lossless");
-                if (p !== null) return { codec: llCodec, payload: p, tier: "lossless" };
-                log.warning(`[album] lossless не вышел для ${trackId} → фолбэк на lossy`);
-              }
-              // фолбэк: трек без lossless или сбой — качаем lossy ниже.
-            }
-            const info = await yandex.getBestDownloadInfo(track);
-            if (info === null) return null;
-            metadata.codec = info.codec;
-            metadata.bitrate_kbps = info.bitrateInKbps;
-            const p = await this.cache.prepareTrackPayload(
-              trackId,
-              () => yandex.directLinkFromInfo(info),
-              metadata,
-              info.codec,
-            );
-            if (p === null) return null;
-            return { codec: info.codec, payload: p, tier: "lossy" };
-          });
-          if (result !== null) {
-            codec = result.codec;
-            payload = result.payload;
-            actualTier = result.tier;
-          }
-        } catch (e) {
-          log.error(`ошибка скачивания трека ${trackId} (user=${userId}): ${e}`);
-        } finally {
-          await this.mutateProgress(progress, (p) => {
-            p.downloading -= 1;
-          });
+          cached = await this.db.get(trackId, tier);
+        } catch {
+          cached = null;
         }
 
-        if (payload === null) {
+        if (cached && cached.is_cached) {
           prepared[idx] = {
-            kind: "failed",
+            kind: "cached",
             track,
             trackId,
             metadata,
-            fileId: null,
+            fileId: cached.telegram_file_id,
             payload: null,
-            codec,
-            tier: actualTier,
+            codec: "mp3",
+            tier,
           };
-        } else {
-          prepared[idx] = { kind: "fresh", track, trackId, metadata, fileId: null, payload, codec, tier: actualTier };
+          return;
         }
-      });
-    };
 
-    try {
+        await sem.run(async () => {
+          if (state.cancelled) {
+            prepared[idx] = {
+              kind: "failed",
+              track,
+              trackId,
+              metadata,
+              fileId: null,
+              payload: null,
+              codec: "mp3",
+              tier,
+            };
+            return;
+          }
+
+          await this.mutateProgress(progress, (p) => {
+            p.downloading += 1;
+          });
+          await this.renderProgress(progressMsg, headerFull, progress, total);
+
+          let codec = "mp3";
+          let payload: [Buffer, Buffer | null] | null = null;
+          let actualTier = "lossy";
+          try {
+            const result = await this.downloadQueue.enqueue(async () => {
+              // lossless-режим: raw flac-mp4 через get-file-info (lossy-ответ = null → фолбэк в lossy-тир).
+              if (losslessMode) {
+                const ll = await yandex.getLosslessDownload(track);
+                if (ll !== null) {
+                  metadata.codec = ll.codec;
+                  metadata.bitrate_kbps = ll.bitrate;
+                  // каждая racing-попытка берёт случайный url; протухший список обновляется один раз.
+                  const pickUrl = losslessUrlPicker(ll, () => yandex.getLosslessDownload(track));
+                  const llCodec = ll.codec ?? "flac";
+                  const p = await this.cache.prepareTrackPayload(trackId, pickUrl, metadata, llCodec, "lossless");
+                  if (p !== null) return { codec: llCodec, payload: p, tier: "lossless" };
+                  log.warning(`[album] lossless не вышел для ${trackId} → фолбэк на lossy`);
+                }
+                // фолбэк: трек без lossless или сбой — качаем lossy ниже.
+              }
+              const info = await yandex.getBestDownloadInfo(track);
+              if (info === null) return null;
+              metadata.codec = info.codec;
+              metadata.bitrate_kbps = info.bitrateInKbps;
+              const p = await this.cache.prepareTrackPayload(
+                trackId,
+                () => yandex.directLinkFromInfo(info),
+                metadata,
+                info.codec,
+              );
+              if (p === null) return null;
+              return { codec: info.codec, payload: p, tier: "lossy" };
+            });
+            if (result !== null) {
+              codec = result.codec;
+              payload = result.payload;
+              actualTier = result.tier;
+            }
+          } catch (e) {
+            log.error(`ошибка скачивания трека ${trackId} (user=${userId}): ${e}`);
+          } finally {
+            await this.mutateProgress(progress, (p) => {
+              p.downloading -= 1;
+            });
+          }
+
+          if (payload === null) {
+            prepared[idx] = {
+              kind: "failed",
+              track,
+              trackId,
+              metadata,
+              fileId: null,
+              payload: null,
+              codec,
+              tier: actualTier,
+            };
+          } else {
+            prepared[idx] = { kind: "fresh", track, trackId, metadata, fileId: null, payload, codec, tier: actualTier };
+          }
+        });
+      };
+
       // волнами по PREPARE_CHUNK, а не «подготовить всё разом»: без этого аудио-буферы
       // сотни глав аудиокниги копились бы в RAM одновременно до начала отправки → OOM.
       for (let chunkStart = 0; chunkStart < total; chunkStart += PREPARE_CHUNK) {
@@ -706,7 +745,7 @@ export class AlbumService {
       const entry = promoted[0]!;
       let ok = false;
       try {
-        await this.bot.api.sendAudio({ chat_id: chatId, audio: entry.fileId! });
+        await floodToUser(() => this.bot.api.sendAudio({ chat_id: chatId, audio: entry.fileId! }));
         ok = true;
       } catch (e) {
         log.error(`send_audio failed for ${entry.trackId}: ${e}`);
@@ -717,10 +756,11 @@ export class AlbumService {
       });
       if (ok) await markDoneSafe(entry.trackId);
     } else {
-      const media = promoted.map((e) => this.buildInputMedia(e));
       let sentMsgs: unknown[] = [];
       try {
-        sentMsgs = (await this.bot.api.sendMediaGroup({ chat_id: chatId, media })) as unknown[];
+        sentMsgs = (await floodToUser(() =>
+          this.bot.api.sendMediaGroup({ chat_id: chatId, media: promoted.map((e) => this.buildInputMedia(e)) }),
+        )) as unknown[];
       } catch (e) {
         log.error(`send_media_group failed: ${e}`);
       }

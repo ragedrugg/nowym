@@ -5,7 +5,6 @@
 import type { DialogManager } from "@gramio/dialogs";
 import type { Bot } from "gramio";
 import { GeniusClient } from "../genius/client.ts";
-import { sleep } from "../infra/async.ts";
 import { crypto } from "../infra/crypto.ts";
 import { HttpClient } from "../infra/http.ts";
 import { getLogger } from "../infra/logging.ts";
@@ -30,6 +29,14 @@ import { type YandexClient, YandexClientFactory } from "../yandex/client.ts";
 import { ChannelSender } from "./telegramSender.ts";
 
 const log = getLogger("bot.container");
+
+/** username бота: main.ts уже сделал bot.init() (с ретраями), он кладёт getMe в
+ * bot.info — второй getMe с собственным циклом ретраев не нужен. Фолбэк на
+ * getMe — только если init не вызывали. */
+export async function resolveBotUsername(bot: Pick<Bot, "info" | "api">): Promise<string | null> {
+  const info = bot.info ?? (await bot.api.getMe());
+  return info?.username ?? null;
+}
 
 export class Container {
   httpClient!: HttpClient;
@@ -83,21 +90,7 @@ export class Container {
 
     crypto.init(s.TOKEN_ENCRYPTION_KEY);
 
-    // ретраим get_me на случай моргающего DNS/сети апстрима
-    let delay = 2000;
-    let me: Awaited<ReturnType<Bot["api"]["getMe"]>> | null = null;
-    for (let attempt = 1; attempt <= 6; attempt++) {
-      try {
-        me = await bot.api.getMe();
-        break;
-      } catch (e) {
-        if (attempt === 6) throw e;
-        log.warning(`[startup] get_me попытка ${attempt} упала (${e}), retry через ${delay / 1000}s`);
-        await sleep(delay);
-        delay = Math.min(delay * 2, 30000);
-      }
-    }
-    this.botUsername = me?.username ?? null;
+    this.botUsername = await resolveBotUsername(bot);
 
     this.httpClient = new HttpClient();
     this.downloadQueue = new DownloadConcurrency(s.DOWNLOAD_QUEUE_CONCURRENCY);
@@ -133,7 +126,7 @@ export class Container {
     this.userSettingsCache = new TTLCache<UserSettings>(2000, 300, 300);
 
     this.authService = new AuthService(this.usersDb);
-    this.metadataService = new TaggingService();
+    this.metadataService = new TaggingService(this.botUsername);
     this.cardRenderPool = new CardRenderPool();
     this.cardRenderPool.start();
 

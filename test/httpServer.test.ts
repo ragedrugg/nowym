@@ -102,6 +102,26 @@ describe("webhook", () => {
     assert.equal((await get("/hook", { "x-telegram-bot-api-secret-token": "anything" }, "POST")).status, 401);
     assert.equal(tgCalls, 0);
   });
+  it("D13: tgHandler реджектит (битый JSON) → 400, без unhandledRejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { get } = await start(
+        baseDeps({
+          tgHandler: async () => {
+            throw new SyntaxError("Unexpected token");
+          },
+        }),
+      );
+      const r = await get("/hook", { "x-telegram-bot-api-secret-token": "s3cret-s3cret-s3cret" }, "POST");
+      assert.equal(r.status, 400);
+      await new Promise((r) => setImmediate(r));
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
   it("localApi: webhook-роута нет → 404", async () => {
     const { get } = await start(baseDeps({ localApi: true }));
     assert.equal((await get("/hook", {}, "POST")).status, 404);

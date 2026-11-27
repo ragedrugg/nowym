@@ -56,13 +56,16 @@ test("startLogin: незавершённый вход и провал старт
 test("startLogout: режим Edit", async () => {
   const { dialog, calls } = mkDialog();
   const cancelled: number[] = [];
+  const forgotten: number[] = [];
   const container = {
     usersDb: { delete: async () => true },
     authService: { cancelAuth: (id: number) => void cancelled.push(id) },
     invalidateTokenCacheForUser: () => {},
+    albumService: { forgetUser: (id: number) => void forgotten.push(id) },
   } as unknown as Container;
   await startLogout(dialog as never, container, 1);
   assert.deepEqual(cancelled, [1], "незавершённый device-flow отменяется");
+  assert.deepEqual(forgotten, [1], "D17: retry-буфер альбомов с токеном юзера чистится");
   assert.equal(calls[0]!.state, "logout_done");
   assert.equal(calls[0]!.opts.mode, ShowMode.Edit);
 });

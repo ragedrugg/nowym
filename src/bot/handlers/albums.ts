@@ -2,7 +2,7 @@ import type { Bot } from "gramio";
 import { bold, type FormattableString, format } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
 import { parseSearchQuery } from "../../infra/parsers.ts";
-import { pluralTracks } from "../../infra/text.ts";
+import { pluralTracks, waitSeconds } from "../../infra/text.ts";
 import { ProgressMessage } from "../../services/albums.ts";
 import type { YandexClient } from "../../yandex/client.ts";
 import { albumEmoji, albumTypeRu, LABELED_ALBUM_TYPES } from "../../yandex/metadata.ts";
@@ -36,7 +36,7 @@ export async function startUpload(
   if (!allowed) {
     await bot.api.sendMessage({
       chat_id: chatId,
-      text: format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`,
+      text: format`⏳ слишком часто, подожди ${waitSeconds(retryAfter)} сек`,
     });
     return;
   }

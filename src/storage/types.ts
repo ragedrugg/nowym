@@ -26,7 +26,9 @@ export interface InflightAlbum {
   id: number;
   user_id: number;
   chat_id: number;
+  /** album_id — id альбома, либо kind плейлиста, если playlist_owner не null. */
   album_id: number;
+  playlist_owner: string | null;
   progress_message_id: number | null;
   completed_track_ids: number[];
 }

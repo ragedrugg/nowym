@@ -17,11 +17,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AudioFile, TagLib } from "taglib-wasm";
 import { getLogger } from "../infra/logging.ts";
+import { botMention } from "../infra/text.ts";
 import type { TrackMetadata } from "../yandex/types.ts";
 
 const log = getLogger("tagging");
-
-const ENCODED_BY = "@nowymbot";
 
 // потолок на ffmpeg (только transform-путь): без него зависший процесс = вечный await + зомби
 const FFMPEG_TIMEOUT_MS = 120_000;
@@ -53,6 +52,12 @@ export interface AudioTransform {
 
 export class TaggingService {
   private taglibPromise: ReturnType<typeof TagLib.initialize> | null = null;
+  private readonly encodedBy: string;
+
+  /** botUsername — для тега «encoded by» (@username); null — дефолт @nowymbot. */
+  constructor(botUsername: string | null = null) {
+    this.encodedBy = botMention(botUsername);
+  }
 
   private getTaglib(): ReturnType<typeof TagLib.initialize> {
     if (this.taglibPromise === null) this.taglibPromise = TagLib.initialize();
@@ -101,7 +106,7 @@ export class TaggingService {
       if (metadata.track_total) props.TRACKTOTAL = [String(metadata.track_total)];
       if (metadata.disc_number) props.DISCNUMBER = [String(metadata.disc_number)];
       if (metadata.disc_total) props.DISCTOTAL = [String(metadata.disc_total)];
-      props.ENCODEDBY = [ENCODED_BY];
+      props.ENCODEDBY = [this.encodedBy];
       file.setProperties(props);
 
       if (metadata.cover_data) {
@@ -189,7 +194,7 @@ export class TaggingService {
     const disc = slashFmt(m.disc_number, m.disc_total);
     if (disc) yield ["disc", disc];
 
-    yield ["encoded_by", ENCODED_BY];
+    yield ["encoded_by", this.encodedBy];
   }
 
   /** запускает ffmpeg, true при коде 0. Никогда не бросает. */

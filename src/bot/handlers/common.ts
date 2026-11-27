@@ -2,6 +2,7 @@ import { type DialogManager, StartMode } from "@gramio/dialogs";
 import type { Bot } from "gramio";
 import { blockquote, bold, code, type FormattableString, format, MediaUpload } from "gramio";
 import { getLogger } from "../../infra/logging.ts";
+import { botMention, waitSeconds } from "../../infra/text.ts";
 import { normalizeCoverUrl } from "../../yandex/media.ts";
 import { buildCardMeta, formatTrackBasics } from "../../yandex/metadata.ts";
 import type { YaTrack } from "../../yandex/types.ts";
@@ -38,20 +39,20 @@ export interface TgUser {
   firstName?: string | null;
 }
 
-export function startText(loggedIn: boolean): FormattableString {
+export function startText(loggedIn: boolean, botUsername: string | null = null): FormattableString {
   const base = format`привет 👋\n\nэто бот для одного жёлтого музыкального сервиса. кидает треки прямо в телеграм — по названию, по ссылке или просто тот, который у тебя сейчас играет\n\n`;
   const tail = loggedIn
-    ? "набери @nowymbot название в любом чате — или жми кнопки ниже"
+    ? `набери ${botMention(botUsername)} название в любом чате — или жми кнопки ниже`
     : "чтобы всё заработало — войди, это минута";
   return format`${base}${tail}`;
 }
 
-export function helpText(): FormattableString {
+export function helpText(botUsername: string | null = null): FormattableString {
   return format`🎵 ${bold("что я умею")}
 кидаю треки, альбомы и плейлисты прямо в телеграм — по названию, ссылке, цитате из песни или тот, что играет у тебя сейчас.
 
 ⌨️ ${bold("inline — в любом чате")}
-набери ${code("@nowymbot")} и через пробел:
+набери ${code(botMention(botUsername))} и через пробел:
 ${blockquote(format`${code("название")} — поиск треков и альбомов
 ${code("ссылка")} — трек, альбом или плейлист по ссылке
 ${code("(пусто)")} — что играет сейчас + карточка
@@ -77,7 +78,7 @@ async function checkLimitAndToken(
 ): Promise<string | null> {
   const [allowed, retryAfter] = container.downloadLimiter.check(user.id);
   if (!allowed) {
-    await say(bot, chatId, statusMsgId, format`⏳ слишком часто, подожди ${Math.round(retryAfter)} сек`);
+    await say(bot, chatId, statusMsgId, format`⏳ слишком часто, подожди ${waitSeconds(retryAfter)} сек`);
     return null;
   }
   const token = await container.resolveToken(user.id);
@@ -277,16 +278,17 @@ function ctxUser(ctx: { from?: TgUser | null }): TgUser {
   return ctx.from;
 }
 
-const GROUP_HINT = "в группах работаю через inline — набери @nowymbot название. настройки и вход — в личке";
-const PRIVATE_HINT =
-  "так не ищу 🙂 набери @nowymbot название — в любом чате. в личку можно кидать ссылки на трек, альбом или плейлист. остальное — /help";
+const groupHint = (botUsername: string | null): string =>
+  `в группах работаю через inline — набери ${botMention(botUsername)} название. настройки и вход — в личке`;
+const privateHint = (botUsername: string | null): string =>
+  `так не ищу 🙂 набери ${botMention(botUsername)} название — в любом чате. в личку можно кидать ссылки на трек, альбом или плейлист. остальное — /help`;
 
 const isGroupChat = (type: string | undefined): boolean => type === "group" || type === "supergroup";
 
 export function registerCommon(bot: Bot, container: Container): void {
   bot.command("start", async (ctx) => {
     if (isGroupChat(ctx.chat?.type)) {
-      await ctx.reply(GROUP_HINT);
+      await ctx.reply(groupHint(container.botUsername));
       return;
     }
     if (ctx.chat?.type !== "private") return;
@@ -321,7 +323,7 @@ export function registerCommon(bot: Bot, container: Container): void {
 
   bot.command("help", async (ctx) => {
     if (isGroupChat(ctx.chat?.type)) {
-      await ctx.reply(GROUP_HINT);
+      await ctx.reply(groupHint(container.botUsername));
       return;
     }
     if (ctx.chat?.type !== "private") return;
@@ -342,11 +344,11 @@ export function registerCommon(bot: Bot, container: Container): void {
 
 /** замыкающий обработчик: личка, обычный текст (не команда) — подсказка вместо тишины.
  *  Регистрировать ПОСЛЕ всех hears/command, иначе перехватит ссылки и команды. */
-export function registerPrivateFallback(bot: Bot): void {
+export function registerPrivateFallback(bot: Bot, container: Pick<Container, "botUsername"> | null = null): void {
   bot.on("message", async (ctx, next) => {
     const text = ctx.text;
     if (ctx.chat?.type !== "private" || !text || text.startsWith("/") || ctx.viaBot) return next();
-    await ctx.reply(PRIVATE_HINT);
+    await ctx.reply(privateHint(container?.botUsername ?? null));
   });
 }
 
